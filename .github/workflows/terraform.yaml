@@ -72,7 +72,7 @@ jobs:
       # Critical for a platform that handles safety-critical nuclear sensor data.
       # ---------------------------------------------------------------------------
       - name: Run tfsec
-        uses: aquasecurity/tfsec-action@v1.0.0
+        uses: aquasecurity/tfsec-action@v1.0.3
         with:
           working_directory: ${{ env.TF_WORKING_DIR }}
           soft_fail: false
