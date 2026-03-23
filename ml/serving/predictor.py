@@ -72,6 +72,7 @@ class ReactorPredictor:
         if not self.is_ready:
             raise RuntimeError("Predictor not loaded — call _load() first.")
 
+        assert self._model is not None  # guaranteed by is_ready check above
         x = torch.tensor(features, dtype=torch.float32).unsqueeze(0).unsqueeze(0)
         with torch.no_grad():
             _, anomaly_score_t = self._model(x)

@@ -15,6 +15,34 @@ El orden es el orden de ejecución. No saltes tareas.
 
 ---
 
+## Principios de desarrollo aplicables a esta fase
+
+Estos principios son obligatorios en todos los artefactos generados por los prompts de esta fase.
+
+**Arquitectura y calidad de codigo**
+- Arquitectura limpia con separacion de responsabilidades: cada clase tiene una unica responsabilidad, las capas se comunican por interfaces explicitas, el dominio no depende de frameworks ni de infraestructura.
+- Patrones de diseno donde aporten claridad (Repository para acceso a datos, Strategy para detectores, Factory para clientes de almacenamiento). No aplicarlos mecanicamente.
+- Codigo eficiente, mantenible y escalable: sin optimizaciones prematuras, pero escrito para que crezca sin reescribirse.
+- Sin emojis en ningun artefacto: codigo, comentarios, docstrings, logs, mensajes de salida de scripts ni documentacion.
+- Documentacion de decisiones no obvias y contratos de interfaces publicas. No documentar lo que el codigo ya expresa.
+- Type hints completos en todo el codigo Python.
+- Tests unitarios en cada modulo nuevo. Tests de integracion para los flujos criticos.
+
+**Entorno de desarrollo**
+- Sistema operativo: Windows 11. Todos los scripts que se ejecuten en la maquina de desarrollo son PowerShell 7+ (`.ps1`). Nunca `.sh` para scripts de desarrollo local.
+- Los scripts `.ps1` siguen la arquitectura de 4 capas establecida en Fase 1:
+  1. Configuracion: `#Requires -Version 7.0`, `[CmdletBinding()]`, `param()`, `Set-StrictMode`
+  2. Utilidades: funciones helper sin efectos secundarios
+  3. Servicio: funciones que llaman a herramientas externas (gcloud, kubectl, dvc)
+  4. Orquestacion: funcion principal que coordina el flujo
+- Scripts `.sh` unicamente dentro de contenedores Docker o en `runs-on: ubuntu-latest` de GitHub Actions, documentando explicitamente ese contexto.
+
+**Identificadores del proyecto**
+- Nombre del proyecto: `reactorguard-platform` — usado en nombres de recursos, namespaces K8s, buckets GCS.
+- Google Cloud Project ID: `sentinel-platform-485714` — usado en todos los comandos `gcloud`, configuracion de providers Terraform (`project = "sentinel-platform-485714"`), SDK de Python (`project_id="sentinel-platform-485714"`), y configuracion de Feast. No confundir con el nombre del proyecto.
+
+---
+
 ## SEMANA 3 — TEP Dataset + Schema + Sensor Validator
 
 ---
@@ -90,7 +118,7 @@ Añade docstrings en cada clase y método.
 ```
 
 **Verificación**:
-```bash
+```powershell
 pytest tests/unit/test_sensor_reading.py -v
 # Todos los tests en verde
 python -c "from data.schemas import SensorReading; print('Schema OK')"
@@ -150,7 +178,7 @@ Genera estos archivos:
    - Método adapt_file(filepath: str, fault_type: int) -> List[SensorReading]
    - Método adapt_all(data_dir: str) -> pd.DataFrame con todos los readings adaptados
 
-4. Script data/generators/prepare_tep.sh:
+4. Script PowerShell data/generators/prepare_tep.ps1 (arquitectura 4 capas):
    - Ejecuta download + explore + adapt
    - Guarda el resultado en data/raw/tep/ como parquet particionado por fault_type
    - Imprime estadísticas finales: total de readings, distribución por fault_type
@@ -166,9 +194,9 @@ Genera estos archivos:
 ```
 
 **Verificación**:
-```bash
+```powershell
 dvc repro download_tep
-ls data/raw/tep/  # 22 archivos .dat descargados
+Get-ChildItem data\raw\tep\  # 22 archivos .dat descargados
 python data/generators/tep_explorer.py  # Genera tep_exploration.json sin errores
 pytest tests/unit/test_tep_adapter.py -v
 ```
@@ -246,10 +274,10 @@ Añade logging estructurado en JSON en todos los métodos principales.
 ```
 
 **Verificación**:
-```bash
+```powershell
 pytest tests/unit/test_tep_streamer.py -v  # Tests unitarios con mock
 pytest tests/integration/test_tep_streamer_integration.py -v  # Contra Kafka real
-# El test de integración debe imprimir throughput > 1000 msg/s en modo fast
+# El test de integracion debe imprimir throughput > 1000 msg/s en modo fast
 ```
 
 ---
@@ -356,10 +384,10 @@ Añade type hints completos y docstrings en todos los métodos públicos.
 ```
 
 **Verificación**:
-```bash
+```powershell
 pytest tests/unit/test_sensor_validator.py -v --tb=short
 # Todos los tests en verde
-# Cobertura de código > 80%: pytest --cov=data/validation/
+# Cobertura de codigo > 80%: pytest --cov=data/validation/
 ```
 
 ---
@@ -434,13 +462,14 @@ Añade un diagrama de flujo en el docstring de la clase con el ciclo completo: r
 ```
 
 **Verificación**:
-```bash
-# Levantar el consumer localmente:
-KAFKA_BOOTSTRAP=localhost:9092 python data/validation/validation_service.py &
+```powershell
+# Levantar el consumer localmente (en una terminal separada):
+$env:KAFKA_BOOTSTRAP = "localhost:9092"
+Start-Process python -ArgumentList "data/validation/validation_service.py"
 # En otra terminal, publicar mensajes de prueba:
 python -c "from tests.integration.test_validation_pipeline import *; run_quick_test()"
 # Verificar consumer lag = 0:
-kubectl exec -n kafka-operator kafka-pod -- kafka-consumer-groups.sh \
+kubectl exec -n kafka-operator kafka-pod -- kafka-consumer-groups.sh `
   --bootstrap-server localhost:9092 --describe --group sensor-validator-group
 pytest tests/integration/test_validation_pipeline.py -v
 ```
@@ -503,25 +532,25 @@ Genera estos archivos:
    - Reading con gap de tiempo grande (>1 hora): RateOfChange no debe fallar por el gap
    - Secuencia de 1000 readings normales seguidos de stuck: detecta el onset del stuck en < 15 readings
 
-3. Script tests/run_validator_evaluation.sh:
+3. Script PowerShell tests/Invoke-ValidatorEvaluation.ps1 (arquitectura 4 capas):
    - Ejecuta ambas suites de tests
-   - Genera el JSON de métricas
+   - Genera el JSON de metricas
    - Imprime tabla de resultados:
-     Detector               Precision  Recall   F1
-     StuckValueDetector     0.97       0.89     0.93  ✅ (≥0.95)
-     RateOfChangeDetector   0.91       0.95     0.93
-     RangeValidator         0.99       0.72     0.84
+     Detector               Precision  Recall   F1      Estado
+     StuckValueDetector     0.97       0.89     0.93    [OK] (>=0.95)
+     RateOfChangeDetector   0.91       0.95     0.93    [WARN]
+     RangeValidator         0.99       0.72     0.84    [WARN]
      ...
-   - Falla con código 1 si StuckValueDetector precision < 0.95
+   - Falla con codigo 1 si StuckValueDetector precision < 0.95
 
 Incluye comentarios explicando por qué la precision del stuck detector es el criterio principal (los falsos positivos de stuck son muy costosos operacionalmente).
 ```
 
 **Verificación**:
-```bash
-bash tests/run_validator_evaluation.sh
-# StuckValueDetector precision ≥ 0.95 → ✅
-# JSON de métricas en tests/results/validator_metrics_tep.json
+```powershell
+.\tests\Invoke-ValidatorEvaluation.ps1
+# StuckValueDetector precision >= 0.95 → [OK]
+# JSON de metricas en tests/results/validator_metrics_tep.json
 pytest tests/unit/test_validator_edge_cases.py -v
 ```
 
@@ -606,7 +635,7 @@ Implementa con numpy. Añade docstrings con las ecuaciones matemáticas explíci
 ```
 
 **Verificación**:
-```bash
+```powershell
 pytest tests/unit/test_kalman.py -v
 # Test de convergencia: el filtro debe converger en < 50 steps sobre señal estacionaria
 python -c "
@@ -714,11 +743,11 @@ Añade type hints completos. El pipeline debe ser thread-safe (usa threading.Loc
 ```
 
 **Verificación**:
-```bash
+```powershell
 pytest tests/unit/test_feature_pipeline.py -v
 # Test de rendimiento: 1000 readings en < 1 segundo
 python ml/features/batch_featurizer.py --input data/raw/tep/ --output data/processed/features/
-ls data/processed/features/  # Parquet files por sensor
+Get-ChildItem data\processed\features\  # Parquet files por sensor
 ```
 
 ---
@@ -737,10 +766,11 @@ Feast necesita: una fuente de datos offline (GCS con parquet), una fuente de dat
 
 Genera estos archivos:
 
-1. ml/features/feast/feature_store.yaml — configuración principal de Feast:
+1. ml/features/feast/feature_store.yaml — configuracion principal de Feast:
    project: reactorguard
    registry: gs://reactorguard-data-processed/feast/registry.db
    provider: gcp
+   # IMPORTANTE: el GCP Project ID es sentinel-platform-485714, no reactorguard-platform
    online_store:
      type: redis
      connection_string: "redis://redis-service.reactorguard-ingestion:6379"
@@ -809,13 +839,15 @@ Genera estos archivos:
    - Test que TTL se respeta: features materializadas hace >1h retornan NaN para rolling features
    - Benchmark: get_online_features para 10 sensores en < 10ms
 
-Incluye un script ml/features/feast/setup.sh que ejecute feast apply y materialize para el entorno de dev.
+Incluye un script PowerShell ml/features/feast/Invoke-FeastSetup.ps1 (arquitectura 4 capas) que ejecute feast apply y materialize para el entorno de dev.
 ```
 
 **Verificación**:
-```bash
-cd ml/features/feast && feast apply  # Debe registrar todas las feature views sin errores
-feast materialize-incremental $(date -u +"%Y-%m-%dT%H:%M:%S")
+```powershell
+Push-Location ml\features\feast
+feast apply  # Debe registrar todas las feature views sin errores
+feast materialize-incremental (Get-Date -Format "yyyy-MM-ddTHH:mm:ss")
+Pop-Location
 pytest tests/integration/test_feast.py -v
 # Benchmark latencia < 10ms para get_online_features
 ```
@@ -896,12 +928,12 @@ Genera estos archivos:
    - Remote: gs://reactorguard-data-processed/dvc-cache
    - autostage: true
 
-5. Script data/generators/verify_pipeline.sh:
-   - Ejecuta dvc repro --dry (muestra qué stages se ejecutarían sin ejecutar)
+5. Script PowerShell data/generators/Verify-Pipeline.ps1 (arquitectura 4 capas):
+   - Ejecuta dvc repro --dry (muestra que stages se ejecutarian sin ejecutar)
    - Ejecuta dvc repro
    - Verifica que data/processed/train/, val/, test/ existen y tienen parquet files
-   - Ejecuta dvc metrics show para mostrar las estadísticas del split
-   - Verifica reproducibilidad: ejecuta dvc repro de nuevo y verifica que ningún stage se re-ejecuta (todo cacheado)
+   - Ejecuta dvc metrics show para mostrar las estadisticas del split
+   - Verifica reproducibilidad: ejecuta dvc repro de nuevo y verifica que ningun stage se re-ejecuta (todo cacheado)
 
 6. tests/unit/test_dvc_pipeline.py:
    - Test que dvc.yaml es válido: dvc dag sin errores
@@ -913,12 +945,12 @@ Añade comentarios en dvc.yaml explicando por qué el orden temporal importa en 
 ```
 
 **Verificación**:
-```bash
+```powershell
 dvc repro  # Ejecuta el pipeline completo
-dvc metrics show  # Muestra estadísticas del split
-dvc repro  # Segunda ejecución: "All stages are up-to-date" (reproducibilidad)
+dvc metrics show  # Muestra estadisticas del split
+dvc repro  # Segunda ejecucion: "All stages are up-to-date" (reproducibilidad)
 pytest tests/unit/test_dvc_pipeline.py -v
-ls data/processed/train data/processed/val data/processed/test  # Parquet files
+Get-ChildItem data\processed\train, data\processed\val, data\processed\test  # Parquet files
 ```
 
 ---
@@ -954,7 +986,7 @@ Genera estos archivos:
 
 1. data/storage/gcs_client.py — GCSStorageClient:
    class GCSStorageClient:
-     def __init__(self, project_id: str = "reactorguard-platform")
+     def __init__(self, project_id: str = "sentinel-platform-485714")
      - Usa google-cloud-storage con Workload Identity (no API key)
      
      def write_sensor_readings(self, readings: List[SensorReading], plant_id: str, timestamp: datetime)
@@ -1010,13 +1042,13 @@ Usa GOOGLE_CLOUD_PROJECT env var para el project_id. Añade type hints completos
 ```
 
 **Verificación**:
-```bash
+```powershell
 # Test unitario con LocalCache (sin GCS):
 pytest tests/unit/test_gcs_partitioning.py -v
-# Test de integración (requiere GCS):
+# Test de integracion (requiere GCS):
 pytest tests/integration/test_gcs_integration.py -v
 # Verificar estructura en GCS:
-gsutil ls gs://reactorguard-data-raw/  # Debe mostrar plant= partitions
+gcloud storage ls gs://reactorguard-data-raw/ --project sentinel-platform-485714  # Debe mostrar plant= partitions
 ```
 
 ---
@@ -1083,11 +1115,11 @@ Asegúrate de que el JSON es válido. Usa un datasource llamado "prometheus" que
 ```
 
 **Verificación**:
-```bash
+```powershell
 kubectl apply -k observability/grafana/
 # Abrir Grafana en port-forward:
 kubectl port-forward svc/grafana -n reactorguard-observability 3000:3000
-# Ir a http://localhost:3000 → Dashboards → Data Pipeline
+# Abrir http://localhost:3000 en el navegador -> Dashboards -> Data Pipeline
 # Verificar que los paneles cargan sin errores de query
 ```
 
@@ -1105,7 +1137,7 @@ Crea el script de verificación y cierre de la Fase 2 de ReactorGuard.
 
 Debe verificar los 4 criterios de éxito del plan de fases y todos los entregables declarados.
 
-Genera infra/scripts/verify_phase2.sh con estas verificaciones:
+Genera infra/scripts/Verify-Phase2.ps1 siguiendo la arquitectura de 4 capas de PowerShell con estas verificaciones:
 
 CRITERIO 1: Throughput Kafka pipeline > 50,000 readings/s sostenidos
 - Ejecutar el TEP Streamer en modo fast durante 30 segundos
@@ -1140,33 +1172,33 @@ ENTREGABLES adicionales (WARNING si fallan, no blocking):
 - GCS con datos particionados: gsutil ls gs://reactorguard-data-processed/features/ → archivos parquet
 - Dashboard Grafana cargando: curl http://grafana:3000/api/dashboards/home → HTTP 200
 
-Formato de salida:
+Formato de salida (sin emojis, sin caracteres especiales):
 === FASE 2: DATA PIPELINE + SENSOR VALIDATOR ===
 
-CRITERIOS DE ÉXITO (BLOCKING):
-✅ Throughput: 73,420 msg/s (> 50,000)
-✅ Stuck precision: 0.97 (> 0.95)
-✅ Feature latency p99: 42ms (< 100ms)
-✅ DVC reproducible: pipeline completo en 8m32s
+CRITERIOS DE EXITO (BLOCKING):
+[OK]   Throughput: 73420 msg/s (umbral: 50000)
+[OK]   Stuck precision: 0.97 (umbral: 0.95)
+[OK]   Feature latency p99: 42ms (umbral: 100ms)
+[OK]   DVC reproducible: pipeline completo en 8m32s
 
 ENTREGABLES (WARNING):
-✅ TEP Streamer: Running (2/2 pods)
-✅ Sensor Validator tests: 24/24 passing
-✅ Feature Pipeline tests: 18/18 passing
-✅ Feast: 4 feature views registradas
-✅ GCS partitioned data: 847 parquet files
-✅ Grafana dashboard: loaded
+[OK]   TEP Streamer: Running (2/2 pods)
+[OK]   Sensor Validator tests: 24/24 passing
+[OK]   Feature Pipeline tests: 18/18 passing
+[OK]   Feast: 4 feature views registradas
+[OK]   GCS partitioned data: 847 parquet files
+[OK]   Grafana dashboard: loaded
 
 4/4 criterios blocking cumplidos
 6/6 entregables completos
 
-Estado: LISTA PARA FASE 3 ✅
+Estado: LISTA PARA FASE 3
 Informe guardado en docs/phase2_completion_report.md
 ```
 
 **Verificación**:
-```bash
-bash infra/scripts/verify_phase2.sh
+```powershell
+.\infra\scripts\Verify-Phase2.ps1
 # Exit code 0 si todos los criterios blocking pasan
 # docs/phase2_completion_report.md generado con timestamp
 ```

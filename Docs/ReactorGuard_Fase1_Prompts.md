@@ -13,6 +13,16 @@ Cada subtarea tiene:
 
 El orden de las tareas es el orden en que deben ejecutarse. No saltes tareas — cada una es prerequisito de la siguiente.
 
+**Plataforma de desarrollo**: Windows 11. Todos los scripts son **PowerShell 7+** (`.ps1`).
+Ejecutar scripts: `.\infra\scripts\nombre.ps1` desde una terminal PowerShell 7.
+Instalar PowerShell 7 si no está disponible: `winget install Microsoft.PowerShell`.
+
+**Patrón de arquitectura de scripts**: Todos los scripts siguen una estructura de 4 capas:
+1. **Capa de configuración**: `#Requires`, `[CmdletBinding()]`, `param()`, `Set-StrictMode`
+2. **Capa de utilidades**: funciones helper reutilizables, sin efectos secundarios
+3. **Capa de servicio**: funciones que llaman a herramientas externas (gcloud, kubectl, terraform)
+4. **Capa de orquestación**: función principal que coordina el flujo
+
 ---
 
 ## SEMANA 1 — Infraestructura GCP con Terraform
@@ -31,6 +41,7 @@ Crea la estructura completa de directorios y archivos de configuración base par
 
 El proyecto es una plataforma cloud-native de detección de anomalías en reactores nucleares.
 Stack: Python 3.11, GCP, Terraform, Kubernetes, Kafka, PyTorch, FastAPI.
+Plataforma de desarrollo: Windows 11. Todos los scripts deben ser PowerShell 7+ (.ps1), nunca .sh.
 
 Necesito que generes:
 
@@ -52,9 +63,9 @@ Necesito que generes:
    - Dependencias: torch, fastapi, uvicorn, kafka-python, feast, mlflow, dvc[gcs], mapie, shap, pydantic, opentelemetry-sdk, prometheus-client
    - Dev dependencies: pytest, pytest-asyncio, ruff, mypy, trivy
 
-3. .gitignore apropiado para Python + Terraform + Kubernetes
+3. .gitignore apropiado para Python + Terraform + Kubernetes + PowerShell (incluir *.ps1~ y PSReadline history)
 
-4. README.md con secciones: Overview, Prerequisites, Quick Start (los comandos de la sección 13 del TDD), Architecture
+4. README.md con secciones: Overview, Prerequisites (incluir PowerShell 7+), Quick Start (los comandos de la sección 13 del TDD adaptados a Windows/PowerShell), Architecture
 
 5. params.yaml vacío con estructura comentada para: simulation.yaml params (n_samples, fault_injection_rate, openmc_seed) y training params (learning_rate, physics_lambda, hidden_size)
 
@@ -62,9 +73,9 @@ Genera los archivos con contenido real, no placeholders vacíos. Los archivos de
 ```
 
 **Verificación**:
-```bash
-find . -type f | wc -l  # Debe haber al menos 25 archivos
-python -m pytest tests/  # No debe fallar (0 tests = ok)
+```powershell
+(Get-ChildItem -Recurse -File).Count   # Debe haber al menos 25 archivos
+python -m pytest tests/                # No debe fallar (0 tests = ok)
 ```
 
 ---
@@ -84,6 +95,7 @@ Contexto del proyecto:
 - Región principal: europe-west1
 - El bucket de estado se llama: reactorguard-terraform-state
 - Usaremos Terraform >= 1.6.0
+- Plataforma de desarrollo: Windows 11, PowerShell 7+. NO generes scripts .sh.
 
 Necesito exactamente estos archivos:
 
@@ -105,19 +117,42 @@ Necesito exactamente estos archivos:
    - Skeleton que llamará a los módulos (vpc, gke, storage, iam, security, kafka)
    - Por ahora los module blocks pueden tener source y variables vacías — los rellenaremos en subtareas siguientes
 
-5. Un script bash infra/scripts/bootstrap.sh que:
-   - Cree el bucket GCS de estado si no existe: gsutil mb -l europe-west1 gs://reactorguard-terraform-state
-   - Habilite las APIs de GCP necesarias (container, compute, storage, secretmanager, pubsub, cloudkms, binaryauthorization)
-   - Imprima instrucciones de qué hacer después
+5. Un script PowerShell infra/scripts/bootstrap.ps1 siguiendo arquitectura de 4 capas:
+
+   CAPA 1 — Configuración y parámetros:
+   #Requires -Version 7.0
+   [CmdletBinding()]
+   param(
+     [string]$ProjectId   = "reactorguard-platform",
+     [string]$Region      = "europe-west1",
+     [string]$StateBucket = "reactorguard-terraform-state"
+   )
+   Set-StrictMode -Version Latest
+   $ErrorActionPreference = "Stop"
+
+   CAPA 2 — Funciones de utilidad (sin efectos secundarios, reutilizables):
+   - function Invoke-Gcloud([string[]]$Arguments) — wrapper que ejecuta gcloud, captura stdout/stderr y lanza excepción si falla
+   - function Test-GcsBucketExists([string]$BucketName) — devuelve [bool], no lanza excepciones
+   - function Write-Step([string]$Message) — imprime paso con timestamp formateado
+
+   CAPA 3 — Funciones de servicio (llaman a GCP, efectos secundarios aislados):
+   - function Initialize-StateBucket — crea el bucket GCS si no existe, idempotente
+   - function Enable-RequiredApis — habilita las APIs: container, compute, storage, secretmanager, pubsub, cloudkms, binaryauthorization
+
+   CAPA 4 — Orquestación (punto de entrada, coordina el flujo):
+   - function Invoke-Bootstrap — llama a Initialize-StateBucket y Enable-RequiredApis con try/catch, imprime resumen final
+   Invoke-Bootstrap   # Llamada al final del script
 
 Añade comentarios en cada archivo explicando qué hace cada bloque.
 ```
 
 **Verificación**:
-```bash
-bash infra/scripts/bootstrap.sh
-cd infra/terraform/environments/dev && terraform init
-terraform validate  # Debe pasar sin errores
+```powershell
+.\infra\scripts\bootstrap.ps1
+Push-Location infra\terraform\environments\dev
+terraform init
+terraform validate   # Debe pasar sin errores
+Pop-Location
 ```
 
 ---
@@ -162,9 +197,11 @@ Añade comentarios explicando por qué cada recurso es necesario, especialmente 
 ```
 
 **Verificación**:
-```bash
-terraform plan  # Debe mostrar ~8 recursos a crear, 0 errores
+```powershell
+Push-Location infra\terraform\environments\dev
+terraform plan   # Debe mostrar ~8 recursos a crear, 0 errores
 # Revisar que no aparezca ningún recurso con IP pública en los outputs
+Pop-Location
 ```
 
 ---
@@ -218,10 +255,12 @@ Incluye comentarios explicando por qué ml-serving no puede ser preemptible y qu
 ```
 
 **Verificación**:
-```bash
-terraform plan  # Debe mostrar el cluster y los 2 node pools, sin errores
+```powershell
+Push-Location infra\terraform\environments\dev
+terraform plan   # Debe mostrar el cluster y los 2 node pools, sin errores
 # Verificar en el plan que enable_private_nodes = true
 # Verificar que ml-serving node pool tiene preemptible = false
+Pop-Location
 ```
 
 ---
@@ -277,10 +316,12 @@ Añade comentarios explicando la política de lifecycle y por qué models tiene 
 ```
 
 **Verificación**:
-```bash
-terraform plan  # 4 buckets, sin errores
+```powershell
+Push-Location infra\terraform\environments\dev
+terraform plan   # 4 buckets, sin errores
 # Verificar que uniform_bucket_level_access = true en todos
 # Verificar que ningún bucket tiene public_access_prevention = "inherited"
+Pop-Location
 ```
 
 ---
@@ -332,10 +373,12 @@ Añade un comentario prominente explicando cómo funciona Workload Identity: el 
 ```
 
 **Verificación**:
-```bash
-terraform plan  # ~12 recursos IAM, sin errores
+```powershell
+Push-Location infra\terraform\environments\dev
+terraform plan   # ~12 recursos IAM, sin errores
+Pop-Location
 # Después de apply:
-gcloud iam service-accounts list --filter="reactorguard"  # Debe mostrar las 4 SAs
+gcloud iam service-accounts list --filter="reactorguard"   # Debe mostrar las 4 SAs
 ```
 
 ---
@@ -370,21 +413,46 @@ Genera:
 4. infra/terraform/modules/security/outputs.tf (secret IDs, key ring name)
 5. Actualiza environments/dev/main.tf
 
-También genera un script bash infra/scripts/load_secrets.sh que:
-- Reciba como argumentos los valores reales de cada secreto
-- Use gcloud secrets versions add para actualizar los placeholders
-- Incluya validación de que los argumentos no estén vacíos
-- Imprima qué secreto acaba de cargar
+También genera un script PowerShell infra/scripts/Load-Secrets.ps1 con arquitectura de 4 capas:
 
-IMPORTANTE: Añade una nota grande en comments indicando que los valores placeholder del terraform NO son los valores reales y que hay que ejecutar load_secrets.sh antes de desplegar.
+   CAPA 1 — Configuración:
+   #Requires -Version 7.0
+   [CmdletBinding()]
+   param(
+     [Parameter(Mandatory)][string]$ScadaUsername,
+     [Parameter(Mandatory)][string]$ScadaPassword,
+     [Parameter(Mandatory)][string]$ScadaEndpoint,
+     [Parameter(Mandatory)][string]$JwtSecret,
+     [Parameter(Mandatory)][string]$MlflowDbUrl,
+     [Parameter(Mandatory)][string]$GcpApiKey,
+     [string]$ProjectId = "reactorguard-platform"
+   )
+   Set-StrictMode -Version Latest
+   $ErrorActionPreference = "Stop"
+
+   CAPA 2 — Utilidades:
+   - function Assert-NotEmpty([string]$Value, [string]$ParamName) — valida que el valor no sea vacío ni placeholder
+   - function Write-Step([string]$Message) — output con timestamp
+   - function ConvertTo-SecretPayload([hashtable]$Data) — serializa a JSON
+
+   CAPA 3 — Servicio:
+   - function Set-GcpSecret([string]$SecretName, [string]$Payload) — llama a gcloud secrets versions add con manejo de errores
+
+   CAPA 4 — Orquestación:
+   - function Invoke-LoadSecrets — valida todos los parámetros, llama a Set-GcpSecret para cada secreto, imprime resumen
+   Invoke-LoadSecrets
+
+IMPORTANTE: Añade una nota grande en comments indicando que los valores placeholder del terraform NO son los valores reales y que hay que ejecutar Load-Secrets.ps1 antes de desplegar.
 ```
 
 **Verificación**:
-```bash
-terraform plan  # Secrets + KMS, sin errores
+```powershell
+Push-Location infra\terraform\environments\dev
+terraform plan   # Secrets + KMS, sin errores
+Pop-Location
 # Después de apply:
-gcloud secrets list  # Debe mostrar los 4 secretos
-gcloud kms keyrings list --location=europe-west1  # Debe mostrar reactorguard-keyring
+gcloud secrets list                                        # Debe mostrar los 4 secretos
+gcloud kms keyrings list --location=europe-west1           # Debe mostrar reactorguard-keyring
 ```
 
 ---
@@ -437,10 +505,12 @@ Añade comentarios explicando el orden de evaluación de reglas de Cloud Armor y
 ```
 
 **Verificación**:
-```bash
-terraform plan  # LB + Armor + IAP resources, sin errores
+```powershell
+Push-Location infra\terraform\environments\dev
+terraform plan   # LB + Armor + IAP resources, sin errores
 # Revisar que security_policy está asociado al backend_service
 # Revisar que el forwarding_rule HTTP redirige a HTTPS (no termina en el backend)
+Pop-Location
 ```
 
 ---
@@ -453,45 +523,52 @@ terraform plan  # LB + Armor + IAP resources, sin errores
 
 **Prompt**:
 ```
-Genera un script de verificación completo de infraestructura para ReactorGuard después de ejecutar terraform apply.
+Genera scripts PowerShell de verificación y destrucción de infraestructura para ReactorGuard.
+Plataforma: Windows 11, PowerShell 7+. No generes scripts .sh.
 
-El script infra/scripts/verify_infra.sh debe:
+SCRIPT 1: infra/scripts/Verify-Infra.ps1
+Arquitectura de 4 capas:
 
-1. Verificar GKE:
-   - gcloud container clusters describe reactorguard-cluster --region europe-west1
-   - Comprobar que status == RUNNING
-   - Comprobar que ambos node pools (platform, ml-serving) están en estado RUNNING
-   - Obtener credenciales: gcloud container clusters get-credentials
+CAPA 1 — Configuración:
+#Requires -Version 7.0
+[CmdletBinding()]
+param(
+  [string]$ProjectId    = "reactorguard-platform",
+  [string]$ClusterName  = "reactorguard-cluster",
+  [string]$Region       = "europe-west1"
+)
+Set-StrictMode -Version Latest
+$ErrorActionPreference = "Stop"
 
-2. Verificar GCS:
-   - gsutil ls para cada uno de los 4 buckets
-   - Verificar que uniform_bucket_level_access está activo en cada uno
-   - Escribir y leer un objeto de prueba en reactorguard-data-raw para validar permisos
+CAPA 2 — Utilidades:
+- function Write-CheckResult([string]$Name, [bool]$Passed, [string]$Detail) — imprime ✅ / ❌ con detalle
+- function Invoke-WithTimeout([scriptblock]$Action, [int]$TimeoutSeconds = 30) — ejecuta con timeout
+- function Get-GcloudJson([string[]]$Arguments) — ejecuta gcloud y parsea JSON con ConvertFrom-Json
 
-3. Verificar Secret Manager:
-   - gcloud secrets list y verificar que aparecen los 4 secretos
-   - Intentar acceder a un secreto con la SA de ingestion para validar permisos
+CAPA 3 — Funciones de verificación (una por criterio, separación de responsabilidades):
+- function Test-GkeCluster — verifica que el cluster está RUNNING y ambos node pools están Ready
+- function Test-GcsBuckets — verifica los 4 buckets, uniform_bucket_level_access y permisos de escritura
+- function Test-SecretManager — verifica que los 4 secretos existen y tienen versiones activas
+- function Test-Networking — kubectl cluster-info + verifica IPs privadas en nodos + Cloud NAT
+- function Test-IamAccounts — lista las 4 service accounts y sus roles
 
-4. Verificar Networking:
-   - kubectl cluster-info
-   - Verificar que los nodos tienen IPs privadas (no públicas): kubectl get nodes -o wide
-   - Verificar Cloud NAT: gcloud compute routers describe
+CAPA 4 — Orquestación:
+- function Invoke-VerifyInfra — ejecuta todos los Test-* en orden, acumula resultados, imprime tabla final
+  - Si alguna verificación falla: imprime el error y exit 1
+  - Si todo pasa: imprime "Infraestructura Fase 1 - Semana 1: LISTA" y exit 0
+Invoke-VerifyInfra
 
-5. Verificar IAM:
-   - Listar las 4 service accounts de ReactorGuard
-   - Para cada una, listar sus roles en el proyecto
-
-6. Resumen final:
-   - Imprimir tabla con ✅ / ❌ por cada verificación
-   - Si alguna verificación falla, imprimir el error y salir con código 1
-   - Si todo pasa, imprimir "Infraestructura Fase 1 - Semana 1: LISTA"
-
-También genera infra/scripts/destroy_dev.sh que ejecute terraform destroy con confirmación explícita y borre el estado local, para poder limpiar fácilmente en desarrollo.
+SCRIPT 2: infra/scripts/Remove-DevInfra.ps1
+Destruye la infraestructura de dev con confirmación explícita:
+- Solicitar confirmación escribiendo "DESTROY-DEV" para evitar destrucciones accidentales
+- Ejecutar terraform destroy en infra/terraform/environments/dev
+- Borrar el directorio .terraform local después de la destrucción
+- Loggear cada paso con timestamp
 ```
 
 **Verificación**:
-```bash
-bash infra/scripts/verify_infra.sh
+```powershell
+.\infra\scripts\Verify-Infra.ps1
 # Debe imprimir tabla con todos los checks en ✅
 # Exit code 0
 ```
@@ -552,10 +629,10 @@ Añade comentarios en cada NetworkPolicy explicando en lenguaje natural qué per
 ```
 
 **Verificación**:
-```bash
+```powershell
 kubectl apply -k k8s/base/
-kubectl get namespaces | grep reactorguard  # 3 namespaces
-kubectl get networkpolicies -A  # Al menos 8 policies (deny-all + allows por namespace)
+kubectl get namespaces | Select-String "reactorguard"   # 3 namespaces
+kubectl get networkpolicies -A                           # Al menos 8 policies (deny-all + allows por namespace)
 # Test de conectividad (debería fallar):
 kubectl run test-pod --image=busybox -n reactorguard-ml --rm -it -- wget -qO- http://service.reactorguard-ingestion:8000
 ```
@@ -596,22 +673,43 @@ Genera estos archivos:
    - Role en cada namespace que permite a las KSAs leer ConfigMaps y Secrets del mismo namespace
    - RoleBinding correspondiente
 
-4. Un script de verificación infra/scripts/verify_workload_identity.sh que:
-   - Cree un pod temporal en reactorguard-ml con la KSA pinn-server
-   - Dentro del pod, intente leer un secreto de Secret Manager con:
-     curl -H "Authorization: Bearer $(gcloud auth print-access-token)" \
-     https://secretmanager.googleapis.com/v1/projects/reactorguard-platform/secrets/reactorguard/jwt-secret/versions/latest:access
-   - Verifique que la respuesta es 200 (no 403)
-   - Limpie el pod temporal
+4. Un script PowerShell infra/scripts/Test-WorkloadIdentity.ps1 con arquitectura de 4 capas:
+
+   CAPA 1 — Configuración:
+   #Requires -Version 7.0
+   [CmdletBinding()]
+   param(
+     [string]$ProjectId   = "reactorguard-platform",
+     [string]$Namespace   = "reactorguard-ml",
+     [string]$KsaName     = "pinn-server",
+     [string]$SecretName  = "reactorguard/jwt-secret"
+   )
+   Set-StrictMode -Version Latest
+   $ErrorActionPreference = "Stop"
+
+   CAPA 2 — Utilidades:
+   - function New-TestPodManifest([string]$PodName, [string]$Namespace, [string]$Ksa) — genera YAML del pod temporal
+   - function Wait-PodReady([string]$PodName, [string]$Namespace, [int]$TimeoutSec = 60)
+
+   CAPA 3 — Servicio:
+   - function Invoke-SecretManagerTest([string]$PodName, [string]$ProjectId, [string]$SecretName) — ejecuta dentro del pod:
+     $token = kubectl exec $PodName -n $Namespace -- sh -c "gcloud auth print-access-token"
+     Invoke-WebRequest con header Authorization: Bearer $token hacia la Secret Manager API
+     Verifica que StatusCode == 200
+   - function Remove-TestPod([string]$PodName, [string]$Namespace) — limpieza garantizada
+
+   CAPA 4 — Orquestación:
+   - function Invoke-WorkloadIdentityTest — crea pod, ejecuta test, limpia (con try/finally para garantizar limpieza)
+   Invoke-WorkloadIdentityTest
 
 Añade comentarios explicando el flujo completo: pod → KSA annotation → GSA impersonation → GCP API.
 ```
 
 **Verificación**:
-```bash
+```powershell
 kubectl apply -k k8s/base/
-kubectl get serviceaccounts -n reactorguard-ml  # pinn-server, mlflow-server
-bash infra/scripts/verify_workload_identity.sh  # HTTP 200, no 403
+kubectl get serviceaccounts -n reactorguard-ml   # pinn-server, mlflow-server
+.\infra\scripts\Test-WorkloadIdentity.ps1        # HTTP 200, no 403
 ```
 
 ---
@@ -625,6 +723,7 @@ bash infra/scripts/verify_workload_identity.sh  # HTTP 200, no 403
 **Prompt**:
 ```
 Crea los manifiestos y scripts para instalar y configurar el operador Strimzi en ReactorGuard.
+Plataforma: Windows 11, PowerShell 7+. No generes scripts .sh.
 
 Versión target: Strimzi 0.39.0 (especificada en el TDD sección 7.2)
 Namespace destino: kafka-operator
@@ -653,22 +752,41 @@ Genera:
    - sensor-validated: partitions=12, replicas=3, retention.ms=604800000
    - anomaly-alerts: partitions=3, replicas=3, retention.ms=2592000000 (30 días, alertas duran más)
 
-4. Un script infra/scripts/install_kafka.sh que:
-   - Aplique el módulo Terraform de kafka (helm install)
-   - Espere a que el operador esté Ready: kubectl wait --for=condition=ready pod -l name=strimzi-cluster-operator -n kafka-operator --timeout=300s
-   - Aplique el KafkaCluster y espere a que los brokers estén listos
-   - Aplique los KafkaTopics
-   - Verifique que los 3 topics existen con: kubectl get kafkatopic -n kafka-operator
+4. Un script PowerShell infra/scripts/Install-Kafka.ps1 con arquitectura de 4 capas:
+
+   CAPA 1 — Configuración:
+   #Requires -Version 7.0
+   [CmdletBinding()]
+   param(
+     [string]$Namespace       = "kafka-operator",
+     [string]$StrimziVersion  = "0.39.0",
+     [int]$TimeoutSeconds     = 300
+   )
+   Set-StrictMode -Version Latest
+   $ErrorActionPreference = "Stop"
+
+   CAPA 2 — Utilidades:
+   - function Wait-KubernetesPod([string]$LabelSelector, [string]$Namespace, [int]$TimeoutSec) — wrapper de kubectl wait
+   - function Test-KafkaClusterReady([string]$Namespace) — verifica que todos los brokers están Running
+
+   CAPA 3 — Servicio:
+   - function Install-StrimziOperator — aplica el módulo Terraform de kafka y espera a que el operador esté Ready
+   - function Deploy-KafkaCluster — aplica kafka-cluster.yaml y espera a que los brokers estén listos
+   - function Deploy-KafkaTopics — aplica kafka-topics.yaml y verifica que los 3 topics existen
+
+   CAPA 4 — Orquestación:
+   - function Invoke-KafkaInstall — llama a las funciones de servicio en orden con manejo de errores
+   Invoke-KafkaInstall
 
 Añade comentarios explicando la diferencia entre el Strimzi operator y los recursos custom que gestiona.
 ```
 
 **Verificación**:
-```bash
-bash infra/scripts/install_kafka.sh
-kubectl get pods -n kafka-operator  # strimzi-operator Running
-kubectl get kafka -n kafka-operator  # reactorguard-cluster, READY=True
-kubectl get kafkatopic -n kafka-operator  # 3 topics
+```powershell
+.\infra\scripts\Install-Kafka.ps1
+kubectl get pods -n kafka-operator       # strimzi-operator Running
+kubectl get kafka -n kafka-operator      # reactorguard-cluster, READY=True
+kubectl get kafkatopic -n kafka-operator # 3 topics
 ```
 
 ---
@@ -682,6 +800,7 @@ kubectl get kafkatopic -n kafka-operator  # 3 topics
 **Prompt**:
 ```
 Crea un script de benchmarking y verificación funcional de Kafka para ReactorGuard.
+Plataforma: Windows 11, PowerShell 7+. No generes scripts .sh.
 
 El criterio de éxito de la Fase 1 es: latencia produce/consume p99 < 10ms en red interna del cluster.
 
@@ -709,19 +828,40 @@ Genera:
    - Command: sleep infinity (para poder ejecutar comandos interactivos)
    - Útil para depuración con kafka-console-producer y kafka-console-consumer
 
-4. Script tests/integration/run_kafka_tests.sh que:
-   - Despliegue el pod de utilidad en el cluster
-   - Copie y ejecute los scripts de test dentro del pod (para que el network hop sea intra-cluster)
-   - Recoja los resultados
-   - Limpie el pod
-   - Imprima ✅ o ❌ con las métricas obtenidas
+4. Script PowerShell tests/integration/Invoke-KafkaTests.ps1 con arquitectura de 4 capas:
+
+   CAPA 1 — Configuración:
+   #Requires -Version 7.0
+   [CmdletBinding()]
+   param(
+     [string]$Namespace    = "kafka-operator",
+     [string]$ResultsPath  = "tests/results",
+     [switch]$SkipBenchmark
+   )
+   Set-StrictMode -Version Latest
+   $ErrorActionPreference = "Stop"
+
+   CAPA 2 — Utilidades:
+   - function New-TestResultsDir([string]$Path) — crea el directorio de resultados si no existe
+   - function Get-BenchmarkResult([string]$JsonPath) — lee y parsea el JSON de resultados
+   - function Write-TestResult([string]$Name, [bool]$Passed, [string]$Value) — output formateado con ✅/❌
+
+   CAPA 3 — Servicio:
+   - function Deploy-KafkaClientPod — despliega el pod de utilidad y espera a que esté Running
+   - function Invoke-ConnectivityTest([string]$PodName) — copia y ejecuta test_kafka_connectivity.py dentro del pod
+   - function Invoke-BenchmarkTest([string]$PodName) — copia y ejecuta benchmark_kafka.py, recoge resultados
+   - function Remove-KafkaClientPod([string]$PodName) — limpieza garantizada
+
+   CAPA 4 — Orquestación:
+   - function Invoke-AllKafkaTests — despliega pod, ejecuta tests, recoge resultados (try/finally para limpieza)
+   Invoke-AllKafkaTests
 
 El schema del mensaje de prueba debe ser compatible con el sensor_reading.py del TDD sección 4.2 (aunque simplificado).
 ```
 
 **Verificación**:
-```bash
-bash tests/integration/run_kafka_tests.sh
+```powershell
+.\tests\integration\Invoke-KafkaTests.ps1
 # Debe imprimir:
 # ✅ Kafka connectivity: OK (100/100 messages delivered)
 # ✅ Latency p99: X.Xms (< 10ms)
@@ -792,8 +932,10 @@ Añade comentarios en cada job explicando por qué ese step es necesario para un
 ```
 
 **Verificación**:
-```bash
-git add . && git commit -m "feat: add CI/CD skeleton" && git push
+```powershell
+git add .
+git commit -m "feat: add CI/CD skeleton"
+git push
 # Ir a GitHub Actions y verificar que el workflow se dispara
 # Todos los jobs deben estar en verde (o amarillo si no hay tests todavía)
 # El job build-and-push debe saltar si no estamos en main
@@ -810,6 +952,7 @@ git add . && git commit -m "feat: add CI/CD skeleton" && git push
 **Prompt**:
 ```
 Configura Google Cloud Managed Service for Prometheus (GMP) en el cluster de ReactorGuard.
+Plataforma: Windows 11, PowerShell 7+. No generes scripts .sh.
 
 GMP está habilitado a nivel de cluster desde Terraform (T1.4). Ahora necesitamos configurar qué métricas recoger y dónde guardarlas.
 
@@ -834,19 +977,36 @@ Genera:
    - reactorguard_sensor_faults_total{fault_type="stuck"} > 3 en 1h → severity: warning
    - reactorguard_uncertainty_calibration_ece > 0.05 por 15m → severity: warning + trigger retrain
 
-5. Un script de verificación infra/scripts/verify_prometheus.sh que:
-   - Compruebe que los PodMonitoring están creados: kubectl get podmonitoring -A
-   - Haga una query de prueba a GMP via API para verificar que hay métricas del cluster
-   - Imprima el número de time series activas
+5. Un script PowerShell infra/scripts/Test-Prometheus.ps1 con arquitectura de 4 capas:
+
+   CAPA 1 — Configuración:
+   #Requires -Version 7.0
+   [CmdletBinding()]
+   param(
+     [string]$ProjectId = "reactorguard-platform"
+   )
+   Set-StrictMode -Version Latest
+   $ErrorActionPreference = "Stop"
+
+   CAPA 2 — Utilidades:
+   - function Invoke-GmpQuery([string]$ProjectId, [string]$PromQL) — ejecuta una query PromQL contra la API de GMP usando Invoke-WebRequest con el token de gcloud
+
+   CAPA 3 — Servicio:
+   - function Test-PodMonitoringResources — kubectl get podmonitoring -A y verifica que existen los 3 esperados
+   - function Test-GmpMetricsAvailable([string]$ProjectId) — hace una query de prueba a GMP y devuelve el número de time series activas
+
+   CAPA 4 — Orquestación:
+   - function Invoke-PrometheusVerification — ejecuta los tests y muestra resumen con ✅/❌
+   Invoke-PrometheusVerification
 
 Incluye comentarios explicando la diferencia entre GMP (managed) y un Prometheus self-hosted, y por qué elegimos GMP para este proyecto.
 ```
 
 **Verificación**:
-```bash
+```powershell
 kubectl apply -k k8s/base/observability/
-kubectl get podmonitoring -A  # Los 3 PodMonitoring
-bash infra/scripts/verify_prometheus.sh  # Debe mostrar métricas activas
+kubectl get podmonitoring -A      # Los 3 PodMonitoring
+.\infra\scripts\Test-Prometheus.ps1   # Debe mostrar métricas activas
 # En Cloud Console → Monitoring → Metrics Explorer: buscar kubernetes.io/container/cpu_request_cores
 ```
 
@@ -861,64 +1021,67 @@ bash infra/scripts/verify_prometheus.sh  # Debe mostrar métricas activas
 **Prompt**:
 ```
 Crea el script de verificación y cierre de la Fase 1 de ReactorGuard.
+Plataforma: Windows 11, PowerShell 7+. No generes scripts .sh.
 
-Este script debe verificar TODOS los criterios de éxito definidos en el plan de fases:
+SCRIPT: infra/scripts/Test-Phase1Completion.ps1
+Arquitectura de 4 capas:
 
-1. Criterio: GKE cluster status = RUNNING, todos los nodos Ready
-   - kubectl get nodes: verificar que todos tienen STATUS=Ready
-   - kubectl get nodes -l node-pool=ml-serving: verificar que existen nodos ml-serving
-   - Verificar que los nodos ml-serving tienen taint ml-workload=true
+CAPA 1 — Configuración:
+#Requires -Version 7.0
+[CmdletBinding()]
+param(
+  [string]$ProjectId       = "reactorguard-platform",
+  [string]$ClusterName     = "reactorguard-cluster",
+  [string]$Region          = "europe-west1",
+  [string]$KafkaBenchmark  = "tests/results/kafka_benchmark.json",
+  [string]$ReportOutput    = "docs/phase1_completion_report.md"
+)
+Set-StrictMode -Version Latest
+$ErrorActionPreference = "Stop"
 
-2. Criterio: Kafka produce/consume latency p99 < 10ms
-   - Ejecutar el benchmark de T2.4 y leer el JSON de resultados
-   - Comparar p99 contra el umbral de 10ms
+CAPA 2 — Utilidades:
+- class CheckResult { [string]$Name; [bool]$Passed; [string]$Value; [bool]$IsBlocking }
+- function New-CheckResult([string]$Name, [bool]$Passed, [string]$Value, [bool]$IsBlocking) → [CheckResult]
+- function Write-CheckTable([CheckResult[]]$Results) — imprime tabla formateada con ✅/❌ y marca BLOCKING
+- function Export-MarkdownReport([CheckResult[]]$Results, [string]$OutputPath) — genera el .md con timestamp
 
-3. Criterio: terraform validate en CI = 0 errores
-   - Ejecutar terraform validate localmente
-   - Verificar que el último run de GitHub Actions del workflow terraform.yaml pasó
+CAPA 3 — Funciones de verificación (cada criterio del TDD en su propia función, separación de responsabilidades):
+Criterio 1 (BLOCKING):   function Test-GkeClusterRunning — kubectl get nodes, verificar STATUS=Ready para todos
+Criterio 2 (BLOCKING):   function Test-KafkaLatency([string]$BenchmarkJson) — lee el JSON y compara p99 contra 10ms
+Criterio 3 (BLOCKING):   function Test-TerraformValidate — ejecuta terraform validate en infra/terraform/environments/dev
+Criterio 4 (BLOCKING):   function Test-TrivyImageScan — ejecuta Trivy sobre la imagen Docker base, cuenta CRITICAL
+Criterio 5 (BLOCKING):   function Test-GcsBucketsAccessible — intenta leer y escribir en cada bucket con las SAs correspondientes
+Criterio 6 (WARNING):    function Test-SecretManagerLoaded — verifica que los 4 secretos existen y tienen versiones activas
+Criterio 7 (BLOCKING):   function Test-NetworkPoliciesApplied — kubectl get networkpolicies -A, al menos 8 policies
+Criterio 8 (WARNING):    function Test-CiCdLastRunSuccessful — verifica con gh CLI que el último run de ci.yaml pasó
 
-4. Criterio: 0 vulnerabilidades CRITICAL en imágenes base
-   - Ejecutar Trivy sobre la imagen Dockerfile base construida en T2.5
-   - Contar vulnerabilidades CRITICAL
+CAPA 4 — Orquestación:
+function Invoke-Phase1Verification:
+  - Ejecuta cada Test-* con Invoke-WithTimeout 30s
+  - Acumula resultados en [CheckResult[]]
+  - Llama a Write-CheckTable y Export-MarkdownReport
+  - Imprime resumen:
+    === FASE 1 FOUNDATION ===
+    X/8 criterios cumplidos
+    Estado: LISTA PARA FASE 2 | BLOQUEADA (si algún criterio BLOCKING falla)
+  - Exit 0 si todos los criterios BLOCKING pasan; exit 1 si alguno falla
+Invoke-Phase1Verification
 
-5. Criterio: 4 buckets GCS accesibles con Workload Identity
-   - Intentar leer y escribir en cada bucket usando las SA correspondientes
-
-6. Criterio: Secret Manager con secretos cargados
-   - Verificar que los 4 secretos existen y tienen versiones activas
-
-7. Criterio: Namespaces con NetworkPolicies aplicadas
-   - kubectl get networkpolicies -A: verificar al menos 8 policies
-   - Test de conectividad denegada entre namespaces no autorizados
-
-8. Criterio: CI/CD ejecuta lint + test + build en cada push
-   - Verificar que hay al menos 1 run exitoso en GitHub Actions
-
-El script infra/scripts/verify_phase1.sh debe:
-- Ejecutar cada verificación con timeout de 30s
-- Mostrar ✅ PASS o ❌ FAIL por cada criterio con el valor medido
-- Al final imprimir:
-  === FASE 1 FOUNDATION ===
-  X/8 criterios cumplidos
-  Estado: LISTA PARA FASE 2 / BLOQUEADA (si algún criterio crítico falla)
-- Generar docs/phase1_completion_report.md con los resultados y timestamp
-- Salir con código 0 si todos los criterios pasan, código 1 si alguno falla
-
-Define cuáles criterios son BLOCKING (no se puede avanzar a Fase 2 si fallan) vs WARNING (se puede avanzar con deuda técnica documentada).
+Define en un bloque de comentarios al principio cuáles criterios son BLOCKING vs WARNING y por qué.
 ```
 
 **Verificación**:
-```bash
-bash infra/scripts/verify_phase1.sh
+```powershell
+.\infra\scripts\Test-Phase1Completion.ps1
 # Salida esperada:
-# ✅ GKE cluster RUNNING (2/2 node pools Ready)
-# ✅ Kafka p99 latency: 7.3ms (< 10ms)
-# ✅ terraform validate: 0 errors
-# ✅ Trivy: 0 CRITICAL vulnerabilities
-# ✅ GCS buckets: 4/4 accesibles
-# ✅ Secret Manager: 4/4 secretos activos
-# ✅ NetworkPolicies: 8 policies aplicadas
-# ✅ CI/CD: último run exitoso
+# ✅ GKE cluster RUNNING (2/2 node pools Ready)           [BLOCKING]
+# ✅ Kafka p99 latency: 7.3ms (< 10ms)                   [BLOCKING]
+# ✅ terraform validate: 0 errors                         [BLOCKING]
+# ✅ Trivy: 0 CRITICAL vulnerabilities                    [BLOCKING]
+# ✅ GCS buckets: 4/4 accesibles                          [BLOCKING]
+# ✅ Secret Manager: 4/4 secretos activos                 [WARNING]
+# ✅ NetworkPolicies: 8 policies aplicadas                [BLOCKING]
+# ✅ CI/CD: último run exitoso                            [WARNING]
 # === FASE 1 FOUNDATION ===
 # 8/8 criterios cumplidos
 # Estado: LISTA PARA FASE 2
@@ -928,27 +1091,35 @@ bash infra/scripts/verify_phase1.sh
 
 ## Resumen de la Fase 1
 
-| # | Tarea | Semana | Tiempo estimado | Output principal |
-|---|-------|--------|-----------------|-----------------|
-| T1.1 | Estructura del repositorio | 1 | 1h | Repo con todos los directorios y configs |
-| T1.2 | Terraform backend + provider | 1 | 1h | Backend GCS + provider GCP configurados |
-| T1.3 | Módulo VPC + networking | 1 | 2h | VPC privada con subnets GKE |
-| T1.4 | Módulo GKE cluster | 1 | 2h | Cluster con 2 node pools |
-| T1.5 | Módulo GCS buckets | 1 | 1h | 4 buckets con lifecycle policies |
-| T1.6 | Módulo IAM + Workload Identity | 1 | 2h | 4 service accounts con permisos mínimos |
-| T1.7 | Secret Manager + KMS | 1 | 1h | 4 secretos + clave KMS |
-| T1.8 | Cloud Armor + LB + IAP | 1 | 2h | WAF OWASP + HTTPS LB + autenticación |
-| T1.9 | Verificación infraestructura | 1 | 1h | Script verify_infra.sh verde |
-| T2.1 | Namespaces + NetworkPolicies | 2 | 1.5h | 4 namespaces con políticas de red |
-| T2.2 | Workload Identity K8s (KSAs) | 2 | 1h | KSAs anotadas y verificadas |
-| T2.3 | Strimzi Kafka Operator | 2 | 2h | Operator + cluster Kafka 3 brokers |
-| T2.4 | Verificación Kafka | 2 | 1h | Benchmark p99 < 10ms confirmado |
-| T2.5 | Skeleton CI/CD GitHub Actions | 2 | 2h | Pipeline lint + test + build + security |
-| T2.6 | Managed Prometheus | 2 | 1.5h | GMP scraping + alertas base configuradas |
-| T2.7 | Verificación cierre de fase | 2 | 0.5h | Reporte 8/8 criterios cumplidos |
+| # | Tarea | Semana | Output principal | Script |
+|---|-------|--------|-----------------|--------|
+| T1.1 | Estructura del repositorio | 1 | Repo con todos los directorios y configs | — |
+| T1.2 | Terraform backend + provider | 1 | Backend GCS + provider GCP configurados | `bootstrap.ps1` |
+| T1.3 | Módulo VPC + networking | 1 | VPC privada con subnets GKE | — |
+| T1.4 | Módulo GKE cluster | 1 | Cluster con 2 node pools | — |
+| T1.5 | Módulo GCS buckets | 1 | 4 buckets con lifecycle policies | — |
+| T1.6 | Módulo IAM + Workload Identity | 1 | 4 service accounts con permisos mínimos | — |
+| T1.7 | Secret Manager + KMS | 1 | 4 secretos + clave KMS | `Load-Secrets.ps1` |
+| T1.8 | Cloud Armor WAF + LB + IAP | 1 | Perímetro de seguridad completo | — |
+| T1.9 | Apply Terraform + verificación | 1 | Infraestructura completa en GCP | `Verify-Infra.ps1` / `Remove-DevInfra.ps1` |
+| T2.1 | Namespaces K8s + NetworkPolicies | 2 | Aislamiento de red entre servicios | — |
+| T2.2 | Workload Identity KSAs | 2 | KSAs anotadas, pods con acceso GCP | `Test-WorkloadIdentity.ps1` |
+| T2.3 | Strimzi Kafka Operator | 2 | Kafka cluster 3 brokers + 3 topics | `Install-Kafka.ps1` |
+| T2.4 | Verificación Kafka latencia | 2 | Benchmark p99 < 10ms confirmado | `Invoke-KafkaTests.ps1` |
+| T2.5 | CI/CD GitHub Actions | 2 | Pipeline lint + test + scan + build | — |
+| T2.6 | Managed Prometheus | 2 | Métricas del cluster en GMP | `Test-Prometheus.ps1` |
+| T2.7 | Verificación cierre Fase 1 | 2 | Reporte 8/8 criterios cumplidos | `Test-Phase1Completion.ps1` |
 
-**Tiempo total estimado: ~22 horas** distribuidas en 2 semanas.
+### Scripts PowerShell de la Fase 1
 
----
-
-*ReactorGuard Fase 1 — Plan Detallado con Prompts · v1.0*
+| Script | Capa de arquitectura aplicada | Propósito |
+|--------|------------------------------|-----------|
+| `infra/scripts/bootstrap.ps1` | Config → Utils → Service → Orchestration | Crear bucket de estado y habilitar APIs GCP |
+| `infra/scripts/Load-Secrets.ps1` | Config → Utils → Service → Orchestration | Cargar secretos reales en Secret Manager |
+| `infra/scripts/Verify-Infra.ps1` | Config → Utils → Service → Orchestration | Verificar infraestructura Semana 1 completa |
+| `infra/scripts/Remove-DevInfra.ps1` | Config → Utils → Service → Orchestration | Destruir infraestructura dev con confirmación |
+| `infra/scripts/Test-WorkloadIdentity.ps1` | Config → Utils → Service → Orchestration | Verificar acceso GCP desde pods K8s |
+| `infra/scripts/Install-Kafka.ps1` | Config → Utils → Service → Orchestration | Instalar Strimzi y desplegar Kafka cluster |
+| `tests/integration/Invoke-KafkaTests.ps1` | Config → Utils → Service → Orchestration | Benchmark latencia/throughput Kafka |
+| `infra/scripts/Test-Prometheus.ps1` | Config → Utils → Service → Orchestration | Verificar GMP y PodMonitoring resources |
+| `infra/scripts/Test-Phase1Completion.ps1` | Config → Utils → Service → Orchestration | Reporte final de cierre de Fase 1 |

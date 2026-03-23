@@ -1,0 +1,114 @@
+# Terraform CI — ReactorGuard
+# Triggered on any change inside infra/terraform/.
+#
+# Pipeline:
+#   fmt-check → validate → tfsec → plan
+#
+# In pull requests the plan output is posted as a PR comment so reviewers
+# can approve infrastructure changes before they are applied.
+
+name: Terraform
+
+on:
+  push:
+    paths:
+      - "infra/terraform/**"
+  pull_request:
+    paths:
+      - "infra/terraform/**"
+
+env:
+  TF_VERSION: "1.6.0"
+  TF_WORKING_DIR: infra/terraform/environments/dev
+  # Terraform reads this variable to authenticate with GCP
+  GOOGLE_CREDENTIALS: ${{ secrets.GCP_SA_KEY }}
+
+jobs:
+  terraform:
+    name: Terraform Lint, Validate & Plan
+    runs-on: ubuntu-latest
+    permissions:
+      # Required to post the plan as a PR comment
+      pull-requests: write
+      contents: read
+
+    defaults:
+      run:
+        working-directory: ${{ env.TF_WORKING_DIR }}
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Terraform ${{ env.TF_VERSION }}
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+
+      # ---------------------------------------------------------------------------
+      # Step: fmt -check
+      # Enforces canonical Terraform formatting. Unformatted files signal that the
+      # author skipped `terraform fmt` locally — a bad habit in team environments.
+      # ---------------------------------------------------------------------------
+      - name: Check Terraform formatting
+        run: terraform fmt -check -recursive
+        working-directory: infra/terraform
+
+      - name: Terraform Init
+        run: terraform init -input=false
+
+      # ---------------------------------------------------------------------------
+      # Step: validate
+      # Syntax and semantic check without contacting GCP — fast and free.
+      # Catches missing variables, wrong resource types, and invalid references.
+      # ---------------------------------------------------------------------------
+      - name: Terraform Validate
+        run: terraform validate
+
+      # ---------------------------------------------------------------------------
+      # Step: tfsec
+      # Static security analysis for Terraform — checks for misconfigurations
+      # such as overly permissive IAM, unencrypted storage, or public GKE clusters.
+      # Critical for a platform that handles safety-critical nuclear sensor data.
+      # ---------------------------------------------------------------------------
+      - name: Run tfsec
+        uses: aquasecurity/tfsec-action@v1.0.0
+        with:
+          working_directory: ${{ env.TF_WORKING_DIR }}
+          soft_fail: false
+
+      # ---------------------------------------------------------------------------
+      # Step: plan
+      # Produces the execution plan — shows exactly what Terraform will change.
+      # The plan is never applied here; that requires a separate manual workflow.
+      # ---------------------------------------------------------------------------
+      - name: Terraform Plan
+        id: plan
+        run: terraform plan -input=false -no-color -out=tfplan
+        continue-on-error: true
+
+      # Post the plan as a PR comment so reviewers can approve infra changes
+      # without needing local access to GCP credentials.
+      - name: Post plan comment on PR
+        uses: actions/github-script@v7
+        if: github.event_name == 'pull_request'
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const output = `#### Terraform Plan 📋
+            \`\`\`
+            ${{ steps.plan.outputs.stdout }}
+            \`\`\`
+            *Pushed by: @${{ github.actor }}, Action: \`${{ github.event_name }}\`*`;
+
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: output
+            });
+
+      # Fail the job if the plan step failed (continue-on-error allowed comment posting)
+      - name: Fail if plan errored
+        if: steps.plan.outcome == 'failure'
+        run: exit 1

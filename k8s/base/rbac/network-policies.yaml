@@ -1,0 +1,290 @@
+# network-policies.yaml — ReactorGuard NetworkPolicies
+# ---------------------------------------------------------------------------
+# Principio: deny-all por defecto, luego allow explícito según la matriz TDD §8.1.
+# Cada namespace tiene exactamente dos policies:
+#   1. deny-all-<ns>   →  bloquea TODO ingress y egress (línea base de seguridad)
+#   2. allow-<ns>      →  abre únicamente los flujos necesarios
+#
+# Los namespaceSelector usan el label "name: <ns>" definido en namespaces.yaml.
+# ---------------------------------------------------------------------------
+
+
+# ===========================================================================
+# NAMESPACE: reactorguard-ingestion
+# Acepta:  kafka-operator (datos de sensores) + observability (scraping métricas)
+# Envía:   reactorguard-ml (datos validados) + kafka-operator (conexiones Kafka)
+# ===========================================================================
+
+# [DENY] Bloquea todo ingress y egress en reactorguard-ingestion.
+# Sin esta policy, cualquier pod podría comunicarse con cualquier otro.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: deny-all-ingestion
+  namespace: reactorguard-ingestion
+spec:
+  podSelector: {}        # aplica a TODOS los pods del namespace
+  policyTypes:
+    - Ingress
+    - Egress
+---
+# [ALLOW] Abre únicamente los flujos autorizados para reactorguard-ingestion:
+#   Ingress: kafka-operator puede conectar (Kafka back-channel)
+#            observability puede raspar métricas en :9090
+#   Egress:  puede conectar a kafka-operator:9092/9093 (consumidor Kafka)
+#            puede enviar datos a reactorguard-ml:8000
+#            DNS siempre permitido (resolución de nombres de servicio)
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-ingestion
+  namespace: reactorguard-ingestion
+spec:
+  podSelector: {}
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    # Kafka-operator puede iniciar conexiones hacia ingestion (respuestas, offsets, etc.)
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              name: kafka-operator
+      ports:
+        - port: 8000
+          protocol: TCP
+        - port: 9090
+          protocol: TCP
+    # Prometheus (en observability) raspa métricas en :9090
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              name: reactorguard-observability
+      ports:
+        - port: 9090
+          protocol: TCP
+  egress:
+    # sensor-validator conecta a Kafka brokers como consumidor (bootstrap + fetch)
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              name: kafka-operator
+      ports:
+        - port: 9092
+          protocol: TCP
+        - port: 9093
+          protocol: TCP
+    # Datos validados se reenvían al namespace de ML para inferencia
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              name: reactorguard-ml
+      ports:
+        - port: 8000
+          protocol: TCP
+    # DNS (kube-dns) — necesario para resolver nombres de servicio internos
+    - ports:
+        - port: 53
+          protocol: UDP
+        - port: 53
+          protocol: TCP
+
+
+# ===========================================================================
+# NAMESPACE: reactorguard-ml
+# Acepta:  reactorguard-ingestion (datos) + reactorguard-observability (métricas)
+# Envía:   internet vía Cloud NAT (GCP APIs: Secret Manager, GCS, Vertex AI)
+# ===========================================================================
+
+# [DENY] Bloquea todo ingress y egress en reactorguard-ml.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: deny-all-ml
+  namespace: reactorguard-ml
+spec:
+  podSelector: {}
+  policyTypes:
+    - Ingress
+    - Egress
+---
+# [ALLOW] Flujos autorizados para reactorguard-ml:
+#   Ingress: ingestion envía datos validados en :8000
+#            observability raspa métricas en :9090
+#   Egress:  HTTPS saliente para GCP APIs (Secret Manager, GCS) vía Cloud NAT
+#            DNS para resolución de nombres
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-ml
+  namespace: reactorguard-ml
+spec:
+  podSelector: {}
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    # sensor-validator envía lecturas validadas al pinn-server para inferencia
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              name: reactorguard-ingestion
+      ports:
+        - port: 8000
+          protocol: TCP
+    # Prometheus raspa métricas del pinn-server y mlflow-server
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              name: reactorguard-observability
+      ports:
+        - port: 9090
+          protocol: TCP
+  egress:
+    # HTTPS saliente hacia GCP APIs (Secret Manager, GCS, Artifact Registry).
+    # El tráfico sale por Cloud NAT configurado en T1.3 — no hay IP pública en los pods.
+    - ports:
+        - port: 443
+          protocol: TCP
+    # DNS (kube-dns) para resolución de nombres de servicios y APIs GCP
+    - ports:
+        - port: 53
+          protocol: UDP
+        - port: 53
+          protocol: TCP
+
+
+# ===========================================================================
+# NAMESPACE: reactorguard-observability
+# Acepta:  todos los namespaces en :8000 y :9090 (scraping Prometheus)
+#          acceso a Grafana :3000 desde cualquier origen autorizado
+# Envía:   internet (alertas PagerDuty / Slack) + scraping a todos los namespaces
+# ===========================================================================
+
+# [DENY] Bloquea todo ingress y egress en reactorguard-observability.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: deny-all-observability
+  namespace: reactorguard-observability
+spec:
+  podSelector: {}
+  policyTypes:
+    - Ingress
+    - Egress
+---
+# [ALLOW] Flujos autorizados para reactorguard-observability:
+#   Ingress: cualquier namespace puede enviar métricas/trazas a :8000 y :9090
+#            acceso a Grafana UI en :3000
+#   Egress:  Prometheus raspa :8000 y :9090 en TODOS los namespaces (pull-based)
+#            HTTPS para alertas externas (PagerDuty, Slack webhooks)
+#            DNS
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-observability
+  namespace: reactorguard-observability
+spec:
+  podSelector: {}
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    # Todos los namespaces pueden enviar datos de telemetría y exponer métricas
+    # para que Prometheus las recoja (modelo pull y push coexisten)
+    - from:
+        - namespaceSelector: {}    # cualquier namespace
+      ports:
+        - port: 8000
+          protocol: TCP
+        - port: 9090
+          protocol: TCP
+        - port: 3000
+          protocol: TCP
+  egress:
+    # Prometheus sale a raspar métricas (:8000 app metrics, :9090 prom metrics)
+    # en todos los namespaces del cluster
+    - to:
+        - namespaceSelector: {}    # todos los namespaces
+      ports:
+        - port: 8000
+          protocol: TCP
+        - port: 9090
+          protocol: TCP
+    # HTTPS para alertas externas: PagerDuty, Slack, OpsGenie, etc.
+    - ports:
+        - port: 443
+          protocol: TCP
+    # DNS
+    - ports:
+        - port: 53
+          protocol: UDP
+        - port: 53
+          protocol: TCP
+
+
+# ===========================================================================
+# NAMESPACE: kafka-operator
+# Acepta:  tráfico interno (brokers ↔ ZooKeeper ↔ operador Strimzi)
+#          reactorguard-ingestion en :9092/:9093 (clientes Kafka)
+# Envía:   solo tráfico interno del namespace + respuestas a ingestion
+# ===========================================================================
+
+# [DENY] Bloquea todo ingress y egress en kafka-operator.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: deny-all-kafka
+  namespace: kafka-operator
+spec:
+  podSelector: {}
+  policyTypes:
+    - Ingress
+    - Egress
+---
+# [ALLOW] Flujos autorizados para kafka-operator:
+#   Ingress: pods internos entre sí (brokers ↔ ZooKeeper ↔ Strimzi operator)
+#            reactorguard-ingestion conecta como cliente Kafka en :9092/:9093
+#   Egress:  tráfico interno del namespace
+#            respuestas hacia reactorguard-ingestion
+#            DNS
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-kafka
+  namespace: kafka-operator
+spec:
+  podSelector: {}
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    # Tráfico intra-namespace: Kafka brokers ↔ ZooKeeper ↔ Strimzi operator
+    - from:
+        - podSelector: {}          # cualquier pod dentro de kafka-operator
+    # reactorguard-ingestion conecta como productor/consumidor Kafka
+    # :9092 plain, :9093 TLS (según listeners definidos en T2.3)
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              name: reactorguard-ingestion
+      ports:
+        - port: 9092
+          protocol: TCP
+        - port: 9093
+          protocol: TCP
+  egress:
+    # Tráfico intra-namespace (replicación entre brokers, heartbeats ZooKeeper)
+    - to:
+        - podSelector: {}
+    # Respuestas y notificaciones hacia reactorguard-ingestion
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              name: reactorguard-ingestion
+    # DNS
+    - ports:
+        - port: 53
+          protocol: UDP
+        - port: 53
+          protocol: TCP

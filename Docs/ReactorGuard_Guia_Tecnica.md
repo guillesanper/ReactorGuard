@@ -102,6 +102,207 @@ Solo si las tres capas coinciden en que "todo está bien", se descarta la anomal
 
 ---
 
+#### Los módulos Terraform de ReactorGuard (Fase 1, Semana 1)
+
+Toda la infraestructura está organizada en módulos reutilizables bajo `infra/terraform/modules/`. Cada módulo hace exactamente una cosa. El entorno `environments/dev/main.tf` los orquesta pasando outputs de unos como inputs de otros.
+
+##### T1.1 — Estructura del repositorio
+
+El primer paso no crea ningún recurso en GCP. Establece el esqueleto del repositorio: árbol de directorios, `pyproject.toml` (gestión de dependencias Python con grupos opcionales por componente), `.gitignore` (excluye `*.tfstate`, `*.json` de credenciales, `__pycache__`), y `README.md`.
+
+Un repositorio mal organizado desde el principio es deuda técnica que nunca se paga. La estructura separa `infra/` (Terraform, scripts) de `src/` (Python), `k8s/` (manifiestos Kubernetes) y `docs/` para que equipos distintos puedan trabajar en paralelo sin conflictos.
+
+##### T1.2 — Backend de estado y configuración base
+
+Tres piezas fundamentales antes del primer recurso real:
+
+**Backend remoto** (`backend.tf`): Terraform necesita guardar en algún sitio qué recursos ya creó. Si ese estado fuera local, solo una persona podría aplicar cambios y perder el archivo significaría perder el control de toda la infraestructura. Con el backend en el bucket `reactorguard-terraform-state`:
+- Cualquier miembro del equipo o el pipeline CI/CD puede aplicar cambios.
+- Hay historial de versiones del estado (el bucket tiene versionado activado).
+- El *state locking* previene que dos `terraform apply` simultáneos corrompan el estado.
+
+**Providers con versión fija** (`providers.tf`, `versions.tf`): Se fija `~> 5.0` para el provider de Google y el archivo `.terraform.lock.hcl` guarda hashes criptográficos del binario descargado. Esto garantiza que en tu máquina, en la del compañero y en CI/CD se ejecuta exactamente el mismo código de Terraform, eliminando el "en mi máquina funciona".
+
+**`bootstrap.ps1`**: Los recursos del backend no pueden ser creados por Terraform porque Terraform necesita ese bucket para existir *antes* de ejecutarse — un problema de huevo y gallina. El script lo resuelve creando ese bucket inicial con `gcloud` directamente. Es el único paso manual de toda la infraestructura.
+
+##### T1.3 — VPC y Networking
+
+La red privada virtual donde vive toda la infraestructura. Componentes:
+
+- **VPC** (`reactorguard-vpc`): Red completamente aislada. No se usa la VPC por defecto de GCP (que tiene configuraciones permisivas heredadas de años atrás) porque en producción eso es un riesgo de seguridad.
+- **Subnet** con tres rangos IP separados:
+  ```
+  Nodos del cluster:  10.0.1.0/24     (máx. ~254 nodos)
+  Pods Kubernetes:    10.0.16.0/20    (máx. ~4.000 pods)
+  Servicios K8s:      10.0.32.0/20    (máx. ~4.000 servicios internos)
+  ```
+  Kubernetes necesita estos tres rangos separados para su red overlay interna. Si usaras el mismo rango para todo, habría colisiones de IP.
+- **Cloud NAT**: Los nodos del cluster **no tienen IPs públicas**. Nadie desde internet puede conectarse directamente a un nodo. Cloud NAT actúa como intermediario: los nodos pueden *salir* a internet (descargar imágenes Docker, llamar a APIs de GCP), pero nadie de fuera puede *entrar* directamente. Es el equivalente al router de casa en términos conceptuales.
+- **Firewall rules**: Tráfico denegado por defecto. Solo se permiten las comunicaciones explícitamente declaradas.
+
+##### T1.4 — Cluster GKE
+
+El cerebro de la plataforma. Configuración relevante:
+
+- **Cluster privado**: El control plane no tiene IP pública. Solo accesible desde la red interna definida en T1.3.
+- **Workload Identity habilitado**: Prerequisito para T1.6. Sin esta opción activada en el cluster, los bindings de Workload Identity no funcionan.
+- **Shielded nodes**: VMs con Secure Boot para resistir rootkits a nivel de sistema operativo.
+
+La decisión de diseño más importante son los **dos node pools**:
+
+```
+pool: platform
+  Máquina:   e2-standard-4 (4 vCPU, 16 GB RAM)
+  Tipo:      PREEMPTIBLE (spot instances, ~70% más barato)
+  Escala:    1–3 nodos
+  Uso:       Kafka, Prometheus, MLflow, cargas no críticas
+
+pool: ml-serving
+  Máquina:   n1-standard-8 (8 vCPU, 30 GB RAM)
+  Tipo:      ESTÁNDAR (no preemptible, siempre disponible)
+  Escala:    1–5 nodos
+  Taint:     ml-serving=true:NoSchedule
+  Uso:       PINN server (inferencia en tiempo real)
+```
+
+Los pods de inferencia ML no pueden interrumpirse: si un reactor está en anomalía y el pod de detección muere porque GCP reclamó la VM spot, es un problema de seguridad real. Los pods de Kafka y Prometheus toleran reinicios (se recuperan solos). Separar las cargas permite optimizar coste sin sacrificar safety.
+
+El **taint** `ml-serving=true:NoSchedule` hace que Kubernetes no coloque ningún pod en el pool ML a menos que ese pod tenga explícitamente la toleration correspondiente. Garantiza que los nodos de alta memoria no se llenen con pods de Prometheus que no los necesitan.
+
+##### T1.5 — GCS Buckets y Storage
+
+Cuatro buckets con roles distintos en el pipeline de datos:
+
+```
+[Sensores SCADA] ──→ reactorguard-data-raw
+                           │
+                           ▼
+                   reactorguard-data-processed   (features engineered)
+                           │
+                           ▼
+                   reactorguard-models           (modelos serializados)
+                           ▲
+                   reactorguard-mlflow           (artefactos de experimentos)
+```
+
+Todos comparten la misma configuración base:
+- **Versionado**: Si se sobrescribe un modelo entrenado por error, se puede recuperar la versión anterior.
+- **Uniform bucket-level access**: Sin ACLs por objeto. Más simple y más seguro.
+- **Lifecycle rules**: Las versiones antiguas se borran automáticamente después de N días. Evita que el coste de almacenamiento crezca indefinidamente.
+- **`cmek_key`**: Encriptación con clave propia (conecta directamente con T1.7).
+
+Usar cuatro buckets en vez de uno permite permisos granulares por etapa: el servicio de ingestión puede escribir en `data-raw` pero no puede tocar `models`. Lifecycle policies distintas: los datos crudos pueden guardarse 30 días, los modelos indefinidamente.
+
+##### T1.6 — IAM y Workload Identity
+
+La identidad y los permisos de cada componente. Cuatro Google Service Accounts con **principio de least privilege**:
+
+| Service Account | Puede hacer | No puede hacer |
+|-----------------|-------------|----------------|
+| `reactorguard-ingestion-sa` | Leer `data-raw`, escribir `raw`+`processed`, publicar Pub/Sub | Leer secretos, tocar modelos |
+| `reactorguard-ml-sa` | Leer `processed`+`models`, leer secretos, escribir métricas | Escribir datos, borrar nada |
+| `reactorguard-mlflow-sa` | Admin completo en `mlflow`+`models` | Tocar datos crudos, leer secretos SCADA |
+| `reactorguard-cicd-sa` | Push Artifact Registry, deploy GKE, admin GCS | No tiene Workload Identity |
+
+Si el pod de ingestión queda comprometido, el atacante solo puede acceder a los buckets de datos. No puede leer credenciales SCADA, no puede borrar modelos, no puede hacer deploy de código malicioso. Eso es least privilege en la práctica.
+
+**Workload Identity** es la pieza más sofisticada del módulo. El problema que resuelve:
+
+Sin Workload Identity (lo que hace el 80% de los proyectos):
+```
+# Se monta un archivo JSON con credenciales permanentes dentro del pod.
+# Si alguien accede al pod, tiene las credenciales para siempre.
+# Rotar credenciales requiere recrear el Secret de K8s y reiniciar pods.
+kubectl create secret generic gcp-key --from-file=key.json
+```
+
+Con Workload Identity (lo que hace ReactorGuard):
+```
+Pod usa KSA "sensor-validator"
+    ↓
+GKE detecta que esa KSA está anotada con "reactorguard-ingestion-sa@..."
+    ↓
+El binding IAM en workload_identity.tf autoriza esa KSA a impersonar la GSA
+    ↓
+Pod recibe credenciales temporales (duran ~1 hora, rotadas automáticamente)
+    ↓
+Llama a GCS, Pub/Sub, etc. sin ningún archivo de credenciales
+```
+
+Ventajas concretas:
+- Las credenciales son temporales. Si se filtran, expiran en ~1 hora.
+- No hay archivos JSON en el cluster. Se elimina el vector de ataque más común en Kubernetes.
+- Rotación automática. Cero trabajo operativo.
+
+Workload Identity está en el CISA Kubernetes Hardening Guide y en el CIS GKE Security Benchmark. Usarlo desde el inicio (en vez de "cuando tengamos tiempo") es una señal de que el equipo entiende seguridad en profundidad.
+
+##### T1.7 — Secret Manager y KMS
+
+Dos servicios separados que juntos resuelven la gestión de secretos y el cifrado en reposo.
+
+**Secret Manager** almacena cuatro secretos:
+
+| Secreto | Contiene | Lo usa |
+|---------|----------|--------|
+| `reactorguard-scada-credentials` | `{username, password, endpoint}` del SCADA | `ingestion-sa` |
+| `reactorguard-jwt-secret` | Clave de firma JWT (mínimo 32 bytes) | API REST |
+| `reactorguard-mlflow-db-url` | `postgresql://user:pass@host/db` | `mlflow-sa` |
+| `reactorguard-gcp-api-key` | API key de GCP para servicios sin Workload Identity | Varios |
+
+El patrón **placeholder + `Load-Secrets.ps1`** resuelve un problema habitual en IaC: si pones las credenciales reales en el `.tf`, acaban en el repositorio. La solución es que Terraform crea la *estructura* del secreto con un valor inofensivo, y las credenciales reales se cargan manualmente con el script una sola vez:
+
+```
+terraform apply    →  crea el secreto con "REPLACE_ME"
+Load-Secrets.ps1   →  carga el valor real
+terraform apply    →  ignora secret_data (lifecycle ignore_changes), no lo sobreescribe
+```
+
+**KMS (Cloud Key Management Service)** crea la clave de cifrado:
+- **Key Ring** `reactorguard-keyring`: Contenedor lógico de claves en `europe-west1`.
+- **Crypto Key** `reactorguard-storage-key`: Clave AES-256 usada para CMEK en los 4 buckets de T1.5.
+
+Sin KMS, los buckets usan GMEK (Google-Managed Encryption Key): GCP cifra los datos, pero GCP también tiene la clave. Con CMEK:
+- Tú controlas la clave. Si revocas el acceso a la clave, los datos quedan ilegibles aunque GCP tenga las copias físicas.
+- Rotación automática cada **90 días**, reduciendo la ventana de exposición si la clave se compromromete.
+- `prevent_destroy = true`: Terraform se niega a borrar la clave accidentalmente. Borrar la clave equivale a perder acceso permanente a todos los datos cifrados con ella.
+
+##### Cómo se interrelacionan los módulos
+
+```
+T1.2 (Backend)
+  └── habilita → todos los módulos (sin estado remoto no hay Terraform colaborativo)
+
+T1.3 (VPC)
+  └── provee subnet + secondary ranges → T1.4 (GKE los necesita para crear el cluster)
+
+T1.4 (GKE)
+  └── habilita Workload Identity → T1.6 (los bindings WI solo funcionan con WI activo en GKE)
+
+T1.7 (KMS)
+  └── provee storage_key_id → T1.5 (buckets usan esa clave como CMEK)
+
+T1.6 (IAM)
+  └── provee SA emails → rest of platform (cualquier binding futuro referencia estos emails)
+  └── provee bindings WI → Semana 2 (los pods K8s T2.2 usan esas identidades)
+
+T1.5 (Storage)
+  └── provee bucket names/URLs → T1.6 (IAM sabe en qué buckets dar permisos)
+  └── provee bucket URLs → Semana 2+ (MLflow, feature pipeline, modelo serving)
+```
+
+La cadena completa, en orden de aplicación:
+
+```
+bootstrap.ps1 → terraform init → terraform apply:
+  1. security (KMS key ring + key)
+  2. storage  (buckets con esa KMS key)
+  3. vpc      (red y subnets)
+  4. gke      (cluster sobre esa VPC)
+  5. iam      (service accounts + bindings + WI)
+```
+
+---
+
 ### Streaming: Apache Kafka + Strimzi
 
 **Apache Kafka** es un broker de mensajes distribuido diseñado para alto throughput. La diferencia con una cola de mensajes convencional es que Kafka **retiene los mensajes** en disco durante un tiempo configurable (en ReactorGuard, 168 horas = 7 días). Esto permite que múltiples consumidores lean el mismo stream, y que se pueda "rebobinar" para re-procesar datos históricos, algo crítico para debugging.

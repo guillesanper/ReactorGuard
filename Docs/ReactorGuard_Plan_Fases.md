@@ -21,6 +21,31 @@ ReactorGuard se desarrolla en **8 fases durante 12 semanas**. Cada fase construy
 
 ---
 
+## Principios Transversales de Desarrollo
+
+Estos principios aplican a todas las fases del proyecto sin excepcion. Cualquier entregable de codigo, configuracion o documentacion debe cumplirlos.
+
+### Arquitectura y Calidad de Codigo
+
+- **Arquitectura limpia y separacion de responsabilidades**: cada modulo tiene una unica responsabilidad bien definida. El dominio no depende de frameworks ni de infraestructura. Las capas se comunican a traves de interfaces explicitas.
+- **Patrones de diseno**: usar patrones establecidos (Repository, Factory, Strategy, Adapter) donde simplifiquen el codigo. No aplicarlos mecanicamente si no aportan claridad.
+- **Codigo eficiente, mantenible y escalable**: evitar optimizaciones prematuras, pero escribir codigo que no necesite reescribirse al crecer la carga o el equipo.
+- **Sin emojis**: la documentacion, comentarios de codigo, logs y mensajes de commit no deben contener emojis. El tono es tecnico y profesional.
+- **Documentacion suficiente**: documentar decisiones de diseno no obvias, contratos de interfaces publicas y comportamiento esperado en casos limite. No documentar lo que el codigo ya expresa con claridad.
+- **Tests como ciudadanos de primera clase**: cada modulo nuevo incluye tests unitarios. Los tests de integracion cubren los flujos criticos definidos en cada fase.
+
+### Entorno de Desarrollo
+
+- **Sistema operativo**: Windows 11. Todos los scripts de automatizacion, setup, despliegue local y utilidades deben estar en **PowerShell (.ps1)**. No se crean scripts `.sh` para tareas que se ejecuten en la maquina de desarrollo.
+- **Scripts bash**: unicamente en contextos donde el runtime es Linux de forma garantizada (dentro de contenedores Docker, GitHub Actions con `runs-on: ubuntu-latest`, o nodos GKE). En esos casos se documenta explicitamente el contexto de ejecucion.
+
+### Identificadores del Proyecto
+
+- **Nombre del proyecto**: `reactorguard-platform` — usado en nombres de recursos, namespaces K8s, buckets GCS y referencias internas.
+- **Google Cloud Project ID**: `sentinel-platform-485714` — ID real usado en todos los comandos `gcloud`, referencias Terraform (`project = "sentinel-platform-485714"`), y URLs de consola GCP. No confundir con el nombre del proyecto.
+
+---
+
 ## Fase 1 — Foundation: GKE + Kafka
 **Semanas 1–2**
 
@@ -28,7 +53,7 @@ ReactorGuard se desarrolla en **8 fases durante 12 semanas**. Cada fase construy
 Establecer la infraestructura cloud-native completa sobre GCP: redes privadas, GKE, almacenamiento, seguridad y el broker Kafka operativo vía Strimzi. Es el cimiento sobre el que correrá todo el sistema.
 
 ### Semana 1 — Infraestructura GCP con Terraform
-- Crear proyecto GCP `reactorguard-platform` y habilitar APIs: `container`, `compute`, `storage`, `secretmanager`, `pubsub`
+- Usar proyecto GCP `reactorguard-platform` (ID: `sentinel-platform-485714`) y habilitar APIs: `container`, `compute`, `storage`, `secretmanager`, `pubsub`
 - Terraform módulo VPC `10.0.0.0/16` con subnets privadas para GKE nodes, pods y servicios
 - Terraform GKE privado `reactorguard-cluster` con dos node pools:
   - `platform`: e2-standard-4 (cargas de orquestación general)

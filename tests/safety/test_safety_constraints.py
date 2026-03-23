@@ -5,9 +5,8 @@ high-severity faults as nominal. They are run as a separate suite
 to highlight their safety-critical status in CI.
 """
 
+
 import pytest
-import numpy as np
-from datetime import datetime, timezone
 
 from data.generators.reactor_simulator import ReactorSimulator
 

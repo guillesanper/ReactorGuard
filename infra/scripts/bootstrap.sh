@@ -17,7 +17,7 @@ set -euo pipefail  # Salir en cualquier error, variables sin definir o pipe roto
 # ---------------------------------------------------------------------------
 # Variables de configuración
 # ---------------------------------------------------------------------------
-PROJECT_ID="reactorguard-platform"
+PROJECT_ID="sentinel-platform-485714"
 REGION="europe-west1"
 STATE_BUCKET="reactorguard-terraform-state"
 

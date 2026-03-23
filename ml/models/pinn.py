@@ -100,5 +100,5 @@ class ReactorPINN(nn.Module):
         # Full OpenMC-coupled version implemented in ml/training/physics_loss.py
         dt = 1.0  # seconds, matches params.yaml simulation.dt_seconds
         power_pred = y_pred[..., 0]  # core_power channel
-        dP_dt = (power_pred[:, 1:] - power_pred[:, :-1]) / dt
-        return torch.mean(dP_dt**2)
+        dp_dt = (power_pred[:, 1:] - power_pred[:, :-1]) / dt
+        return torch.mean(dp_dt**2)

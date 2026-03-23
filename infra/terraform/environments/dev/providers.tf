@@ -8,11 +8,13 @@
 #   discrepancias entre recursos stable y beta.
 
 provider "google" {
-  project = "reactorguard-platform"
-  region  = "europe-west1"
+  project = "sentinel-platform-485714"
+  region  = "europe-southwest1"
 }
 
 provider "google-beta" {
-  project = "reactorguard-platform"
-  region  = "europe-west1"
+  project = "sentinel-platform-485714"
+  region  = "europe-southwest1"
 }
+
+provider "tls" {}

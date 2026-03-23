@@ -1,0 +1,189 @@
+# CI Pipeline — ReactorGuard
+# Safety-critical system: every commit must pass lint, tests, and security scans
+# before a container image is built and pushed to the registry.
+#
+# Job order:
+#   lint-and-typecheck → unit-tests ──┐
+#                     → security-scan ┴→ build-and-push
+
+name: CI
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+    branches: [main]
+
+env:
+  PYTHON_VERSION: "3.11"
+  REGISTRY: gcr.io
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # Job 1: Lint & Type-check
+  # Catches style violations and type errors early — cheap and fast.
+  # For a safety-critical system, type correctness prevents subtle runtime bugs
+  # in sensor validation and anomaly detection logic.
+  # ---------------------------------------------------------------------------
+  lint-and-typecheck:
+    name: Lint & Type-check
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python ${{ env.PYTHON_VERSION }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+
+      - name: Install linting tools
+        run: pip install ruff mypy
+
+      # ruff: fast Python linter — checks imports (I), style (E/W), and errors (F)
+      - name: Run ruff
+        run: ruff check . --select E,W,F,I
+
+      # mypy: static type analysis — critical for catching type errors in ML/physics code
+      - name: Run mypy
+        run: mypy ml/ api/ data/ --ignore-missing-imports
+
+  # ---------------------------------------------------------------------------
+  # Job 2: Unit Tests
+  # Validates core logic in isolation — physics constraints, sensor validators,
+  # and ML utility functions must pass before any integration work begins.
+  # ---------------------------------------------------------------------------
+  unit-tests:
+    name: Unit Tests
+    runs-on: ubuntu-latest
+    needs: lint-and-typecheck
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python ${{ env.PYTHON_VERSION }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+
+      - name: Install dependencies
+        run: pip install -e ".[dev]"
+
+      # --junitxml produces machine-readable results for the GitHub summary
+      - name: Run unit tests
+        run: pytest tests/unit/ -v --tb=short --junitxml=test-results.xml
+
+      # Uploading results lets reviewers inspect failures without re-running CI
+      - name: Upload test results
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: unit-test-results
+          path: test-results.xml
+          retention-days: 30
+
+  # ---------------------------------------------------------------------------
+  # Job 3: Security Scan
+  # Runs in parallel with unit-tests to save time.
+  # Three complementary scanners:
+  #   - Semgrep: SAST for Python code patterns and hardcoded secrets
+  #   - Gitleaks: git-history scan for leaked credentials
+  #   - pip-audit: checks Python dependencies against CVE databases
+  # A safety-critical system must have zero tolerance for known vulnerabilities
+  # or secret leakage before code reaches production.
+  # ---------------------------------------------------------------------------
+  security-scan:
+    name: Security Scan
+    runs-on: ubuntu-latest
+    needs: lint-and-typecheck
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          # Full history required for Gitleaks to scan all commits
+          fetch-depth: 0
+
+      # Semgrep: static analysis with curated Python and secrets rulesets
+      - name: Run Semgrep
+        uses: returntocorp/semgrep-action@v1
+        with:
+          config: >-
+            p/python
+            p/secrets
+
+      # Gitleaks: scans the entire git history for accidentally committed secrets
+      - name: Run Gitleaks
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Set up Python ${{ env.PYTHON_VERSION }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+
+      # pip-audit: checks all installed packages against OSV/PyPI advisory database
+      - name: Run pip-audit
+        run: |
+          pip install pip-audit
+          pip-audit
+
+  # ---------------------------------------------------------------------------
+  # Job 4: Build & Push
+  # Only runs on push to main or version tags — never on feature branches.
+  # Trivy scans the built image; push is skipped if any CRITICAL CVE is found.
+  # This enforces that only clean images reach GCR and eventually GKE.
+  # ---------------------------------------------------------------------------
+  build-and-push:
+    name: Build & Push
+    runs-on: ubuntu-latest
+    needs: [unit-tests, security-scan]
+    # Only publish from main branch or semantic version tags
+    if: |
+      github.event_name == 'push' &&
+      (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v'))
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      # Authenticate to Google Container Registry using the CI service account key
+      - name: Authenticate to GCR
+        uses: google-github-actions/auth@v2
+        with:
+          credentials_json: ${{ secrets.GCP_SA_KEY }}
+
+      - name: Configure Docker for GCR
+        run: gcloud auth configure-docker gcr.io --quiet
+
+      - name: Build Docker image
+        run: |
+          docker build \
+            -t gcr.io/${{ secrets.GCP_PROJECT_ID }}/reactorguard-api:${{ github.sha }} \
+            -t gcr.io/${{ secrets.GCP_PROJECT_ID }}/reactorguard-api:latest \
+            -f api/Dockerfile \
+            .
+
+      # Trivy: container vulnerability scanner — blocks push if CRITICAL CVEs found.
+      # A container with known critical vulnerabilities must never run in a
+      # safety-critical nuclear monitoring environment.
+      - name: Scan image with Trivy
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: gcr.io/${{ secrets.GCP_PROJECT_ID }}/reactorguard-api:${{ github.sha }}
+          format: table
+          exit-code: "1"
+          severity: CRITICAL
+          ignore-unfixed: true
+
+      # Push only after Trivy passes — guarantee: every image in GCR is clean
+      - name: Push Docker image to GCR
+        run: |
+          docker push gcr.io/${{ secrets.GCP_PROJECT_ID }}/reactorguard-api:${{ github.sha }}
+          docker push gcr.io/${{ secrets.GCP_PROJECT_ID }}/reactorguard-api:latest

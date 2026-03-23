@@ -1,0 +1,136 @@
+# =============================================================================
+# k8s/base/kafka/kafka-cluster.yaml
+# Recurso custom Kafka gestionado por el operador Strimzi.
+#
+# Strimzi lee este recurso y crea automáticamente:
+#   - 3 StatefulSets: kafka (3 brokers) + zookeeper (3 nodos)
+#   - Services: bootstrap (9092/9093), broker headless, zookeeper headless
+#   - ConfigMaps con la configuración de cada broker
+#   - PersistentVolumeClaims para los datos de Kafka y ZooKeeper
+#
+# TDD sección 7.2 — Kafka Configuration
+# =============================================================================
+apiVersion: kafka.strimzi.io/v1beta2
+kind: Kafka
+metadata:
+  name: reactorguard-cluster
+  namespace: kafka-operator
+  labels:
+    app.kubernetes.io/name: kafka
+    app.kubernetes.io/part-of: reactorguard
+spec:
+  kafka:
+    # 3 réplicas para tolerancia a fallos: el cluster puede perder 1 broker y
+    # seguir operando gracias a min.insync.replicas=2 y replication.factor=3.
+    replicas: 3
+    version: "3.6.0"
+
+    listeners:
+      # Listener plain (PLAINTEXT) para tráfico interno del cluster K8s.
+      # No se expone externamente — solo accesible dentro del namespace.
+      - name: plain
+        port: 9092
+        type: internal
+        tls: false
+      # Listener TLS para comunicación cifrada intra-cluster.
+      # Los servicios de ReactorGuard usarán plain en red interna (p99 < 10ms),
+      # TLS está disponible para componentes que lo requieran explícitamente.
+      - name: tls
+        port: 9093
+        type: internal
+        tls: true
+
+    config:
+      # Retención de logs: 7 días (168h). Los sensor readings tienen un SLA de
+      # 7 días para ser procesados antes de ser descartados del topic raw.
+      log.retention.hours: 168
+      # 12 particiones por defecto permite paralelismo entre los 3 brokers
+      # (4 partitions/broker) con capacidad para escalar a 12 consumidores.
+      num.partitions: 12
+      # Replication factor 3 = 1 copia en cada broker. Si cae un broker,
+      # los datos siguen disponibles en los otros 2.
+      default.replication.factor: 3
+      # min.insync.replicas=2 garantiza que un produce() con acks=all
+      # sólo confirma cuando al menos 2 réplicas tienen el mensaje escrito.
+      # Esto evita pérdida de datos si el broker líder cae inmediatamente
+      # después de confirmar al productor.
+      min.insync.replicas: 2
+      # Formato de offsets compatible con Kafka 3.6.0
+      offsets.topic.replication.factor: 3
+      transaction.state.log.replication.factor: 3
+      transaction.state.log.min.isr: 2
+
+    storage:
+      # persistent-claim: los datos sobreviven a reinicios del pod.
+      # Sin esto (type: ephemeral) se pierden todos los mensajes al reiniciar.
+      type: persistent-claim
+      size: 50Gi
+      # standard-rwo (ReadWriteOnce) es la StorageClass de GKE por defecto,
+      # backed by Google Persistent Disk.
+      storageClass: standard-rwo
+      deleteClaim: false
+
+    resources:
+      requests:
+        cpu: "1"
+        memory: 2Gi
+      limits:
+        cpu: "2"
+        memory: 4Gi
+
+    # JVM options para Kafka broker — heap sizing conservador para dejar
+    # memoria al OS page cache que Kafka usa intensivamente.
+    jvmOptions:
+      -Xms: 1024m
+      -Xmx: 2048m
+
+    # Métricas JMX expuestas vía JMX Exporter para Prometheus/GMP.
+    metricsConfig:
+      type: jmxPrometheusExporter
+      valueFrom:
+        configMapKeyRef:
+          name: kafka-metrics
+          key: kafka-metrics-config.yml
+
+  zookeeper:
+    # 3 réplicas para quórum ZooKeeper. Con 3 nodos, el cluster tolera
+    # la caída de 1 nodo (quórum = mayoría simple = 2/3).
+    replicas: 3
+
+    storage:
+      type: persistent-claim
+      size: 10Gi
+      storageClass: standard-rwo
+      deleteClaim: false
+
+    resources:
+      requests:
+        cpu: 500m
+        memory: 1Gi
+      limits:
+        cpu: "1"
+        memory: 2Gi
+
+    jvmOptions:
+      -Xms: 512m
+      -Xmx: 1024m
+
+  # Entity Operator gestiona automáticamente KafkaTopic y KafkaUser resources.
+  # Sin él, kubectl apply de kafka-topics.yaml no tendría efecto.
+  entityOperator:
+    topicOperator:
+      resources:
+        requests:
+          cpu: 100m
+          memory: 256Mi
+        limits:
+          cpu: 500m
+          memory: 512Mi
+    userOperator:
+      resources:
+        requests:
+          cpu: 100m
+          memory: 256Mi
+        limits:
+          cpu: 500m
+          memory: 512Mi

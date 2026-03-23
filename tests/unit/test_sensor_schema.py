@@ -1,14 +1,14 @@
 """Unit tests for SensorReading schema validation."""
 
+from datetime import UTC, datetime
+
 import pytest
-from datetime import datetime, timezone
 from pydantic import ValidationError
 
 from data.schemas.sensor_reading import SensorReading
 
-
 VALID_READING = {
-    "timestamp": datetime(2024, 1, 1, tzinfo=timezone.utc),
+    "timestamp": datetime(2024, 1, 1, tzinfo=UTC),
     "reactor_id": "R-001",
     "core_power": 3000.0,
     "coolant_temp_in": 564.0,

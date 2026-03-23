@@ -1,0 +1,49 @@
+# Dependabot configuration — ReactorGuard
+#
+# Keeps two dependency ecosystems up to date automatically:
+#   1. pip       — Python packages (CVE patches, minor/patch upgrades)
+#   2. github-actions — workflow action versions (pinned SHA → latest tag)
+#
+# PRs are opened weekly so the team can review and merge on a predictable
+# schedule. For a safety-critical platform, staying current with security
+# patches is mandatory; automated PRs make this sustainable.
+
+version: 2
+
+updates:
+  # ── Python dependencies ────────────────────────────────────────────────────
+  - package-ecosystem: pip
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+      time: "06:00"
+      timezone: Europe/Madrid
+    # Group all non-security updates into a single PR to reduce noise;
+    # security patches are always opened as separate PRs immediately.
+    groups:
+      python-non-security:
+        applies-to: version-updates
+        patterns:
+          - "*"
+    open-pull-requests-limit: 10
+    labels:
+      - dependencies
+      - python
+    commit-message:
+      prefix: "chore(deps)"
+
+  # ── GitHub Actions ─────────────────────────────────────────────────────────
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+      time: "06:00"
+      timezone: Europe/Madrid
+    open-pull-requests-limit: 5
+    labels:
+      - dependencies
+      - github-actions
+    commit-message:
+      prefix: "chore(ci)"

@@ -9,22 +9,24 @@ from __future__ import annotations
 import argparse
 import logging
 from pathlib import Path
+from typing import Any
 
 import mlflow
 import torch
-import yaml
+import yaml  # type: ignore[import-untyped]
 
 from ml.models.pinn import ReactorPINN
 
 logger = logging.getLogger(__name__)
 
 
-def load_params(path: str | Path) -> dict:
+def load_params(path: str | Path) -> dict[str, Any]:
     with open(path) as f:
-        return yaml.safe_load(f)
+        result: dict[str, Any] = yaml.safe_load(f)
+        return result
 
 
-def build_model(params: dict) -> ReactorPINN:
+def build_model(params: dict[str, Any]) -> ReactorPINN:
     t = params["training"]
     return ReactorPINN(
         input_size=len(params["features"]["sensor_channels"]),
@@ -41,13 +43,13 @@ def train(params_path: str = "params.yaml") -> None:
     torch.manual_seed(t["seed"])
 
     model = build_model(params)
-    optimizer = torch.optim.AdamW(
+    _optimizer = torch.optim.AdamW(
         model.parameters(),
         lr=t["learning_rate"],
         weight_decay=t["weight_decay"],
     )
 
-    physics_lambda: float = t["physics_lambda"]
+    _physics_lambda: float = t["physics_lambda"]
 
     mlflow.set_experiment("reactorguard-pinn")
     with mlflow.start_run():

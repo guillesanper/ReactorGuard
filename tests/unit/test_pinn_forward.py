@@ -1,7 +1,7 @@
 """Unit tests for PINN model forward pass (shape and output range checks)."""
 
-import torch
 import pytest
+import torch
 
 from ml.models.pinn import ReactorPINN
 

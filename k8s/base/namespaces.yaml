@@ -1,0 +1,47 @@
+# namespaces.yaml — ReactorGuard Kubernetes Namespaces
+# ---------------------------------------------------------------------------
+# Cuatro namespaces aislados por función. Los labels son críticos:
+#   name: <ns>  →  usado por namespaceSelector en NetworkPolicies
+#   environment: dev  →  permite overlays por entorno (dev/staging/prod)
+#   app.kubernetes.io/managed-by: kustomize  →  convención estándar
+# ---------------------------------------------------------------------------
+
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: reactorguard-ingestion
+  labels:
+    app.kubernetes.io/managed-by: kustomize
+    app.kubernetes.io/part-of: reactorguard
+    environment: dev
+    name: reactorguard-ingestion
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: reactorguard-ml
+  labels:
+    app.kubernetes.io/managed-by: kustomize
+    app.kubernetes.io/part-of: reactorguard
+    environment: dev
+    name: reactorguard-ml
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: reactorguard-observability
+  labels:
+    app.kubernetes.io/managed-by: kustomize
+    app.kubernetes.io/part-of: reactorguard
+    environment: dev
+    name: reactorguard-observability
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: kafka-operator
+  labels:
+    app.kubernetes.io/managed-by: kustomize
+    app.kubernetes.io/part-of: reactorguard
+    environment: dev
+    name: kafka-operator

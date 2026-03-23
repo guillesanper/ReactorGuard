@@ -1,11 +1,17 @@
-# main.tf
-# Punto de entrada del entorno dev.
-# Orquesta los módulos reutilizables definidos en infra/terraform/modules/.
-# Cada módulo encapsula un dominio de infraestructura independiente;
-# este fichero solo los conecta pasando outputs de unos como inputs de otros.
+# main.tf — Entorno dev
+# Orquesta los módulos reutilizables de ReactorGuard.
+# Los outputs de un módulo se pasan como inputs de los módulos dependientes.
 #
-# ESTADO ACTUAL: esqueleto con bloques vacíos — las variables se rellenarán
-# en subtareas sucesivas conforme se implementen los módulos.
+# Orden de dependencias:
+#   vpc → gke (necesita la subnet y los secondary ranges)
+#   vpc, gke → iam (necesita el cluster SA y los buckets)
+#   (storage es independiente de vpc/gke)
+
+locals {
+  project_id = "sentinel-platform-485714"
+  region     = "europe-southwest1"
+  env        = "dev"
+}
 
 # ---------------------------------------------------------------------------
 # Red (VPC, subnets, Cloud NAT, firewall rules)
@@ -13,59 +19,81 @@
 module "vpc" {
   source = "../../modules/vpc"
 
-  # Variables que se definirán al implementar el módulo vpc:
-  # project_id = "reactorguard-platform"
-  # region     = "europe-west1"
-  # env        = "dev"
+  project_id    = local.project_id
+  region        = local.region
+  env           = local.env
+  vpc_name      = "reactorguard-vpc"
+  subnet_cidr   = "10.0.1.0/24"
+  pods_cidr     = "10.0.16.0/20"
+  services_cidr = "10.0.32.0/20"
 }
 
 # ---------------------------------------------------------------------------
-# Clúster GKE (Autopilot o Standard según decisión de arquitectura)
+# Clúster GKE Standard privado con dos node pools
+# Depende de vpc para obtener la subnet y los secondary ranges.
 # ---------------------------------------------------------------------------
 module "gke" {
   source = "../../modules/gke"
 
-  # Dependerá del output de vpc:
-  # network    = module.vpc.network_name
-  # subnetwork = module.vpc.subnetwork_name
+  project_id          = local.project_id
+  region              = local.region
+  env                 = local.env
+  cluster_name        = "reactorguard-cluster"
+  network             = module.vpc.vpc_self_link
+  subnetwork          = module.vpc.subnet_self_link
+  pods_range_name     = module.vpc.pods_range_name
+  services_range_name = module.vpc.services_range_name
+  master_ipv4_cidr    = "172.16.0.0/28"
+
+  # Node Pool platform (cargas generales, preemptible)
+  platform_machine_type = "e2-standard-4"
+  platform_min_nodes    = 1
+  platform_max_nodes    = 3
+
+  # Node Pool ml-serving (safety-critical, NO preemptible)
+  ml_machine_type = "n2-standard-8"
+  ml_min_nodes    = 1
+  ml_max_nodes    = 5
 }
 
 # ---------------------------------------------------------------------------
-# Almacenamiento (buckets GCS para datos crudos, modelos, artefactos)
-# ---------------------------------------------------------------------------
-module "storage" {
-  source = "../../modules/storage"
-
-  # project_id = "reactorguard-platform"
-  # env        = "dev"
-}
-
-# ---------------------------------------------------------------------------
-# IAM (service accounts, bindings de roles, Workload Identity)
-# ---------------------------------------------------------------------------
-module "iam" {
-  source = "../../modules/iam"
-
-  # project_id    = "reactorguard-platform"
-  # gke_sa_email  = module.gke.service_account_email
-}
-
-# ---------------------------------------------------------------------------
-# Seguridad (KMS keys, Binary Authorization, Secret Manager secrets base)
+# Seguridad (KMS para CMEK, Secret Manager, Cloud Armor WAF, LB, IAP)
+# Debe aplicarse ANTES de storage para poder pasar el ID de la KMS key.
 # ---------------------------------------------------------------------------
 module "security" {
   source = "../../modules/security"
 
-  # project_id = "reactorguard-platform"
-  # region     = "europe-west1"
+  project_id        = local.project_id
+  region            = local.region
+  env               = local.env
+  iap_support_email = "admin@reactorguard.internal"
 }
 
 # ---------------------------------------------------------------------------
-# Kafka (Confluent o self-hosted en GKE mediante Helm/Strimzi)
+# Almacenamiento GCS (4 buckets: raw, processed, models, mlflow)
+# Depende de security para obtener el ID de la KMS key (CMEK).
 # ---------------------------------------------------------------------------
-module "kafka" {
-  source = "../../modules/kafka"
+module "storage" {
+  source = "../../modules/storage"
 
-  # Se configurará una vez el módulo gke esté operativo
-  # cluster_endpoint = module.gke.endpoint
+  project_id = local.project_id
+  region     = local.region
+  env        = local.env
+  cmek_key   = module.security.storage_key_id
 }
+
+# ---------------------------------------------------------------------------
+# IAM (service accounts, bindings, Workload Identity)
+# Depende de vpc y gke (cluster SA); independiente de storage.
+# ---------------------------------------------------------------------------
+module "iam" {
+  source = "../../modules/iam"
+
+  project_id = local.project_id
+  region     = local.region
+}
+
+# ---------------------------------------------------------------------------
+# Kafka: desplegado via Install-Kafka.ps1 después del terraform apply.
+# No se gestiona aquí porque Helm necesita el cluster GKE activo.
+# ---------------------------------------------------------------------------

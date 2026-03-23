@@ -1,0 +1,88 @@
+# =============================================================================
+# k8s/base/kafka/kafka-topics.yaml
+# Los 3 KafkaTopic resources del pipeline de ReactorGuard.
+#
+# El Entity Operator de Strimzi observa estos recursos y crea/actualiza los
+# topics dentro del cluster Kafka automáticamente. No es necesario usar
+# kafka-topics.sh ni comandos manuales.
+#
+# Flujo de datos: sensor → sensor-readings-raw → (validador) → sensor-validated
+#                                                             → (detector) → anomaly-alerts
+# TDD sección 7.2 — Kafka Topics
+# =============================================================================
+
+---
+# Topic 1: sensor-readings-raw
+# Ingesta directa desde tep_streamer.py / los ingestion pods.
+# 12 particiones permite hasta 12 consumidores en paralelo en el consumer group
+# del sensor_validator. Retención 7 días (604800000 ms).
+apiVersion: kafka.strimzi.io/v1beta2
+kind: KafkaTopic
+metadata:
+  name: sensor-readings-raw
+  namespace: kafka-operator
+  labels:
+    strimzi.io/cluster: reactorguard-cluster
+    app.kubernetes.io/part-of: reactorguard
+spec:
+  partitions: 12
+  replicas: 3
+  config:
+    # 7 días = 7 * 24 * 60 * 60 * 1000 ms
+    retention.ms: "604800000"
+    # cleanup.policy delete: los segmentos expirados se eliminan.
+    # No usamos compaction porque no hay claves semánticamente únicas por sensor.
+    cleanup.policy: delete
+    # Tamaño máximo de un mensaje: 1MB es suficiente para una lectura de sensor
+    # (payload JSON ~ 1KB, con margen para metadata y headers).
+    max.message.bytes: "1048576"
+    # min.insync.replicas=2 aquí sobrescribe el default del broker para este topic.
+    min.insync.replicas: "2"
+
+---
+# Topic 2: sensor-validated
+# Mensajes que han pasado los 5 detectores del sensor_validator:
+# stuck, rate-of-change, range, cross-correlation, Kalman.
+# Igual estructura de particiones que raw para mantener el mismo paralelismo
+# en los consumidores downstream (feature pipeline, ML).
+apiVersion: kafka.strimzi.io/v1beta2
+kind: KafkaTopic
+metadata:
+  name: sensor-validated
+  namespace: kafka-operator
+  labels:
+    strimzi.io/cluster: reactorguard-cluster
+    app.kubernetes.io/part-of: reactorguard
+spec:
+  partitions: 12
+  replicas: 3
+  config:
+    retention.ms: "604800000"
+    cleanup.policy: delete
+    max.message.bytes: "1048576"
+    min.insync.replicas: "2"
+
+---
+# Topic 3: anomaly-alerts
+# Alertas generadas por el modelo PINN + Rules Engine cuando se detecta
+# una anomalía. Retención 30 días (2592000000 ms) porque las alertas son
+# evidencia auditoria para reactores nucleares y deben conservarse más tiempo.
+# Solo 3 particiones: el volumen de alertas es mucho menor que el de lecturas
+# de sensor (la mayoría del tiempo el reactor está en estado normal).
+apiVersion: kafka.strimzi.io/v1beta2
+kind: KafkaTopic
+metadata:
+  name: anomaly-alerts
+  namespace: kafka-operator
+  labels:
+    strimzi.io/cluster: reactorguard-cluster
+    app.kubernetes.io/part-of: reactorguard
+spec:
+  partitions: 3
+  replicas: 3
+  config:
+    # 30 días = 30 * 24 * 60 * 60 * 1000 ms
+    retention.ms: "2592000000"
+    cleanup.policy: delete
+    max.message.bytes: "1048576"
+    min.insync.replicas: "2"

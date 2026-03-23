@@ -1,0 +1,89 @@
+# =============================================================================
+# k8s/tools/kafka-client-pod.yaml
+# Pod utilitario para interacción manual con Kafka.
+#
+# Uso principal:
+#   1. Depuración: producir/consumir mensajes con kafka-console-producer/consumer.
+#   2. Ejecución de tests: los scripts Invoke-KafkaTests.ps1 copian los .py
+#      aquí y los ejecutan con `kubectl exec`.
+#   3. Inspección de topics: kafka-topics.sh --list --bootstrap-server ...
+#
+# Comandos útiles tras `kubectl exec -it kafka-client -n kafka-operator -- bash`:
+#
+#   # Listar topics
+#   kafka-topics --bootstrap-server reactorguard-cluster-kafka-bootstrap.kafka-operator:9092 --list
+#
+#   # Producir mensajes de prueba
+#   kafka-console-producer \
+#     --bootstrap-server reactorguard-cluster-kafka-bootstrap.kafka-operator:9092 \
+#     --topic sensor-readings-raw
+#
+#   # Consumir desde el principio
+#   kafka-console-consumer \
+#     --bootstrap-server reactorguard-cluster-kafka-bootstrap.kafka-operator:9092 \
+#     --topic sensor-readings-raw \
+#     --from-beginning \
+#     --max-messages 10
+#
+# NO desplegar este pod en producción — es solo para dev/debugging.
+# =============================================================================
+apiVersion: v1
+kind: Pod
+metadata:
+  name: kafka-client
+  namespace: kafka-operator
+  labels:
+    app: kafka-client
+    app.kubernetes.io/part-of: reactorguard
+    # La etiqueta "tool" facilita la limpieza: kubectl delete pod -l role=tool
+    role: tool
+  annotations:
+    # Recordatorio explícito de que no es un componente de producción
+    reactorguard/purpose: "debugging-and-integration-tests"
+spec:
+  # restartPolicy Never: si el pod termina (por error), no reinicia.
+  # sleep infinity mantiene el pod activo indefinidamente.
+  restartPolicy: Never
+
+  containers:
+    - name: kafka-client
+      # confluentinc/cp-kafka:7.5.0 incluye todos los CLI tools de Kafka:
+      # kafka-topics, kafka-console-producer, kafka-console-consumer,
+      # kafka-consumer-groups, kafka-configs, etc.
+      image: confluentinc/cp-kafka:7.5.0
+      imagePullPolicy: IfNotPresent
+
+      command: ["sleep", "infinity"]
+
+      env:
+        # Conveniencia: la variable BOOTSTRAP_SERVERS está disponible
+        # directamente en la shell del pod.
+        - name: BOOTSTRAP_SERVERS
+          value: "reactorguard-cluster-kafka-bootstrap.kafka-operator:9092"
+        - name: KAFKA_HEAP_OPTS
+          value: "-Xmx256m -Xms128m"
+
+      resources:
+        requests:
+          cpu: 100m
+          memory: 256Mi
+        limits:
+          cpu: 500m
+          memory: 512Mi
+
+      # securityContext: usuario no-root para cumplir con las políticas de seguridad
+      # del namespace kafka-operator (PSP/PSA restricted).
+      securityContext:
+        allowPrivilegeEscalation: false
+        runAsNonRoot: true
+        runAsUser: 1000
+        capabilities:
+          drop:
+            - ALL
+
+  # Tolerar el taint del node pool platform (GKE)
+  tolerations:
+    - key: "platform"
+      operator: "Equal"
+      value: "true"
+      effect: "NoSchedule"

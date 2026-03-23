@@ -1,13 +1,13 @@
 """ReactorGuard FastAPI application entry point."""
 
+from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
-from typing import AsyncGenerator
 
 from fastapi import FastAPI
 from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
 from prometheus_client import make_asgi_app
 
-from api.routers import health, predict, explain
+from api.routers import explain, health, predict
 
 
 @asynccontextmanager

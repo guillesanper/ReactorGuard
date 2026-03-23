@@ -13,11 +13,11 @@ from __future__ import annotations
 import argparse
 import logging
 import random
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import numpy as np
-import yaml
+import yaml  # type: ignore[import-untyped]
 
 from data.schemas.sensor_reading import SensorReading
 
@@ -76,11 +76,11 @@ class ReactorSimulator:
     def generate(self) -> list[SensorReading]:
         """Generate the full dataset."""
         readings: list[SensorReading] = []
-        t0 = datetime(2024, 1, 1, tzinfo=timezone.utc)
+        t0 = datetime(2024, 1, 1, tzinfo=UTC)
 
         for i in range(self.n_samples):
             ts = t0 + timedelta(seconds=i * self.dt_seconds)
-            inject_fault = random.random() < self.fault_injection_rate
+            inject_fault = random.random() < self.fault_injection_rate  # noqa: S311
 
             if inject_fault:
                 reading = self._inject_fault(ts)
@@ -99,10 +99,10 @@ class ReactorSimulator:
         values["coolant_temp_out"] = max(
             values["coolant_temp_out"], values["coolant_temp_in"] + 0.1
         )
-        return SensorReading(timestamp=ts, reactor_id=self.reactor_id, **values)
+        return SensorReading.model_validate({"timestamp": ts, "reactor_id": self.reactor_id, **values})
 
     def _inject_fault(self, ts: datetime) -> SensorReading:
-        fault_type = random.choice([
+        fault_type = random.choice([  # noqa: S311
             "loss_of_coolant",
             "reactivity_insertion",
             "steam_generator_tube_rupture",
@@ -127,9 +127,9 @@ class ReactorSimulator:
         values["coolant_temp_out"] = max(
             values["coolant_temp_out"], values["coolant_temp_in"] + 0.1
         )
-        return SensorReading(
-            timestamp=ts, reactor_id=self.reactor_id,
-            fault_type=fault_type, is_anomaly=True, **values,
+        return SensorReading.model_validate(
+            {"timestamp": ts, "reactor_id": self.reactor_id,
+             "fault_type": fault_type, "is_anomaly": True, **values}
         )
 
 
