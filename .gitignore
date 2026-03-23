@@ -1,0 +1,133 @@
+# =============================================================================
+# Python
+# =============================================================================
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+*.egg
+*.egg-info/
+dist/
+build/
+.eggs/
+*.whl
+
+# Virtual environments
+.venv/
+venv/
+env/
+secrets/
+.env
+
+# Type checking
+.mypy_cache/
+.dmypy.json
+dmypy.json
+.pytype/
+
+# Testing & Coverage
+.pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
+coverage.xml
+*.cover
+
+# =============================================================================
+# Terraform
+# =============================================================================
+# Local state — NEVER commit; always use remote backend
+*.tfstate
+*.tfstate.*
+*.tfstate.backup
+
+# Crash log files
+crash.log
+crash.*.log
+
+# Override files (local overrides not for version control)
+override.tf
+override.tf.json
+*_override.tf
+*_override.tf.json
+
+# Terraform lock file IS committed; plugin cache is not
+.terraform/
+!.terraform.lock.hcl
+
+# Terraform plan output (may contain secrets)
+*.tfplan
+*.tfvars
+!*.tfvars.example
+
+# =============================================================================
+# Kubernetes / Helm
+# =============================================================================
+# Helm chart dependencies
+charts/
+
+# Rendered manifests (generated, not source)
+rendered/
+
+# Kubeconfig — never commit
+kubeconfig
+*.kubeconfig
+.kube/
+
+# =============================================================================
+# ML / DVC
+# =============================================================================
+# DVC cache (stored in GCS, not git)
+.dvc/cache/
+.dvc/tmp/
+
+# MLflow artifacts
+mlruns/
+mlartifacts/
+
+# Model checkpoints and large binaries
+*.pt
+*.pth
+*.onnx
+*.pkl
+*.h5
+
+# Dataset files
+*.csv
+*.parquet
+*.feather
+data/raw/
+data/processed/
+
+# =============================================================================
+# Secrets & Credentials
+# =============================================================================
+# GCP service account keys — NEVER commit
+*.json
+!pyproject.toml         # not a secret, but let's be safe with *.json
+service-account*.json
+*-key.json
+credentials.json
+
+# Environment variable files
+.env
+.env.*
+!.env.example
+
+# =============================================================================
+# IDEs & Editors
+# =============================================================================
+.idea/
+.vscode/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+
+# =============================================================================
+# Miscellaneous
+# =============================================================================
+*.log
+*.tmp
+*.bak
+.cache/

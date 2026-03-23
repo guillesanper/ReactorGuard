@@ -1,0 +1,106 @@
+# =============================================================================
+# ReactorGuard — Experiment Parameters
+# Tracked by DVC. Edit here; DVC picks up changes automatically.
+# =============================================================================
+
+# -----------------------------------------------------------------------------
+# Simulation parameters  (data/generators/reactor_simulator.py)
+# -----------------------------------------------------------------------------
+simulation:
+  # Total number of time-step samples to generate per run
+  n_samples: 50000
+
+  # Fraction of samples that will have a fault injected [0.0 – 1.0]
+  # 0.05 = 5 % anomalous samples (class imbalance typical for nuclear data)
+  fault_injection_rate: 0.05
+
+  # OpenMC random seed for reproducible neutron-transport calculations
+  # Change to generate a different dataset split
+  openmc_seed: 42
+
+  # Sampling interval in seconds (matches real reactor SCADA polling rate)
+  dt_seconds: 1.0
+
+  # Reactor operating conditions
+  nominal_power_mw: 3000.0       # Nominal thermal power [MWth]
+  coolant_temp_nominal_k: 564.0  # Nominal coolant outlet temperature [K]
+  fuel_temp_nominal_k: 900.0     # Nominal fuel centreline temperature [K]
+
+  # Fault types to inject (subset of all available faults)
+  fault_types:
+    - loss_of_coolant          # LOCA
+    - reactivity_insertion     # RIA
+    - steam_generator_tube_rupture
+    - loss_of_feedwater
+
+# -----------------------------------------------------------------------------
+# Feature engineering parameters  (ml/features/)
+# -----------------------------------------------------------------------------
+features:
+  # Rolling-window sizes for statistical features [seconds]
+  window_sizes: [10, 30, 60, 300]
+
+  # Number of lag features per sensor
+  n_lags: 5
+
+  # Sensors to include (mapped to Kafka topic fields)
+  sensor_channels:
+    - core_power
+    - coolant_temp_in
+    - coolant_temp_out
+    - primary_pressure
+    - coolant_flow_rate
+    - fuel_temp
+    - neutron_flux_ex_core
+    - steam_generator_level
+
+# -----------------------------------------------------------------------------
+# Training parameters  (ml/training/train.py)
+# -----------------------------------------------------------------------------
+training:
+  # Optimiser
+  learning_rate: 1.0e-3
+  weight_decay: 1.0e-4
+  optimizer: "adamw"            # adamw | sgd
+
+  # Batch & epochs
+  batch_size: 256
+  max_epochs: 100
+  early_stopping_patience: 10
+
+  # Physics-informed loss weight (λ in L = L_data + λ·L_physics)
+  # Higher → more physics constraint, lower → data-driven
+  physics_lambda: 0.1
+
+  # Model architecture
+  hidden_size: 256              # Hidden layer width
+  n_layers: 4                   # Number of hidden layers
+  dropout: 0.2
+
+  # Train/val/test split ratios (must sum to 1.0)
+  train_ratio: 0.70
+  val_ratio: 0.15
+  test_ratio: 0.15
+
+  # Random seed for reproducibility
+  seed: 42
+
+# -----------------------------------------------------------------------------
+# Serving / inference parameters  (ml/serving/)
+# -----------------------------------------------------------------------------
+serving:
+  # MAPIE conformal prediction confidence level [0.0 – 1.0]
+  # 0.95 = 95 % prediction intervals
+  confidence_level: 0.95
+
+  # Anomaly detection threshold (prediction interval exceedance)
+  anomaly_threshold: 3.0        # σ above nominal prediction interval
+
+  # Maximum inference latency SLA [milliseconds]
+  latency_sla_ms: 100
+
+# -----------------------------------------------------------------------------
+# DVC pipeline stages (do not edit — managed by dvc.yaml)
+# -----------------------------------------------------------------------------
+# dvc:
+#   stages: [simulate, featurize, train, evaluate, register]
