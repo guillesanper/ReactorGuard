@@ -1,52 +1,197 @@
-"""Pydantic schemas for reactor sensor data (shared by API, ingestion, and generators)."""
+"""Pydantic v2 schema for a single reactor sensor reading (TDD section 4.2).
+
+This module is the authoritative data contract between SCADA/Kafka producers and
+all downstream consumers (ML inference, API, data validation, generators).
+"""
 
 from __future__ import annotations
 
-from datetime import datetime
+import json
+from datetime import date, datetime
+from enum import Enum
+from typing import Optional
+from uuid import UUID
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field, computed_field, field_validator, model_validator
+
+
+# ---------------------------------------------------------------------------
+# Enumerations
+# ---------------------------------------------------------------------------
+
+
+class SensorType(str, Enum):
+    """Physical sensing principle of the instrument."""
+
+    THERMOCOUPLE = "thermocouple"
+    FLUX_DETECTOR = "flux_detector"
+    PRESSURE = "pressure"
+    FLOW = "flow"
+    POSITION = "position"
+    NORMALIZED = "normalized"
+
+
+class SensorLocation(str, Enum):
+    """Topological zone within the reactor building where the sensor is installed."""
+
+    PRIMARY_LOOP = "primary_loop"
+    SECONDARY_LOOP = "secondary_loop"
+    CORE = "core"
+    CONTAINMENT = "containment"
+
+
+class MeasurementUnit(str, Enum):
+    """Engineering unit of the measured value."""
+
+    CELSIUS = "celsius"
+    BAR = "bar"
+    KG_S = "kg_s"
+    PERCENT = "percent"
+    NORMALIZED = "normalized"
+
+
+class QualityFlag(str, Enum):
+    """Data quality status as assessed by the SCADA system."""
+
+    GOOD = "good"
+    SUSPECT = "suspect"
+    BAD = "bad"
+    MISSING = "missing"
+
+
+# ---------------------------------------------------------------------------
+# Nested models
+# ---------------------------------------------------------------------------
+
+
+class SensorInfo(BaseModel):
+    """Static descriptor of the physical sensor instrument."""
+
+    id: str = Field(..., description="Unique instrument tag (e.g. TC-CORE-12)")
+    type: SensorType = Field(..., description="Sensing principle")
+    location: SensorLocation = Field(..., description="Topological zone in the plant")
+    elevation_m: float = Field(
+        ...,
+        ge=-10.0,
+        le=100.0,
+        description="Sensor elevation relative to plant datum [m]. Valid range covers basement to top of reactor building.",
+    )
+
+
+class Measurement(BaseModel):
+    """Digitised process value as delivered by the SCADA analog input module."""
+
+    value: Optional[float] = Field(
+        default=None,
+        description="Engineering-unit value; may be None when quality is 'missing'.",
+    )
+    unit: MeasurementUnit = Field(..., description="Engineering unit of value")
+    quality: QualityFlag = Field(..., description="SCADA quality status")
+    raw_counts: int = Field(
+        ...,
+        ge=0,
+        le=65535,
+        description="Raw ADC counts from the 16-bit analog input card (0-65535).",
+    )
+
+
+class SensorMetadata(BaseModel):
+    """Instrument health and calibration traceability information."""
+
+    calibration_date: date = Field(..., description="Date of the last calibration")
+    last_maintenance: date = Field(..., description="Date of the last physical maintenance")
+    drift_coefficient: float = Field(
+        ...,
+        ge=0.0,
+        description="Estimated sensor drift per day (dimensionless, must be non-negative).",
+    )
+
+
+# ---------------------------------------------------------------------------
+# Root model
+# ---------------------------------------------------------------------------
 
 
 class SensorReading(BaseModel):
-    """Single timestep of raw reactor sensor data as produced by SCADA/Kafka."""
+    """Complete sensor reading record as produced by SCADA and published to Kafka.
 
-    timestamp: datetime
-    reactor_id: str = Field(..., description="Unique reactor identifier")
+    This is the canonical data contract for ReactorGuard (TDD section 4.2).
+    All producers must emit messages conforming to this schema; all consumers
+    must validate incoming bytes against it before processing.
+    """
 
-    # Core parameters
-    core_power: float = Field(..., ge=0.0, le=4000.0, description="Thermal power [MWth]")
-    neutron_flux_ex_core: float = Field(..., ge=0.0, description="Ex-core flux [n/cm²·s]")
+    reading_id: UUID = Field(..., description="Universally unique identifier (v4) for this record")
+    timestamp: datetime = Field(..., description="UTC timestamp of the measurement (ISO 8601)")
+    plant_id: str = Field(..., description="Reactor plant identifier (e.g. REACTOR-01)")
+    sensor: SensorInfo
+    measurement: Measurement
+    metadata: SensorMetadata
 
-    # Thermal-hydraulics
-    coolant_temp_in: float = Field(..., ge=273.15, le=700.0, description="Inlet temperature [K]")
-    coolant_temp_out: float = Field(..., ge=273.15, le=700.0, description="Outlet temperature [K]")
-    primary_pressure: float = Field(..., ge=0.0, le=20.0, description="Primary pressure [MPa]")
-    coolant_flow_rate: float = Field(..., ge=0.0, description="Mass flow rate [kg/s]")
+    # ------------------------------------------------------------------
+    # Computed properties
+    # ------------------------------------------------------------------
 
-    # Fuel
-    fuel_temp: float = Field(..., ge=273.15, le=3000.0, description="Fuel centreline temp [K]")
+    @computed_field  # type: ignore[misc]
+    @property
+    def is_usable(self) -> bool:
+        """Return True only when the reading is safe to use for ML inference.
 
-    # Secondary circuit
-    steam_generator_level: float = Field(..., ge=0.0, le=10.0, description="SG level [m]")
+        A reading is considered unusable when quality is 'bad' (hardware fault)
+        or 'missing' (no signal received). 'suspect' readings are still usable
+        but should be treated with caution by downstream models.
+        """
+        return self.measurement.quality not in (QualityFlag.BAD, QualityFlag.MISSING)
 
-    # Optional fault label (None during online inference, set during simulation)
-    fault_type: str | None = None
-    is_anomaly: bool = False
+    # ------------------------------------------------------------------
+    # Kafka serialisation helpers
+    # ------------------------------------------------------------------
 
-    @model_validator(mode="after")
-    def check_temperature_gradient(self) -> SensorReading:
-        if self.coolant_temp_out < self.coolant_temp_in:
-            raise ValueError(
-                f"Outlet temp ({self.coolant_temp_out} K) must be >= inlet temp "
-                f"({self.coolant_temp_in} K) for normal flow direction."
-            )
-        return self
+    @classmethod
+    def from_kafka_bytes(cls, data: bytes) -> "SensorReading":
+        """Deserialise a sensor reading from raw Kafka message bytes (UTF-8 JSON).
 
+        Args:
+            data: Raw bytes from a Kafka ConsumerRecord value.
 
-class SensorBatch(BaseModel):
-    """Batch of sensor readings (e.g. from Kafka consumer poll)."""
+        Returns:
+            A validated SensorReading instance.
 
-    readings: list[SensorReading]
-    source_topic: str
-    partition: int
-    offset_start: int
+        Raises:
+            pydantic.ValidationError: If the payload does not conform to this schema.
+            json.JSONDecodeError: If the bytes are not valid JSON.
+        """
+        return cls.model_validate_json(data)
+
+    def to_kafka_bytes(self) -> bytes:
+        """Serialise this reading to UTF-8 JSON bytes suitable for a Kafka producer.
+
+        UUIDs and datetimes are serialised to their standard string representations.
+
+        Returns:
+            UTF-8 encoded JSON bytes.
+        """
+        return self.model_dump_json().encode("utf-8")
+
+    # ------------------------------------------------------------------
+    # ML feature extraction
+    # ------------------------------------------------------------------
+
+    def to_feature_dict(self) -> dict:
+        """Return the numeric fields required by the ML inference pipeline.
+
+        Only scalar numeric values are included; categorical fields are excluded
+        because feature engineering (encoding) is the responsibility of the
+        feature store layer, not this schema.
+
+        Returns:
+            A flat dictionary with keys:
+            sensor_id, timestamp_unix, value, raw_counts, drift_coefficient, elevation_m.
+        """
+        return {
+            "sensor_id": self.sensor.id,
+            "timestamp_unix": self.timestamp.timestamp(),
+            "value": self.measurement.value,
+            "raw_counts": self.measurement.raw_counts,
+            "drift_coefficient": self.metadata.drift_coefficient,
+            "elevation_m": self.sensor.elevation_m,
+        }

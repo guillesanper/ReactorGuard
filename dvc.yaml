@@ -1,0 +1,7 @@
+stages:
+  download_tep:
+    cmd: python data/generators/tep_downloader.py
+    deps:
+      - data/generators/tep_downloader.py
+    outs:
+      - data/raw/tep/
