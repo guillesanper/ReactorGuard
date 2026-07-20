@@ -14,9 +14,8 @@ from __future__ import annotations
 
 import logging
 import uuid
-from datetime import date, datetime, timedelta, timezone
+from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
-from typing import List
 
 import pandas as pd
 
@@ -40,7 +39,7 @@ _LOG = logging.getLogger(__name__)
 _N_COLUMNS = 52
 _SAMPLE_INTERVAL = timedelta(minutes=3)
 _PLANT_ID = "TEP-PLANT-01"
-_DEFAULT_START_TIME = datetime(2000, 1, 1, 0, 0, 0, tzinfo=timezone.utc)
+_DEFAULT_START_TIME = datetime(2000, 1, 1, 0, 0, 0, tzinfo=UTC)
 _CALIBRATION_DATE = date(2023, 6, 1)
 _LAST_MAINTENANCE_DATE = date(2023, 12, 1)
 _DRIFT_COEFFICIENT = 0.0001
@@ -280,7 +279,7 @@ class TEPAdapter:
 
         return readings
 
-    def adapt_file(self, filepath: str, fault_type: int) -> List[SensorReading]:
+    def adapt_file(self, filepath: str, fault_type: int) -> list[SensorReading]:
         """Adapt all rows in a TEP .dat file to SensorReading objects.
 
         Quality is determined by fault_type:
@@ -342,7 +341,7 @@ class TEPAdapter:
                 raw_counts, fault_type, is_usable.
         """
         data_path = Path(data_dir)
-        records: list[dict] = []
+        records: list[dict[str, object]] = []
 
         for fault_type, filename in enumerate(_FILE_NAMES):
             filepath = data_path / filename

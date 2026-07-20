@@ -36,10 +36,14 @@ def _compute_md5(filepath: Path) -> str:
     Args:
         filepath: Absolute or relative path to the target file.
 
+    MD5 se usa aqui solo para verificar integridad de descarga contra los
+    checksums publicados del dataset TEP, no como primitiva de seguridad; de ahi
+    usedforsecurity=False.
+
     Returns:
         Lowercase hexadecimal MD5 digest string.
     """
-    digest = hashlib.md5()
+    digest = hashlib.md5(usedforsecurity=False)
     with filepath.open("rb") as fh:
         for chunk in iter(lambda: fh.read(_CHUNK_SIZE), b""):
             digest.update(chunk)

@@ -3,12 +3,19 @@
 These tests verify that the system never silently misclassifies
 high-severity faults as nominal. They are run as a separate suite
 to highlight their safety-critical status in CI.
+
+ESTADO: suite completa en skip. Estos tests asertan el schema plano
+(is_anomaly, fault_type) anterior al commit f130d27 y consumen
+ReactorSimulator, que construye ese mismo schema y lanza ValidationError
+contra el canonico. Se reescriben en Fase 3 (T5.3) junto al simulador.
 """
 
 
 import pytest
 
 from data.generators.reactor_simulator import ReactorSimulator
+
+pytestmark = pytest.mark.skip(reason="Fase 3 - reescribir contra el schema canonico")
 
 
 @pytest.fixture

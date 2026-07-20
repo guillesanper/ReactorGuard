@@ -5,6 +5,7 @@ from internal module structure.
 """
 
 from data.schemas.sensor_reading import (
+    Measurement,
     MeasurementUnit,
     QualityFlag,
     SensorInfo,
@@ -12,7 +13,6 @@ from data.schemas.sensor_reading import (
     SensorMetadata,
     SensorReading,
     SensorType,
-    Measurement,
 )
 
 __all__ = [

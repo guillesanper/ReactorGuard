@@ -3,21 +3,9 @@
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 
+from data.schemas.sensor_reading import SensorReading
+
 router = APIRouter()
-
-
-class SensorReading(BaseModel):
-    """Single timestep of reactor sensor data."""
-
-    timestamp: str = Field(..., description="ISO-8601 UTC timestamp")
-    core_power: float = Field(..., description="Reactor core thermal power [MWth]")
-    coolant_temp_in: float = Field(..., description="Coolant inlet temperature [K]")
-    coolant_temp_out: float = Field(..., description="Coolant outlet temperature [K]")
-    primary_pressure: float = Field(..., description="Primary circuit pressure [MPa]")
-    coolant_flow_rate: float = Field(..., description="Coolant mass flow rate [kg/s]")
-    fuel_temp: float = Field(..., description="Fuel centreline temperature [K]")
-    neutron_flux_ex_core: float = Field(..., description="Ex-core neutron flux [n/cm²·s]")
-    steam_generator_level: float = Field(..., description="Steam generator water level [m]")
 
 
 class PredictionResponse(BaseModel):

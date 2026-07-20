@@ -4,6 +4,13 @@ Produces time-series sensor data with configurable fault injection.
 Used for training, integration tests, and local development without a
 real reactor connection.
 
+ESTADO: ROTO. Este modulo construye el schema plano (reactor_id, core_power,
+is_anomaly, fault_type) anterior al commit f130d27 y lanza ValidationError
+contra el schema canonico de data/schemas/sensor_reading.py en cada llamada.
+Queda excluido de mypy en pyproject.toml ([[tool.mypy.overrides]]) mientras
+tanto. Se reescribe en Fase 3 (T5.3); su suite de tests
+(tests/safety/test_safety_constraints.py) esta en skip por el mismo motivo.
+
 Usage:
     python -m data.generators.reactor_simulator --config params.yaml
 """
@@ -99,7 +106,9 @@ class ReactorSimulator:
         values["coolant_temp_out"] = max(
             values["coolant_temp_out"], values["coolant_temp_in"] + 0.1
         )
-        return SensorReading.model_validate({"timestamp": ts, "reactor_id": self.reactor_id, **values})
+        return SensorReading.model_validate(
+            {"timestamp": ts, "reactor_id": self.reactor_id, **values}
+        )
 
     def _inject_fault(self, ts: datetime) -> SensorReading:
         fault_type = random.choice([  # noqa: S311

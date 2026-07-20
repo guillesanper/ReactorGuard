@@ -7,20 +7,16 @@ nested models. All fixtures use realistic reactor instrument values.
 from __future__ import annotations
 
 import uuid
-from datetime import date, datetime, timezone
+from datetime import UTC, datetime
 
 import pytest
 from pydantic import ValidationError
 
 from data.schemas.sensor_reading import (
-    MeasurementUnit,
     QualityFlag,
-    SensorInfo,
     SensorLocation,
-    SensorMetadata,
     SensorReading,
     SensorType,
-    Measurement,
 )
 
 # ---------------------------------------------------------------------------
@@ -28,7 +24,7 @@ from data.schemas.sensor_reading import (
 # ---------------------------------------------------------------------------
 
 _BASE_READING_ID = uuid.UUID("12345678-1234-4234-b234-123456789abc")
-_BASE_TIMESTAMP = datetime(2024, 1, 15, 14, 32, 18, 1000, tzinfo=timezone.utc)
+_BASE_TIMESTAMP = datetime(2024, 1, 15, 14, 32, 18, 1000, tzinfo=UTC)
 
 
 def _make_reading(**overrides) -> dict:
@@ -241,9 +237,16 @@ class TestKafkaSerialization:
         assert restored.measurement.value is None
 
     def test_from_kafka_bytes_rejects_invalid_payload(self):
-        """Malformed JSON bytes must raise ValidationError or JSONDecodeError."""
-        with pytest.raises(Exception):
+        """Payloads que no cumplen el schema deben levantar ValidationError.
+
+        Pydantic v2 tambien envuelve el JSON malformado en ValidationError, asi
+        que una sola excepcion cubre ambos casos.
+        """
+        with pytest.raises(ValidationError):
             SensorReading.from_kafka_bytes(b'{"plant_id": "REACTOR-01"}')
+
+        with pytest.raises(ValidationError):
+            SensorReading.from_kafka_bytes(b"no soy json")
 
 
 # ---------------------------------------------------------------------------

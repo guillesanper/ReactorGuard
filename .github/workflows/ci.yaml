@@ -42,9 +42,11 @@ jobs:
       - name: Install linting tools
         run: pip install ruff mypy
 
-      # ruff: fast Python linter — checks imports (I), style (E/W), and errors (F)
+      # ruff: sin --select, para heredar el select de [tool.ruff.lint] en
+      # pyproject.toml. Una sola fuente de verdad: CI no puede ser mas laxo que
+      # la configuracion del repo.
       - name: Run ruff
-        run: ruff check . --select E,W,F,I
+        run: ruff check .
 
       # mypy: static type analysis — critical for catching type errors in ML/physics code
       - name: Run mypy
@@ -73,9 +75,14 @@ jobs:
       - name: Install dependencies
         run: pip install -e ".[dev]"
 
+      # tests/safety/ se incluye explicitamente: es la suite safety-critical y
+      # hasta ahora quedaba fuera de CI, ocultando sus fallos.
       # --junitxml produces machine-readable results for the GitHub summary
-      - name: Run unit tests
-        run: pytest tests/unit/ -v --tb=short --junitxml=test-results.xml
+      - name: Run unit and safety tests
+        run: |
+          pytest tests/unit/ tests/safety/ -v --tb=short \
+            --junitxml=test-results.xml \
+            --cov --cov-report=term-missing --cov-fail-under=70
 
       # Uploading results lets reviewers inspect failures without re-running CI
       - name: Upload test results

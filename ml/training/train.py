@@ -13,7 +13,7 @@ from typing import Any
 
 import mlflow
 import torch
-import yaml  # type: ignore[import-untyped]
+import yaml
 
 from ml.models.pinn import ReactorPINN
 

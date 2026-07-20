@@ -10,26 +10,25 @@ Covers:
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
 
 from data.generators.tep_adapter import (
-    TEPAdapter,
     _N_COLUMNS,
-    _SAMPLE_INTERVAL,
     _PLANT_ID,
+    _SAMPLE_INTERVAL,
+    TEPAdapter,
 )
 from data.schemas.sensor_reading import QualityFlag, SensorReading
-
 
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
 
 _N_ROWS = 5
-_START_TIME = datetime(2000, 1, 1, 0, 0, 0, tzinfo=timezone.utc)
+_START_TIME = datetime(2000, 1, 1, 0, 0, 0, tzinfo=UTC)
 
 # One row of 52 realistic TEP values (flows ~50, pressure ~2700, temp ~120, comp ~30, pos ~50)
 _SAMPLE_ROW = (

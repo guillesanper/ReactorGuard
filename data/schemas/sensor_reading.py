@@ -6,21 +6,18 @@ all downstream consumers (ML inference, API, data validation, generators).
 
 from __future__ import annotations
 
-import json
 from datetime import date, datetime
-from enum import Enum
-from typing import Optional
+from enum import StrEnum
 from uuid import UUID
 
-from pydantic import BaseModel, Field, computed_field, field_validator, model_validator
-
+from pydantic import BaseModel, Field, computed_field
 
 # ---------------------------------------------------------------------------
 # Enumerations
 # ---------------------------------------------------------------------------
 
 
-class SensorType(str, Enum):
+class SensorType(StrEnum):
     """Physical sensing principle of the instrument."""
 
     THERMOCOUPLE = "thermocouple"
@@ -31,7 +28,7 @@ class SensorType(str, Enum):
     NORMALIZED = "normalized"
 
 
-class SensorLocation(str, Enum):
+class SensorLocation(StrEnum):
     """Topological zone within the reactor building where the sensor is installed."""
 
     PRIMARY_LOOP = "primary_loop"
@@ -40,7 +37,7 @@ class SensorLocation(str, Enum):
     CONTAINMENT = "containment"
 
 
-class MeasurementUnit(str, Enum):
+class MeasurementUnit(StrEnum):
     """Engineering unit of the measured value."""
 
     CELSIUS = "celsius"
@@ -50,7 +47,7 @@ class MeasurementUnit(str, Enum):
     NORMALIZED = "normalized"
 
 
-class QualityFlag(str, Enum):
+class QualityFlag(StrEnum):
     """Data quality status as assessed by the SCADA system."""
 
     GOOD = "good"
@@ -74,14 +71,17 @@ class SensorInfo(BaseModel):
         ...,
         ge=-10.0,
         le=100.0,
-        description="Sensor elevation relative to plant datum [m]. Valid range covers basement to top of reactor building.",
+        description=(
+            "Sensor elevation relative to plant datum [m]. Valid range covers "
+            "basement to top of reactor building."
+        ),
     )
 
 
 class Measurement(BaseModel):
     """Digitised process value as delivered by the SCADA analog input module."""
 
-    value: Optional[float] = Field(
+    value: float | None = Field(
         default=None,
         description="Engineering-unit value; may be None when quality is 'missing'.",
     )
@@ -131,7 +131,7 @@ class SensorReading(BaseModel):
     # Computed properties
     # ------------------------------------------------------------------
 
-    @computed_field  # type: ignore[misc]
+    @computed_field  # type: ignore[prop-decorator]
     @property
     def is_usable(self) -> bool:
         """Return True only when the reading is safe to use for ML inference.
@@ -147,7 +147,7 @@ class SensorReading(BaseModel):
     # ------------------------------------------------------------------
 
     @classmethod
-    def from_kafka_bytes(cls, data: bytes) -> "SensorReading":
+    def from_kafka_bytes(cls, data: bytes) -> SensorReading:
         """Deserialise a sensor reading from raw Kafka message bytes (UTF-8 JSON).
 
         Args:
@@ -176,7 +176,7 @@ class SensorReading(BaseModel):
     # ML feature extraction
     # ------------------------------------------------------------------
 
-    def to_feature_dict(self) -> dict:
+    def to_feature_dict(self) -> dict[str, object]:
         """Return the numeric fields required by the ML inference pipeline.
 
         Only scalar numeric values are included; categorical fields are excluded
