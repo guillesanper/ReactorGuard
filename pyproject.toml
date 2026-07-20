@@ -54,6 +54,9 @@ dependencies = [
     "requests>=2.31.0",        # descarga del dataset TEP
     "tqdm>=4.66.0",            # barra de progreso de la descarga
 
+    # Configuracion
+    "pyyaml>=6.0",             # lectura de params.yaml (data/generators/tep_params.py)
+
     # GCP
     "google-cloud-storage>=2.16.0",
     "google-cloud-secret-manager>=2.19.0",
@@ -73,6 +76,7 @@ dev = [
     # Type Checking
     "mypy>=1.9.0",
     "types-requests>=2.31.0",
+    "types-pyyaml>=6.0",
 
     # Physics simulation (optional, heavy dep)
     # "openmc>=0.14.0",         # uncomment if running neutron transport locally
@@ -135,9 +139,9 @@ addopts = "-v"
 # Cada exclusion vuelve a entrar cuando su fase la implemente.
 source = ["data"]
 omit = [
-    # Requieren data/raw/tep repoblado (Paso 2): se cubren al cerrar T3.2.
-    "data/generators/tep_downloader.py",
-    "data/generators/tep_explorer.py",
     # ROTO contra el schema canonico: se reescribe con sus tests en Fase 3 (T5.3).
     "data/generators/reactor_simulator.py",
 ]
+# tep_downloader.py y tep_explorer.py salieron de este omit al cerrar T3.2: sus
+# tests usan ficheros sinteticos en tmp_path y un doble de requests, de modo que
+# la suite no depende de que data/raw/tep este poblado ni toca la red.

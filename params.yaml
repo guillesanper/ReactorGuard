@@ -4,6 +4,38 @@
 # =============================================================================
 
 # -----------------------------------------------------------------------------
+# Tennessee Eastman Process pipeline  (data/generators/tep_*.py)
+#
+# Unica seccion que los stages de dvc.yaml declaran bajo `params:` y que el
+# codigo lee de verdad, via data/generators/tep_params.py. Cambiar cualquier
+# valor de aqui invalida los stages correspondientes en el proximo `dvc repro`.
+# -----------------------------------------------------------------------------
+tep:
+  # Rutas del pipeline. raw_dir es el out de download_tep; processed_dir vive
+  # fuera de raw_dir a proposito, porque anidar el out de adapt_tep dentro del
+  # out de download_tep es una colision de outs que DVC rechaza.
+  raw_dir: data/raw/tep
+  processed_dir: data/processed/tep
+  reports_dir: data/reports
+
+  # Identidad de planta estampada en cada SensorReading
+  plant_id: "TEP-PLANT-01"
+
+  # Serie temporal sintetica: el TEP no trae timestamps, se generan a intervalo
+  # fijo desde este origen. 3 minutos es el periodo de muestreo del benchmark.
+  start_time: "2000-01-01T00:00:00+00:00"
+  sample_interval_minutes: 3
+
+  # Denominador para escalar valores de proceso a cuentas ADC de 16 bits.
+  # Las presiones TEP llegan a ~3000 kPa; el resto de variables queda por debajo.
+  adc_scale_max: 3000.0
+
+  # Campos de SensorMetadata (sinteticos: el dataset no los proporciona)
+  calibration_date: "2023-06-01"
+  last_maintenance_date: "2023-12-01"
+  drift_coefficient: 0.0001
+
+# -----------------------------------------------------------------------------
 # Simulation parameters  (data/generators/reactor_simulator.py)
 # -----------------------------------------------------------------------------
 simulation:

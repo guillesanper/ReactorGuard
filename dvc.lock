@@ -1,0 +1,97 @@
+schema: '2.0'
+stages:
+  download_tep:
+    cmd: python data/generators/tep_downloader.py
+    deps:
+    - path: data/generators/tep_downloader.py
+      hash: md5
+      md5: 92703f5d051970d7edfde575d085032a
+      size: 5791
+    - path: data/generators/tep_params.py
+      hash: md5
+      md5: 5a26a1b579981d8906d2929cec0d91f4
+      size: 4682
+    params:
+      params.yaml:
+        tep.raw_dir: data/raw/tep
+    outs:
+    - path: data/raw/tep
+      hash: md5
+      md5: e82fbd78a973f4d893df0040403ccdba.dir
+      size: 8813792
+      nfiles: 23
+  explore_tep:
+    cmd: python data/generators/tep_explorer.py
+    deps:
+    - path: data/generators/tep_explorer.py
+      hash: md5
+      md5: 95e8257a0057d17ea256127a8ecce43b
+      size: 4681
+    - path: data/generators/tep_loader.py
+      hash: md5
+      md5: 4b1c39a335782e73a910c66d92b80b5b
+      size: 2485
+    - path: data/generators/tep_params.py
+      hash: md5
+      md5: 5a26a1b579981d8906d2929cec0d91f4
+      size: 4682
+    - path: data/raw/tep
+      hash: md5
+      md5: e82fbd78a973f4d893df0040403ccdba.dir
+      size: 8813792
+      nfiles: 23
+    params:
+      params.yaml:
+        tep.raw_dir: data/raw/tep
+        tep.reports_dir: data/reports
+    outs:
+    - path: data/reports
+      hash: md5
+      md5: ee3938fa6adb3a1a4c354b2beaf969ea.dir
+      size: 369263
+      nfiles: 2
+  adapt_tep:
+    cmd: python data/generators/adapt_tep.py
+    deps:
+    - path: data/generators/adapt_tep.py
+      hash: md5
+      md5: a0b7af87b1e99e3abb9e100383257f1f
+      size: 2374
+    - path: data/generators/tep_adapter.py
+      hash: md5
+      md5: 05ef687469a7f343c9b61332c8bb1c94
+      size: 17155
+    - path: data/generators/tep_loader.py
+      hash: md5
+      md5: 4b1c39a335782e73a910c66d92b80b5b
+      size: 2485
+    - path: data/generators/tep_params.py
+      hash: md5
+      md5: 5a26a1b579981d8906d2929cec0d91f4
+      size: 4682
+    - path: data/raw/tep
+      hash: md5
+      md5: e82fbd78a973f4d893df0040403ccdba.dir
+      size: 8813792
+      nfiles: 23
+    - path: data/schemas/sensor_reading.py
+      hash: md5
+      md5: 17dd31fc9a8435d77f213aff76c7a139
+      size: 7049
+    params:
+      params.yaml:
+        tep.adc_scale_max: 3000.0
+        tep.calibration_date: '2023-06-01'
+        tep.drift_coefficient: 0.0001
+        tep.last_maintenance_date: '2023-12-01'
+        tep.plant_id: TEP-PLANT-01
+        tep.processed_dir: data/processed/tep
+        tep.raw_dir: data/raw/tep
+        tep.sample_interval_minutes: 3
+        tep.start_time: '2000-01-01T00:00:00+00:00'
+    outs:
+    - path: data/processed/tep
+      hash: md5
+      md5: 42d8c82dd910ec2c75ef5253a8c3baec.dir
+      size: 24707713
+      nfiles: 22

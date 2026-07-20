@@ -18,6 +18,8 @@ from pathlib import Path
 import requests
 from tqdm import tqdm
 
+from data.generators.tep_params import DEFAULT_PARAMS_PATH, load_tep_params
+
 _LOG = logging.getLogger(__name__)
 
 _BASE_URL = (
@@ -144,6 +146,16 @@ def download_tep(output_dir: str) -> None:
     _LOG.info("Download complete. %d files verified in %s.", len(_FILE_NAMES), out_path)
 
 
+def main(params_path: str | Path = DEFAULT_PARAMS_PATH) -> None:
+    """Run the download stage using the raw_dir configured in params.yaml.
+
+    Args:
+        params_path: Path to the params file holding the tep: section.
+    """
+    params = load_tep_params(params_path)
+    download_tep(str(params.raw_dir))
+
+
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
-    download_tep("data/raw/tep")
+    main()

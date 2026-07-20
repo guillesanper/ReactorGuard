@@ -15,15 +15,18 @@
         data/raw/tep/tep_checksums.json           MD5 checksums of raw files
         data/reports/tep_exploration.json         per-file descriptive statistics
         data/reports/tep_correlations.csv         Pearson correlation matrix
-        data/raw/tep/fault_type=00/readings.parquet  adapted readings, normal
-        data/raw/tep/fault_type=01/readings.parquet  adapted readings, fault 1
+        data/processed/tep/fault_type=00/readings.parquet  adapted readings, normal
+        data/processed/tep/fault_type=01/readings.parquet  adapted readings, fault 1
         ...
+
+    El parquet se escribe fuera de data/raw/tep para no anidarlo dentro del out
+    del stage download_tep de dvc.yaml, que provocaria una colision de outs.
 
 .PARAMETER DataDir
     Directory for raw TEP .dat files. Defaults to data/raw/tep.
 
 .PARAMETER OutputDir
-    Root directory for partitioned Parquet output. Defaults to data/raw/tep.
+    Root directory for partitioned Parquet output. Defaults to data/processed/tep.
 
 .EXAMPLE
     .\prepare_tep.ps1
@@ -32,7 +35,7 @@
 
 param (
     [string]$DataDir   = "data/raw/tep",
-    [string]$OutputDir = "data/raw/tep"
+    [string]$OutputDir = "data/processed/tep"
 )
 
 Set-StrictMode -Version Latest
@@ -44,11 +47,11 @@ $ErrorActionPreference = "Stop"
 
 $ScriptDir   = Split-Path -Parent $MyInvocation.MyCommand.Path
 $ProjectRoot = (Resolve-Path (Join-Path $ScriptDir "..\..")).Path
-$VenvPython  = Join-Path $ProjectRoot "venv\Scripts\python.exe"
+$VenvPython  = Join-Path $ProjectRoot ".venv\Scripts\python.exe"
 
 if (-not (Test-Path $VenvPython)) {
-    Write-Warning "Virtual environment not found at $VenvPython. Falling back to system Python."
-    $VenvPython = "python"
+    Write-Error "Virtual environment not found at $VenvPython. Run infra/scripts/Setup-DevEnv.ps1 first."
+    exit 1
 }
 
 $env:PYTHONPATH = $ProjectRoot

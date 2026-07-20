@@ -14,35 +14,13 @@ from typing import Any
 
 import pandas as pd
 
+from data.generators.tep_loader import load_dat_file
+from data.generators.tep_params import DEFAULT_PARAMS_PATH, load_tep_params
+
 _LOG = logging.getLogger(__name__)
 
 _FILE_NAMES: list[str] = ["d00.dat"] + [f"d{i:02d}.dat" for i in range(1, 22)]
-_N_COLUMNS = 52
 _REPORTS_DIR = Path("data/reports")
-
-
-def _load_dat_file(filepath: Path) -> pd.DataFrame:
-    """Load a TEP whitespace-delimited .dat file into a DataFrame.
-
-    The files have no header row and exactly 52 numeric columns. Column names
-    are assigned as col_00 through col_51.
-
-    Args:
-        filepath: Path to the .dat file.
-
-    Returns:
-        DataFrame with shape (n_samples, 52).
-
-    Raises:
-        ValueError: If the file does not contain exactly 52 columns.
-    """
-    df = pd.read_csv(filepath, sep=r"\s+", header=None, engine="python")
-    if df.shape[1] != _N_COLUMNS:
-        raise ValueError(
-            f"Expected {_N_COLUMNS} columns in {filepath.name}, got {df.shape[1]}."
-        )
-    df.columns = [f"col_{i:02d}" for i in range(_N_COLUMNS)]
-    return df
 
 
 def _compute_dataset_stats(df: pd.DataFrame) -> dict[str, Any]:
@@ -76,7 +54,7 @@ def _compute_dataset_stats(df: pd.DataFrame) -> dict[str, Any]:
     }
 
 
-def explore_tep(data_dir: str) -> dict[str, Any]:
+def explore_tep(data_dir: str, reports_dir: str | Path = _REPORTS_DIR) -> dict[str, Any]:
     """Load all TEP files and produce a structured exploration report.
 
     Iterates over d00.dat through d21.dat, computes per-file statistics, then
@@ -88,6 +66,8 @@ def explore_tep(data_dir: str) -> dict[str, Any]:
 
     Args:
         data_dir: Directory containing the TEP .dat files.
+        reports_dir: Directory where the two report artefacts are written.
+            Created if it does not exist.
 
     Returns:
         Report dictionary with keys:
@@ -95,7 +75,8 @@ def explore_tep(data_dir: str) -> dict[str, Any]:
             correlation_matrix: {col: {col: pearson_r}}
     """
     data_path = Path(data_dir)
-    _REPORTS_DIR.mkdir(parents=True, exist_ok=True)
+    reports_path = Path(reports_dir)
+    reports_path.mkdir(parents=True, exist_ok=True)
 
     report: dict[str, Any] = {"datasets": {}}
     pooled_frames: list[pd.DataFrame] = []
@@ -107,7 +88,7 @@ def explore_tep(data_dir: str) -> dict[str, Any]:
             continue
 
         _LOG.info("Loading %s", filename)
-        df = _load_dat_file(filepath)
+        df = load_dat_file(filepath)
         fault_key = filename.replace(".dat", "")
         report["datasets"][fault_key] = _compute_dataset_stats(df)
         pooled_frames.append(df)
@@ -121,14 +102,14 @@ def explore_tep(data_dir: str) -> dict[str, Any]:
             for row, row_data in corr_matrix.to_dict().items()
         }
 
-        corr_path = _REPORTS_DIR / "tep_correlations.csv"
+        corr_path = reports_path / "tep_correlations.csv"
         corr_matrix.to_csv(corr_path)
         _LOG.info("Saved correlation matrix to %s", corr_path)
     else:
         _LOG.warning("No TEP files found in %s; report will be empty.", data_dir)
         report["correlation_matrix"] = {}
 
-    exploration_path = _REPORTS_DIR / "tep_exploration.json"
+    exploration_path = reports_path / "tep_exploration.json"
     with exploration_path.open("w", encoding="utf-8") as fh:
         json.dump(report, fh, indent=2)
     _LOG.info("Saved exploration report to %s", exploration_path)
@@ -136,6 +117,19 @@ def explore_tep(data_dir: str) -> dict[str, Any]:
     return report
 
 
+def main(params_path: str | Path = DEFAULT_PARAMS_PATH) -> dict[str, Any]:
+    """Run the exploration stage using the paths configured in params.yaml.
+
+    Args:
+        params_path: Path to the params file holding the tep: section.
+
+    Returns:
+        The exploration report dictionary.
+    """
+    params = load_tep_params(params_path)
+    return explore_tep(str(params.raw_dir), params.reports_dir)
+
+
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
-    explore_tep("data/raw/tep")
+    main()

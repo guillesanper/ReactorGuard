@@ -19,6 +19,8 @@ from pathlib import Path
 
 import pandas as pd
 
+from data.generators.tep_loader import N_COLUMNS, load_dat_file
+from data.generators.tep_params import TEPParams
 from data.schemas.sensor_reading import (
     Measurement,
     MeasurementUnit,
@@ -36,7 +38,8 @@ _LOG = logging.getLogger(__name__)
 # Constants
 # ---------------------------------------------------------------------------
 
-_N_COLUMNS = 52
+# Reexportado desde tep_loader, que es donde vive la validacion de forma.
+_N_COLUMNS = N_COLUMNS
 _SAMPLE_INTERVAL = timedelta(minutes=3)
 _PLANT_ID = "TEP-PLANT-01"
 _DEFAULT_START_TIME = datetime(2000, 1, 1, 0, 0, 0, tzinfo=UTC)
@@ -158,19 +161,19 @@ def _elevation_m(col_idx: int) -> float:
     return float((col_idx % 55) * 2 - 10)
 
 
-def _to_raw_counts(value: float) -> int:
+def _to_raw_counts(value: float, scale_max: float = _ADC_SCALE_MAX) -> int:
     """Scale a TEP process value to a 16-bit ADC count in [0, 65535].
 
-    Uses _ADC_SCALE_MAX as the normalisation denominator. Values above
-    _ADC_SCALE_MAX saturate at 65535; negative values clamp to 0.
+    Values whose magnitude exceeds scale_max saturate at 65535.
 
     Args:
         value: TEP process value in engineering units.
+        scale_max: Normalisation denominator, in the same engineering units.
 
     Returns:
         Integer ADC count in [0, 65535].
     """
-    scaled = abs(value) / _ADC_SCALE_MAX * 65535.0
+    scaled = abs(value) / scale_max * 65535.0
     return int(min(max(scaled, 0.0), 65535.0))
 
 
@@ -217,20 +220,69 @@ class TEPAdapter:
     process variable. Timestamps are generated synthetically at 3-minute
     intervals starting from a configurable start time.
 
+    Todos los valores configurables llegan por constructor para que los
+    parametros declarados en params.yaml sean efectivos; los valores por defecto
+    reproducen el comportamiento anterior a la parametrizacion.
+
     Attributes:
         start_time: UTC datetime used as the origin for synthetic timestamps.
+        sample_interval: Spacing between consecutive samples.
+        plant_id: Plant identifier stamped on every reading.
+        adc_scale_max: Denominator used to scale values into ADC counts.
+        calibration_date: Calibration date recorded in SensorMetadata.
+        last_maintenance: Maintenance date recorded in SensorMetadata.
+        drift_coefficient: Drift coefficient recorded in SensorMetadata.
     """
 
     def __init__(
-        self, start_time: datetime = _DEFAULT_START_TIME
+        self,
+        start_time: datetime = _DEFAULT_START_TIME,
+        sample_interval: timedelta = _SAMPLE_INTERVAL,
+        plant_id: str = _PLANT_ID,
+        adc_scale_max: float = _ADC_SCALE_MAX,
+        calibration_date: date = _CALIBRATION_DATE,
+        last_maintenance: date = _LAST_MAINTENANCE_DATE,
+        drift_coefficient: float = _DRIFT_COEFFICIENT,
     ) -> None:
-        """Initialise the adapter with an optional synthetic timestamp origin.
+        """Initialise the adapter.
 
         Args:
             start_time: UTC datetime for the first sample. Subsequent samples
-                are offset by multiples of 3 minutes.
+                are offset by multiples of sample_interval.
+            sample_interval: Spacing between consecutive TEP samples.
+            plant_id: Plant identifier stamped on every reading.
+            adc_scale_max: Normalisation denominator for raw_counts.
+            calibration_date: Calibration date recorded in SensorMetadata.
+            last_maintenance: Maintenance date recorded in SensorMetadata.
+            drift_coefficient: Drift coefficient recorded in SensorMetadata.
         """
         self.start_time = start_time
+        self.sample_interval = sample_interval
+        self.plant_id = plant_id
+        self.adc_scale_max = adc_scale_max
+        self.calibration_date = calibration_date
+        self.last_maintenance = last_maintenance
+        self.drift_coefficient = drift_coefficient
+
+    @classmethod
+    def from_params(cls, params: TEPParams) -> TEPAdapter:
+        """Build an adapter from the tep: section of params.yaml.
+
+        Args:
+            params: Resolved parameters.
+
+        Returns:
+            A TEPAdapter configured from params.
+        """
+        return cls(
+            start_time=params.start_time,
+            sample_interval=timedelta(minutes=params.sample_interval_minutes),
+            plant_id=params.plant_id,
+            adc_scale_max=params.adc_scale_max,
+            calibration_date=params.calibration_date,
+            last_maintenance=params.last_maintenance_date,
+            drift_coefficient=params.drift_coefficient,
+        )
 
     def _row_to_readings(
         self,
@@ -248,7 +300,7 @@ class TEPAdapter:
         Returns:
             List of 52 SensorReading instances, one per TEP variable.
         """
-        timestamp = self.start_time + row_index * _SAMPLE_INTERVAL
+        timestamp = self.start_time + row_index * self.sample_interval
         readings: list[SensorReading] = []
 
         for col_idx, value in enumerate(row):
@@ -256,7 +308,7 @@ class TEPAdapter:
             reading = SensorReading(
                 reading_id=uuid.uuid4(),
                 timestamp=timestamp,
-                plant_id=_PLANT_ID,
+                plant_id=self.plant_id,
                 sensor=SensorInfo(
                     id=_sensor_id(col_idx),
                     type=sensor_type,
@@ -267,12 +319,12 @@ class TEPAdapter:
                     value=float(value),
                     unit=_UNIT_MAP[sensor_type],
                     quality=quality,
-                    raw_counts=_to_raw_counts(float(value)),
+                    raw_counts=_to_raw_counts(float(value), self.adc_scale_max),
                 ),
                 metadata=SensorMetadata(
-                    calibration_date=_CALIBRATION_DATE,
-                    last_maintenance=_LAST_MAINTENANCE_DATE,
-                    drift_coefficient=_DRIFT_COEFFICIENT,
+                    calibration_date=self.calibration_date,
+                    last_maintenance=self.last_maintenance,
+                    drift_coefficient=self.drift_coefficient,
                 ),
             )
             readings.append(reading)
@@ -301,12 +353,7 @@ class TEPAdapter:
         quality = QualityFlag.GOOD if fault_type == 0 else QualityFlag.SUSPECT
 
         file_path = Path(filepath)
-        df = pd.read_csv(file_path, sep=r"\s+", header=None, engine="python")
-        if df.shape[1] != _N_COLUMNS:
-            raise ValueError(
-                f"Expected {_N_COLUMNS} columns in {file_path.name}, "
-                f"got {df.shape[1]}."
-            )
+        df = load_dat_file(file_path)
 
         all_readings: list[SensorReading] = []
         for row_index, row_values in enumerate(df.itertuples(index=False, name=None)):
@@ -374,14 +421,5 @@ class TEPAdapter:
         _LOG.info("adapt_all complete: %d total readings.", len(records))
         return pd.DataFrame(records)
 
-
-if __name__ == "__main__":
-    logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
-    adapter = TEPAdapter()
-    result_df = adapter.adapt_all("data/raw/tep")
-    save_to_parquet(result_df, "data/raw/tep")
-    print(f"Total readings: {len(result_df):,}")
-    print("Distribution by fault_type:")
-    for ft, count in result_df.groupby("fault_type").size().items():
-        label = "normal" if ft == 0 else f"fault_{ft:02d}"
-        print(f"  fault_type={ft:2d} ({label}): {count:,} readings")
+# El punto de entrada ejecutable vive en data/generators/adapt_tep.py, que lee
+# las rutas y la configuracion de params.yaml. Este modulo queda como libreria.

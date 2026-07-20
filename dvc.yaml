@@ -1,7 +1,57 @@
+# =============================================================================
+# ReactorGuard - Pipeline de datos TEP
+#
+# Cada stage declara params explicitos y granulares: cambiar tep.plant_id debe
+# invalidar adapt_tep pero no download_tep. Todos los parametros listados aqui
+# se leen en tiempo de ejecucion via data/generators/tep_params.py, de modo que
+# la invalidacion se corresponde con un cambio real de comportamiento.
+#
+# data/processed/tep vive fuera de data/raw/tep a proposito: anidar el out de
+# adapt_tep dentro del out de download_tep es una colision que DVC rechaza.
+# =============================================================================
+
 stages:
   download_tep:
     cmd: python data/generators/tep_downloader.py
     deps:
       - data/generators/tep_downloader.py
+      - data/generators/tep_params.py
+    params:
+      - tep.raw_dir
     outs:
-      - data/raw/tep/
+      - data/raw/tep
+
+  explore_tep:
+    cmd: python data/generators/tep_explorer.py
+    deps:
+      - data/generators/tep_explorer.py
+      - data/generators/tep_loader.py
+      - data/generators/tep_params.py
+      - data/raw/tep
+    params:
+      - tep.raw_dir
+      - tep.reports_dir
+    outs:
+      - data/reports
+
+  adapt_tep:
+    cmd: python data/generators/adapt_tep.py
+    deps:
+      - data/generators/adapt_tep.py
+      - data/generators/tep_adapter.py
+      - data/generators/tep_loader.py
+      - data/generators/tep_params.py
+      - data/schemas/sensor_reading.py
+      - data/raw/tep
+    params:
+      - tep.raw_dir
+      - tep.processed_dir
+      - tep.plant_id
+      - tep.start_time
+      - tep.sample_interval_minutes
+      - tep.adc_scale_max
+      - tep.calibration_date
+      - tep.last_maintenance_date
+      - tep.drift_coefficient
+    outs:
+      - data/processed/tep
