@@ -1,0 +1,336 @@
+# ==========================================================================
+# ReactorGuard - Spans calibrados por transmisor
+#
+# GENERADO por data/generators/derive_sensor_spans.py. Se revisa a mano y se
+# commitea; no es un artefacto de `dvc repro`.
+#
+#   Derivado de : d00.dat (operacion normal, exclusivamente)
+#   Margen span : 200% a cada lado del rango observado
+#   Margen alarma: 20% a cada lado del rango observado
+#
+# Dos rangos por sensor, porque sus consumidores necesitan anchos distintos:
+#
+#   [min, max]              span calibrado del transmisor. Escalado a cuentas
+#                           ADC en data/generators/tep_adapter.py. Todo lo que
+#                           cae fuera se recorta de forma irreversible, asi que
+#                           es deliberadamente ancho.
+#   [alarm_min, alarm_max]  sobre de operacion normal. Umbral del detector de
+#                           fuera-de-rango en data/validation/sensor_validator.py.
+#
+# Ambos se leen a traves de data/schemas/sensor_spans.py, de modo que no
+# existan dos respuestas a que es un valor valido para un canal dado.
+# ==========================================================================
+
+sensors:
+  TEP-XMEAS-01:
+    min: -0.14324
+    max: 0.66691
+    alarm_min: 0.148414
+    alarm_max: 0.375256
+    unit: kg_s
+  TEP-XMEAS-02:
+    min: 3169.1
+    max: 4145.1
+    alarm_min: 3520.46
+    alarm_max: 3793.74
+    unit: kg_s
+  TEP-XMEAS-03:
+    min: 4058.0
+    max: 4962.5
+    alarm_min: 4383.62
+    alarm_max: 4636.88
+    unit: kg_s
+  TEP-XMEAS-04:
+    min: 8.2002
+    max: 10.5212
+    alarm_min: 9.03576
+    alarm_max: 9.68564
+    unit: kg_s
+  TEP-XMEAS-05:
+    min: 23.782
+    max: 30.027
+    alarm_min: 26.0302
+    alarm_max: 27.7788
+    unit: kg_s
+  TEP-XMEAS-06:
+    min: 39.127
+    max: 45.457
+    alarm_min: 41.4058
+    alarm_max: 43.1782
+    unit: kg_s
+  TEP-XMEAS-07:
+    min: 2639.9
+    max: 2766.4
+    alarm_min: 2685.44
+    alarm_max: 2720.86
+    unit: bar
+  TEP-XMEAS-08:
+    min: 67.351
+    max: 83.016
+    alarm_min: 72.9904
+    alarm_max: 77.3766
+    unit: kg_s
+  TEP-XMEAS-09:
+    min: 120.15
+    max: 120.65
+    alarm_min: 120.33
+    alarm_max: 120.47
+    unit: celsius
+  TEP-XMEAS-10:
+    min: 0.17511
+    max: 0.50006
+    alarm_min: 0.292092
+    alarm_max: 0.383078
+    unit: kg_s
+  TEP-XMEAS-11:
+    min: 76.911
+    max: 83.191
+    alarm_min: 79.1718
+    alarm_max: 80.9302
+    unit: celsius
+  TEP-XMEAS-12:
+    min: 35.364
+    max: 65.054
+    alarm_min: 46.0524
+    alarm_max: 54.3656
+    unit: kg_s
+  TEP-XMEAS-13:
+    min: 2567.6
+    max: 2696.6
+    alarm_min: 2614.04
+    alarm_max: 2650.16
+    unit: bar
+  TEP-XMEAS-14:
+    min: 8.311
+    max: 42.226
+    alarm_min: 20.5204
+    alarm_max: 30.0166
+    unit: kg_s
+  TEP-XMEAS-15:
+    min: 35.168
+    max: 64.653
+    alarm_min: 45.7826
+    alarm_max: 54.0384
+    unit: kg_s
+  TEP-XMEAS-16:
+    min: 3040.1
+    max: 3162.6
+    alarm_min: 3084.2
+    alarm_max: 3118.5
+    unit: bar
+  TEP-XMEAS-17:
+    min: 13.05
+    max: 32.455
+    alarm_min: 20.0358
+    alarm_max: 25.4692
+    unit: kg_s
+  TEP-XMEAS-18:
+    min: 62.027
+    max: 69.422
+    alarm_min: 64.6892
+    alarm_max: 66.7598
+    unit: celsius
+  TEP-XMEAS-19:
+    min: 128.47
+    max: 330.72
+    alarm_min: 201.28
+    alarm_max: 257.91
+    unit: kg_s
+  TEP-XMEAS-20:
+    min: 324.35
+    max: 357.9
+    alarm_min: 336.428
+    alarm_max: 345.822
+    unit: kg_s
+  TEP-XMEAS-21:
+    min: 92.948
+    max: 96.288
+    alarm_min: 94.1504
+    alarm_max: 95.0856
+    unit: celsius
+  TEP-XMEAS-22:
+    min: 72.865
+    max: 81.5
+    alarm_min: 75.9736
+    alarm_max: 78.3914
+    unit: celsius
+  TEP-XMEAS-23:
+    min: 28.279
+    max: 35.919
+    alarm_min: 31.0294
+    alarm_max: 33.1686
+    unit: normalized
+  TEP-XMEAS-24:
+    min: 7.6685
+    max: 10.137
+    alarm_min: 8.55716
+    alarm_max: 9.24834
+    unit: normalized
+  TEP-XMEAS-25:
+    min: 22.942
+    max: 30.007
+    alarm_min: 25.4854
+    alarm_max: 27.4636
+    unit: normalized
+  TEP-XMEAS-26:
+    min: 5.5333
+    max: 8.2733
+    alarm_min: 6.5197
+    alarm_max: 7.2869
+    unit: normalized
+  TEP-XMEAS-27:
+    min: 15.275
+    max: 22.075
+    alarm_min: 17.723
+    alarm_max: 19.627
+    unit: normalized
+  TEP-XMEAS-28:
+    min: 1.2884
+    max: 2.0109
+    alarm_min: 1.5485
+    alarm_max: 1.7508
+    unit: normalized
+  TEP-XMEAS-29:
+    min: 28.301
+    max: 37.431
+    alarm_min: 31.5878
+    alarm_max: 34.1442
+    unit: normalized
+  TEP-XMEAS-30:
+    min: 12.348
+    max: 15.323
+    alarm_min: 13.419
+    alarm_max: 14.252
+    unit: normalized
+  TEP-XMEAS-31:
+    min: 19.784
+    max: 28.174
+    alarm_min: 22.8044
+    alarm_max: 25.1536
+    unit: normalized
+  TEP-XMEAS-32:
+    min: -0.01646
+    max: 2.51364
+    alarm_min: 0.894376
+    alarm_max: 1.602804
+    unit: normalized
+  TEP-XMEAS-33:
+    min: 14.285
+    max: 22.75
+    alarm_min: 17.3324
+    alarm_max: 19.7026
+    unit: normalized
+  TEP-XMEAS-34:
+    min: 1.8934
+    max: 2.6234
+    alarm_min: 2.1562
+    alarm_max: 2.3606
+    unit: normalized
+  TEP-XMEAS-35:
+    min: 3.9732
+    max: 5.7397
+    alarm_min: 4.60914
+    alarm_max: 5.10376
+    unit: normalized
+  TEP-XMEAS-36:
+    min: 1.555
+    max: 3.0145
+    alarm_min: 2.08042
+    alarm_max: 2.48908
+    unit: normalized
+  TEP-XMEAS-37:
+    min: -0.088468
+    max: 0.126465
+    alarm_min: -0.011092
+    alarm_max: 0.049089
+    unit: normalized
+  TEP-XMEAS-38:
+    min: 0.65906
+    max: 1.00946
+    alarm_min: 0.785204
+    alarm_max: 0.883316
+    unit: normalized
+  TEP-XMEAS-39:
+    min: -0.011979
+    max: 0.215036
+    alarm_min: 0.069746
+    alarm_max: 0.133311
+    unit: normalized
+  TEP-XMEAS-40:
+    min: 47.632
+    max: 60.007
+    alarm_min: 52.087
+    alarm_max: 55.552
+    unit: normalized
+  TEP-XMEAS-41:
+    min: 36.646
+    max: 50.506
+    alarm_min: 41.6356
+    alarm_max: 45.5164
+    unit: normalized
+  TEP-XMV-01:
+    min: 55.016
+    max: 70.716
+    alarm_min: 60.668
+    alarm_max: 65.064
+    unit: percent
+  TEP-XMV-02:
+    min: 48.115
+    max: 59.775
+    alarm_min: 52.3126
+    alarm_max: 55.5774
+    unit: percent
+  TEP-XMV-03:
+    min: -14.021
+    max: 65.484
+    alarm_min: 14.6008
+    alarm_max: 36.8622
+    unit: percent
+  TEP-XMV-04:
+    min: 43.063
+    max: 80.163
+    alarm_min: 56.419
+    alarm_max: 66.807
+    unit: percent
+  TEP-XMV-05:
+    min: 15.669
+    max: 28.409
+    alarm_min: 20.2554
+    alarm_max: 23.8226
+    unit: percent
+  TEP-XMV-06:
+    min: 17.281
+    max: 62.771
+    alarm_min: 33.6574
+    alarm_max: 46.3946
+    unit: percent
+  TEP-XMV-07:
+    min: -4.975
+    max: 82.405
+    alarm_min: 26.4818
+    alarm_max: 50.9482
+    unit: percent
+  TEP-XMV-08:
+    min: 12.208
+    max: 80.448
+    alarm_min: 36.7744
+    alarm_max: 55.8816
+    unit: percent
+  TEP-XMV-09:
+    min: 22.238
+    max: 72.048
+    alarm_min: 40.1696
+    alarm_max: 54.1164
+    unit: percent
+  TEP-XMV-10:
+    min: 33.248
+    max: 48.903
+    alarm_min: 38.8838
+    alarm_max: 43.2672
+    unit: percent
+  TEP-XMV-11:
+    min: -4.261
+    max: 41.414
+    alarm_min: 12.182
+    alarm_max: 24.971
+    unit: percent

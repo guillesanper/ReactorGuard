@@ -32,7 +32,11 @@ class TEPParams:
         plant_id: Plant identifier stamped on every SensorReading.
         start_time: UTC origin for the synthetic timestamp series.
         sample_interval_minutes: Spacing between consecutive TEP samples.
-        adc_scale_max: Denominator used to scale values into 16-bit ADC counts.
+        spans_path: Path to the calibrated per-sensor span table. Sustituye al
+            antiguo adc_scale_max: un denominador global saturaba el 5,86% de
+            las lecturas y desperdiciaba resolucion en los canales de baja
+            escala. El fichero apuntado se declara como `deps` del stage, de
+            modo que su contenido tambien invalida la reproduccion.
         calibration_date: Calibration date recorded in SensorMetadata.
         last_maintenance_date: Maintenance date recorded in SensorMetadata.
         drift_coefficient: Drift coefficient recorded in SensorMetadata.
@@ -44,7 +48,7 @@ class TEPParams:
     plant_id: str
     start_time: datetime
     sample_interval_minutes: int
-    adc_scale_max: float
+    spans_path: Path
     calibration_date: date
     last_maintenance_date: date
     drift_coefficient: float
@@ -132,7 +136,7 @@ def load_tep_params(params_path: str | Path = DEFAULT_PARAMS_PATH) -> TEPParams:
         plant_id=str(_require(section, "plant_id")),
         start_time=start_time,
         sample_interval_minutes=int(_require(section, "sample_interval_minutes")),
-        adc_scale_max=float(_require(section, "adc_scale_max")),
+        spans_path=Path(str(_require(section, "spans_path"))),
         calibration_date=_as_date(_require(section, "calibration_date")),
         last_maintenance_date=_as_date(_require(section, "last_maintenance_date")),
         drift_coefficient=float(_require(section, "drift_coefficient")),

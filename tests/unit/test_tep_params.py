@@ -14,7 +14,9 @@ from pathlib import Path
 import pytest
 import yaml
 
+from data.generators.tep_loader import N_COLUMNS
 from data.generators.tep_params import DEFAULT_PARAMS_PATH, TEPParams, load_tep_params
+from data.schemas.sensor_spans import load_sensor_spans
 
 _VALID_SECTION = {
     "raw_dir": "data/raw/tep",
@@ -23,7 +25,7 @@ _VALID_SECTION = {
     "plant_id": "TEP-PLANT-01",
     "start_time": "2000-01-01T00:00:00+00:00",
     "sample_interval_minutes": 3,
-    "adc_scale_max": 3000.0,
+    "spans_path": "configs/sensor_spans.yaml",
     "calibration_date": "2023-06-01",
     "last_maintenance_date": "2023-12-01",
     "drift_coefficient": 0.0001,
@@ -55,6 +57,7 @@ class TestLoadValidParams:
         assert params.raw_dir == Path("data/raw/tep")
         assert params.processed_dir == Path("data/processed/tep")
         assert params.reports_dir == Path("data/reports")
+        assert params.spans_path == Path("configs/sensor_spans.yaml")
 
     def test_start_time_is_timezone_aware(self, params_file: Path) -> None:
         """start_time must parse into an aware datetime."""
@@ -79,7 +82,6 @@ class TestLoadValidParams:
         """Numeric parameters must arrive with their declared types."""
         params = load_tep_params(params_file)
         assert params.sample_interval_minutes == 3
-        assert params.adc_scale_max == pytest.approx(3000.0)
         assert params.drift_coefficient == pytest.approx(0.0001)
 
     def test_is_frozen(self, params_file: Path) -> None:
@@ -102,6 +104,19 @@ class TestRepositoryParamsFile:
         """adapt_tep's out must not live inside download_tep's out."""
         params = load_tep_params(DEFAULT_PARAMS_PATH)
         assert params.raw_dir not in params.processed_dir.parents
+
+    def test_committed_span_table_covers_every_tep_tag(self) -> None:
+        """The span table shipped in the repo must resolve and be complete.
+
+        El fichero se genera a mano con derive_sensor_spans.py y se commitea, de
+        modo que nada en `dvc repro` lo regenera si se queda corto. Este test es
+        lo que convierte esa omision en un fallo visible.
+        """
+        params = load_tep_params(DEFAULT_PARAMS_PATH)
+        spans = load_sensor_spans(params.spans_path)
+        assert len(spans) == N_COLUMNS
+        for tag, span in spans.items():
+            assert span.min < span.alarm_min < span.alarm_max < span.max, tag
 
 
 class TestInvalidParams:

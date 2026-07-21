@@ -33,6 +33,19 @@ htmlcov/
 coverage.xml
 *.cover
 
+# Resultados de evaluacion (tests/results/validator_metrics_tep.json y sucesores).
+#
+# Se regeneran corriendo la suite y NO se versionan, por dos motivos. Llevan
+# medidas de reloj (latency_ms) que cambian en cada ejecucion, de modo que
+# versionarlos ensuciaria el arbol despues de cada pytest. Y el criterio que
+# contienen ya lo hace cumplir el propio test: el fichero es el informe, no la
+# puerta. Verify-Phase2.ps1 (T4.7) lo consume tras ejecutar la suite, no de un
+# clon recien hecho.
+#
+# Regla explicita a proposito: hasta ahora caian bajo el comodin *.json de la
+# seccion de secretos, que los ignoraba por accidente y no por decision.
+tests/results/
+
 # =============================================================================
 # Terraform
 # =============================================================================
@@ -102,12 +115,22 @@ data/processed/
 # =============================================================================
 # Secrets & Credentials
 # =============================================================================
-# GCP service account keys — NEVER commit
+# GCP service account keys — NEVER commit.
+#
+# El comodin se mantiene a proposito: una clave descargada aterriza con el
+# nombre que le ponga la consola de GCP, y enumerar patrones deja fuera justo el
+# que nadie previo. El coste es que ignora TODO json, incluidos los que son
+# codigo fuente, asi que cada directorio que legitimamente versiona json necesita
+# su excepcion explicita abajo. Una excepcion es una decision visible en el diff;
+# un fichero que desaparece en silencio, no.
 *.json
-!pyproject.toml         # not a secret, but let's be safe with *.json
 service-account*.json
 *-key.json
 credentials.json
+
+# Excepciones: json que es fuente, no credencial.
+# Los dashboards de Grafana (T4.6) se versionan y se despliegan como ConfigMap.
+!observability/**/*.json
 
 # Environment variable files
 .env

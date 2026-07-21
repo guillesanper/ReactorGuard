@@ -9,8 +9,8 @@ stages:
       size: 5791
     - path: data/generators/tep_params.py
       hash: md5
-      md5: 5a26a1b579981d8906d2929cec0d91f4
-      size: 4682
+      md5: 628f5b60f4bd5c30a2d886664451e994
+      size: 4973
     params:
       params.yaml:
         tep.raw_dir: data/raw/tep
@@ -33,8 +33,8 @@ stages:
       size: 2485
     - path: data/generators/tep_params.py
       hash: md5
-      md5: 5a26a1b579981d8906d2929cec0d91f4
-      size: 4682
+      md5: 628f5b60f4bd5c30a2d886664451e994
+      size: 4973
     - path: data/raw/tep
       hash: md5
       md5: e82fbd78a973f4d893df0040403ccdba.dir
@@ -53,22 +53,26 @@ stages:
   adapt_tep:
     cmd: python data/generators/adapt_tep.py
     deps:
+    - path: configs/sensor_spans.yaml
+      hash: md5
+      md5: dfa1026d240cdb3d0193c76a0cc0ec76
+      size: 7335
     - path: data/generators/adapt_tep.py
       hash: md5
-      md5: a0b7af87b1e99e3abb9e100383257f1f
-      size: 2374
+      md5: 98056edb70ed79d2d24b36f38d1af359
+      size: 2668
     - path: data/generators/tep_adapter.py
       hash: md5
-      md5: 05ef687469a7f343c9b61332c8bb1c94
-      size: 17155
+      md5: 5079d258fa3515c901baa8f6cc3183f2
+      size: 18956
     - path: data/generators/tep_loader.py
       hash: md5
       md5: 4b1c39a335782e73a910c66d92b80b5b
       size: 2485
     - path: data/generators/tep_params.py
       hash: md5
-      md5: 5a26a1b579981d8906d2929cec0d91f4
-      size: 4682
+      md5: 628f5b60f4bd5c30a2d886664451e994
+      size: 4973
     - path: data/raw/tep
       hash: md5
       md5: e82fbd78a973f4d893df0040403ccdba.dir
@@ -78,9 +82,12 @@ stages:
       hash: md5
       md5: 17dd31fc9a8435d77f213aff76c7a139
       size: 7049
+    - path: data/schemas/sensor_spans.py
+      hash: md5
+      md5: 86dd5cedbe46a89d54e290a01ff0b052
+      size: 7438
     params:
       params.yaml:
-        tep.adc_scale_max: 3000.0
         tep.calibration_date: '2023-06-01'
         tep.drift_coefficient: 0.0001
         tep.last_maintenance_date: '2023-12-01'
@@ -88,10 +95,11 @@ stages:
         tep.processed_dir: data/processed/tep
         tep.raw_dir: data/raw/tep
         tep.sample_interval_minutes: 3
+        tep.spans_path: configs/sensor_spans.yaml
         tep.start_time: '2000-01-01T00:00:00+00:00'
     outs:
     - path: data/processed/tep
       hash: md5
-      md5: 42d8c82dd910ec2c75ef5253a8c3baec.dir
-      size: 24707713
+      md5: a8ac1f90781fb45561ab923f79621fa5.dir
+      size: 25615806
       nfiles: 22

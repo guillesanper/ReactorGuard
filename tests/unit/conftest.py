@@ -9,13 +9,57 @@ from typing import Any
 import pytest
 import yaml
 
+from data.generators.tep_adapter import SENSOR_TYPE_MAP, UNIT_MAP, sensor_id
 from data.generators.tep_loader import N_COLUMNS
+from data.schemas.sensor_spans import SensorSpan
 
 WriteParams = Callable[..., Path]
 
+# Span sintetico deliberadamente ancho: cubre con holgura los valores que genera
+# make_dat_dir, de modo que ningun test de adaptacion falle por recorte del ADC
+# salvo que ese sea justo lo que comprueba.
+_TEST_SPAN_LIMIT = 10_000.0
+_TEST_ALARM_LIMIT = 5_000.0
+
 
 @pytest.fixture()
-def write_params(tmp_path: Path) -> WriteParams:
+def sensor_spans() -> dict[str, SensorSpan]:
+    """Return a span table covering all 52 TEP tags with wide synthetic limits."""
+    return {
+        sensor_id(col): SensorSpan(
+            sensor_id=sensor_id(col),
+            min=-_TEST_SPAN_LIMIT,
+            max=_TEST_SPAN_LIMIT,
+            alarm_min=-_TEST_ALARM_LIMIT,
+            alarm_max=_TEST_ALARM_LIMIT,
+            unit=UNIT_MAP[SENSOR_TYPE_MAP[col]].value,
+        )
+        for col in range(N_COLUMNS)
+    }
+
+
+@pytest.fixture()
+def spans_file(tmp_path: Path, sensor_spans: dict[str, SensorSpan]) -> Path:
+    """Write the synthetic span table to disk and return its path."""
+    document = {
+        "sensors": {
+            tag: {
+                "min": span.min,
+                "max": span.max,
+                "alarm_min": span.alarm_min,
+                "alarm_max": span.alarm_max,
+                "unit": span.unit,
+            }
+            for tag, span in sensor_spans.items()
+        }
+    }
+    path = tmp_path / "sensor_spans.yaml"
+    path.write_text(yaml.safe_dump(document, sort_keys=False), encoding="utf-8")
+    return path
+
+
+@pytest.fixture()
+def write_params(tmp_path: Path, spans_file: Path) -> WriteParams:
     """Return a factory that writes a valid params.yaml into tmp_path.
 
     The factory accepts keyword overrides for any key of the tep: section, so a
@@ -30,7 +74,7 @@ def write_params(tmp_path: Path) -> WriteParams:
             "plant_id": "TEP-PLANT-01",
             "start_time": "2000-01-01T00:00:00+00:00",
             "sample_interval_minutes": 3,
-            "adc_scale_max": 3000.0,
+            "spans_path": str(spans_file),
             "calibration_date": "2023-06-01",
             "last_maintenance_date": "2023-12-01",
             "drift_coefficient": 0.0001,

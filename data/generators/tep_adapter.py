@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import logging
 import uuid
+from collections.abc import Iterator
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 
@@ -31,6 +32,7 @@ from data.schemas.sensor_reading import (
     SensorReading,
     SensorType,
 )
+from data.schemas.sensor_spans import SensorSpan
 
 _LOG = logging.getLogger(__name__)
 
@@ -46,10 +48,6 @@ _DEFAULT_START_TIME = datetime(2000, 1, 1, 0, 0, 0, tzinfo=UTC)
 _CALIBRATION_DATE = date(2023, 6, 1)
 _LAST_MAINTENANCE_DATE = date(2023, 12, 1)
 _DRIFT_COEFFICIENT = 0.0001
-
-# Maximum expected TEP value used to scale floats into a 16-bit ADC range.
-# TEP pressures reach ~3000 kPa; all other variables are well below this.
-_ADC_SCALE_MAX = 3000.0
 
 _FILE_NAMES: list[str] = ["d00.dat"] + [f"d{i:02d}.dat" for i in range(1, 22)]
 
@@ -116,10 +114,13 @@ def _build_location_map() -> dict[int, SensorLocation]:
     return mapping
 
 
-_SENSOR_TYPE_MAP: dict[int, SensorType] = _build_sensor_type_map()
-_LOCATION_MAP: dict[int, SensorLocation] = _build_location_map()
+# Publicos: son el contrato de identidad de las 52 columnas del TEP, compartido
+# con data/generators/derive_sensor_spans.py, que necesita el tipo y la unidad de
+# cada canal para etiquetar los spans que deriva.
+SENSOR_TYPE_MAP: dict[int, SensorType] = _build_sensor_type_map()
+LOCATION_MAP: dict[int, SensorLocation] = _build_location_map()
 
-_UNIT_MAP: dict[SensorType, MeasurementUnit] = {
+UNIT_MAP: dict[SensorType, MeasurementUnit] = {
     SensorType.THERMOCOUPLE: MeasurementUnit.CELSIUS,
     SensorType.PRESSURE: MeasurementUnit.BAR,
     SensorType.FLOW: MeasurementUnit.KG_S,
@@ -132,7 +133,7 @@ _UNIT_MAP: dict[SensorType, MeasurementUnit] = {
 # ---------------------------------------------------------------------------
 
 
-def _sensor_id(col_idx: int) -> str:
+def sensor_id(col_idx: int) -> str:
     """Return the canonical sensor identifier for a given column index.
 
     Args:
@@ -161,20 +162,23 @@ def _elevation_m(col_idx: int) -> float:
     return float((col_idx % 55) * 2 - 10)
 
 
-def _to_raw_counts(value: float, scale_max: float = _ADC_SCALE_MAX) -> int:
-    """Scale a TEP process value to a 16-bit ADC count in [0, 65535].
+def _to_raw_counts(value: float, span: SensorSpan) -> int:
+    """Scale a TEP process value to a 16-bit ADC count using its calibrated span.
 
-    Values whose magnitude exceeds scale_max saturate at 65535.
+    El escalado es (value - min) / (max - min) * 65535 con clamp en ambos
+    extremos. Un denominador global comun a los 52 canales saturaba el 5,86% de
+    las lecturas en XMEAS-02, -03, -07 y -16, y a la vez dejaba las variables de
+    composicion ocupando el 1% del rango; el span por transmisor resuelve ambos
+    extremos a la vez.
 
     Args:
         value: TEP process value in engineering units.
-        scale_max: Normalisation denominator, in the same engineering units.
+        span: Calibrated span of the sensor this value belongs to.
 
     Returns:
         Integer ADC count in [0, 65535].
     """
-    scaled = abs(value) / scale_max * 65535.0
-    return int(min(max(scaled, 0.0), 65535.0))
+    return span.to_raw_counts(value)
 
 
 # ---------------------------------------------------------------------------
@@ -208,6 +212,87 @@ def save_to_parquet(df: pd.DataFrame, output_dir: str) -> None:
         )
 
 
+def readings_from_frame(
+    frame: pd.DataFrame,
+    calibration_date: date = _CALIBRATION_DATE,
+    last_maintenance: date = _LAST_MAINTENANCE_DATE,
+    drift_coefficient: float = _DRIFT_COEFFICIENT,
+) -> Iterator[SensorReading]:
+    """Rebuild SensorReading objects from the long-format frame.
+
+    Inverso de TEPAdapter.adapt_all, y vive aqui porque es este modulo el que
+    define ese formato largo. Lo necesita todo consumidor que trabaje desde el
+    parquet en lugar de desde los .dat: el validador opera sobre el contrato
+    SensorReading, no sobre filas de un DataFrame.
+
+    Las lecturas se emiten en el orden de las filas del frame. El orden importa:
+    los detectores del validador tienen estado por sensor y lo construyen segun
+    van llegando las lecturas, de modo que reordenar el frame cambia lo que ven.
+
+    Los tres campos de SensorMetadata no viajan en el formato largo, porque son
+    constantes de la corrida y no propiedades de la lectura. Se reinyectan desde
+    los argumentos, cuyos valores por defecto son los mismos que usa el adaptador.
+    Ningun detector los lee.
+
+    Args:
+        frame: Long-format frame with the columns produced by adapt_all.
+        calibration_date: Calibration date stamped on every reading.
+        last_maintenance: Maintenance date stamped on every reading.
+        drift_coefficient: Drift coefficient stamped on every reading.
+
+    Yields:
+        One validated SensorReading per row, in row order.
+
+    Raises:
+        KeyError: If the frame is missing a column the schema requires.
+        pydantic.ValidationError: If a row does not satisfy the contract.
+    """
+    required = {
+        "reading_id",
+        "timestamp",
+        "plant_id",
+        "sensor_id",
+        "sensor_type",
+        "sensor_location",
+        "elevation_m",
+        "value",
+        "unit",
+        "quality",
+        "raw_counts",
+    }
+    missing = required - set(frame.columns)
+    if missing:
+        raise KeyError(
+            f"Frame is missing columns required to rebuild readings: {sorted(missing)}."
+        )
+
+    metadata = SensorMetadata(
+        calibration_date=calibration_date,
+        last_maintenance=last_maintenance,
+        drift_coefficient=drift_coefficient,
+    )
+
+    for row in frame.itertuples(index=False):
+        yield SensorReading(
+            reading_id=uuid.UUID(str(row.reading_id)),
+            timestamp=pd.Timestamp(row.timestamp).to_pydatetime(),
+            plant_id=str(row.plant_id),
+            sensor=SensorInfo(
+                id=str(row.sensor_id),
+                type=SensorType(row.sensor_type),
+                location=SensorLocation(row.sensor_location),
+                elevation_m=float(row.elevation_m),
+            ),
+            measurement=Measurement(
+                value=None if pd.isna(row.value) else float(row.value),
+                unit=MeasurementUnit(row.unit),
+                quality=QualityFlag(row.quality),
+                raw_counts=int(row.raw_counts),
+            ),
+            metadata=metadata,
+        )
+
+
 # ---------------------------------------------------------------------------
 # Adapter class
 # ---------------------------------------------------------------------------
@@ -225,10 +310,10 @@ class TEPAdapter:
     reproducen el comportamiento anterior a la parametrizacion.
 
     Attributes:
+        spans: Calibrated span per sensor_id, used to scale raw_counts.
         start_time: UTC datetime used as the origin for synthetic timestamps.
         sample_interval: Spacing between consecutive samples.
         plant_id: Plant identifier stamped on every reading.
-        adc_scale_max: Denominator used to scale values into ADC counts.
         calibration_date: Calibration date recorded in SensorMetadata.
         last_maintenance: Maintenance date recorded in SensorMetadata.
         drift_coefficient: Drift coefficient recorded in SensorMetadata.
@@ -236,10 +321,10 @@ class TEPAdapter:
 
     def __init__(
         self,
+        spans: dict[str, SensorSpan],
         start_time: datetime = _DEFAULT_START_TIME,
         sample_interval: timedelta = _SAMPLE_INTERVAL,
         plant_id: str = _PLANT_ID,
-        adc_scale_max: float = _ADC_SCALE_MAX,
         calibration_date: date = _CALIBRATION_DATE,
         last_maintenance: date = _LAST_MAINTENANCE_DATE,
         drift_coefficient: float = _DRIFT_COEFFICIENT,
@@ -247,38 +332,57 @@ class TEPAdapter:
         """Initialise the adapter.
 
         Args:
+            spans: Calibrated span per sensor_id, as loaded from
+                configs/sensor_spans.yaml. Must cover all 52 TEP tags.
             start_time: UTC datetime for the first sample. Subsequent samples
                 are offset by multiples of sample_interval.
             sample_interval: Spacing between consecutive TEP samples.
             plant_id: Plant identifier stamped on every reading.
-            adc_scale_max: Normalisation denominator for raw_counts.
             calibration_date: Calibration date recorded in SensorMetadata.
             last_maintenance: Maintenance date recorded in SensorMetadata.
             drift_coefficient: Drift coefficient recorded in SensorMetadata.
+
+        Raises:
+            KeyError: If spans does not cover every TEP sensor tag.
         """
+        missing = [
+            sensor_id(col) for col in range(_N_COLUMNS) if sensor_id(col) not in spans
+        ]
+        if missing:
+            raise KeyError(
+                f"Sensor span table is missing {len(missing)} TEP tags: "
+                f"{', '.join(missing[:5])}"
+                f"{'...' if len(missing) > 5 else ''}. "
+                "Regenerate it with data/generators/derive_sensor_spans.py."
+            )
+
+        self.spans = spans
         self.start_time = start_time
         self.sample_interval = sample_interval
         self.plant_id = plant_id
-        self.adc_scale_max = adc_scale_max
         self.calibration_date = calibration_date
         self.last_maintenance = last_maintenance
         self.drift_coefficient = drift_coefficient
 
     @classmethod
-    def from_params(cls, params: TEPParams) -> TEPAdapter:
+    def from_params(cls, params: TEPParams, spans: dict[str, SensorSpan]) -> TEPAdapter:
         """Build an adapter from the tep: section of params.yaml.
 
         Args:
             params: Resolved parameters.
+            spans: Calibrated span per sensor_id.
 
         Returns:
             A TEPAdapter configured from params.
+
+        Raises:
+            KeyError: If spans does not cover every TEP sensor tag.
         """
         return cls(
+            spans=spans,
             start_time=params.start_time,
             sample_interval=timedelta(minutes=params.sample_interval_minutes),
             plant_id=params.plant_id,
-            adc_scale_max=params.adc_scale_max,
             calibration_date=params.calibration_date,
             last_maintenance=params.last_maintenance_date,
             drift_coefficient=params.drift_coefficient,
@@ -288,14 +392,12 @@ class TEPAdapter:
         self,
         row: list[float],
         row_index: int,
-        quality: QualityFlag,
     ) -> list[SensorReading]:
         """Convert a single TEP data row to a list of 52 SensorReading objects.
 
         Args:
             row: List of 52 float values for a single timestep.
             row_index: Zero-based row index used to compute the timestamp.
-            quality: Quality flag applied to all readings in this row.
 
         Returns:
             List of 52 SensorReading instances, one per TEP variable.
@@ -304,22 +406,23 @@ class TEPAdapter:
         readings: list[SensorReading] = []
 
         for col_idx, value in enumerate(row):
-            sensor_type = _SENSOR_TYPE_MAP[col_idx]
+            sensor_type = SENSOR_TYPE_MAP[col_idx]
+            tag = sensor_id(col_idx)
             reading = SensorReading(
                 reading_id=uuid.uuid4(),
                 timestamp=timestamp,
                 plant_id=self.plant_id,
                 sensor=SensorInfo(
-                    id=_sensor_id(col_idx),
+                    id=tag,
                     type=sensor_type,
-                    location=_LOCATION_MAP[col_idx],
+                    location=LOCATION_MAP[col_idx],
                     elevation_m=_elevation_m(col_idx),
                 ),
                 measurement=Measurement(
                     value=float(value),
-                    unit=_UNIT_MAP[sensor_type],
-                    quality=quality,
-                    raw_counts=_to_raw_counts(float(value), self.adc_scale_max),
+                    unit=UNIT_MAP[sensor_type],
+                    quality=QualityFlag.GOOD,
+                    raw_counts=_to_raw_counts(float(value), self.spans[tag]),
                 ),
                 metadata=SensorMetadata(
                     calibration_date=self.calibration_date,
@@ -334,13 +437,19 @@ class TEPAdapter:
     def adapt_file(self, filepath: str, fault_type: int) -> list[SensorReading]:
         """Adapt all rows in a TEP .dat file to SensorReading objects.
 
-        Quality is determined by fault_type:
-            fault_type == 0  ->  QualityFlag.GOOD   (normal operation)
-            fault_type >= 1  ->  QualityFlag.SUSPECT (fault period)
+        Todas las lecturas se emiten con QualityFlag.GOOD, incluidas las de los
+        ficheros de fallo. QualityFlag describe la fiabilidad del transmisor;
+        los fallos del TEP son perturbaciones de proceso, que se registran en
+        fault_type. Son campos ortogonales: marcar SUSPECT por fault_type>=1
+        confundia "la planta esta perturbada" con "el instrumento no es fiable",
+        y convertia cualquier evaluacion del validador contra fault_type en una
+        tautologia. El dataset no aporta informacion de salud de instrumento, de
+        modo que GOOD es la unica lectura honesta del campo.
 
         Args:
             filepath: Path to a TEP .dat file (whitespace-delimited, no header).
             fault_type: Integer fault identifier (0 = normal, 1-21 = fault).
+                Recorded on the output rows; it does not affect quality.
 
         Returns:
             Flat list of SensorReading objects. For a file with N rows the list
@@ -350,16 +459,12 @@ class TEPAdapter:
             ValueError: If the file does not contain exactly 52 columns.
             FileNotFoundError: If filepath does not exist.
         """
-        quality = QualityFlag.GOOD if fault_type == 0 else QualityFlag.SUSPECT
-
         file_path = Path(filepath)
         df = load_dat_file(file_path)
 
         all_readings: list[SensorReading] = []
         for row_index, row_values in enumerate(df.itertuples(index=False, name=None)):
-            all_readings.extend(
-                self._row_to_readings(list(row_values), row_index, quality)
-            )
+            all_readings.extend(self._row_to_readings(list(row_values), row_index))
 
         _LOG.info(
             "Adapted %d rows x %d columns = %d readings from %s (fault_type=%d).",
@@ -383,9 +488,15 @@ class TEPAdapter:
 
         Returns:
             DataFrame with columns:
-                reading_id, timestamp, plant_id, sensor_id, sensor_type,
-                sensor_location, elevation_m, value, unit, quality,
-                raw_counts, fault_type, is_usable.
+                reading_id, timestamp, timestep, plant_id, sensor_id,
+                sensor_type, sensor_location, elevation_m, value, unit,
+                quality, raw_counts, fault_type, is_usable.
+
+            timestep is the zero-based sample index within its source file. It
+            is redundant with timestamp inside one file, but every file restarts
+            the clock at start_time, so (fault_type, timestep, sensor_id) is the
+            primary key of the long-format table and the index the validation
+            confusion matrix and the wide-format pivot are built on.
         """
         data_path = Path(data_dir)
         records: list[dict[str, object]] = []
@@ -399,11 +510,12 @@ class TEPAdapter:
             _LOG.info("Adapting %s (fault_type=%d).", filename, fault_type)
             readings = self.adapt_file(str(filepath), fault_type)
 
-            for reading in readings:
+            for offset, reading in enumerate(readings):
                 records.append(
                     {
                         "reading_id": str(reading.reading_id),
                         "timestamp": reading.timestamp,
+                        "timestep": offset // _N_COLUMNS,
                         "plant_id": reading.plant_id,
                         "sensor_id": reading.sensor.id,
                         "sensor_type": reading.sensor.type.value,

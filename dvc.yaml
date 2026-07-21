@@ -42,14 +42,19 @@ stages:
       - data/generators/tep_loader.py
       - data/generators/tep_params.py
       - data/schemas/sensor_reading.py
+      - data/schemas/sensor_spans.py
       - data/raw/tep
+      # El contenido de la tabla de spans entra como dep, no como param: 52
+      # entradas inflarian params.yaml y DVC versiona ficheros por hash igual de
+      # bien. Solo la ruta viaja por params (tep.spans_path).
+      - configs/sensor_spans.yaml
     params:
       - tep.raw_dir
       - tep.processed_dir
       - tep.plant_id
       - tep.start_time
       - tep.sample_interval_minutes
-      - tep.adc_scale_max
+      - tep.spans_path
       - tep.calibration_date
       - tep.last_maintenance_date
       - tep.drift_coefficient

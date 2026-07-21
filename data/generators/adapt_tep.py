@@ -18,6 +18,7 @@ import pandas as pd
 
 from data.generators.tep_adapter import TEPAdapter, save_to_parquet
 from data.generators.tep_params import DEFAULT_PARAMS_PATH, load_tep_params
+from data.schemas.sensor_spans import load_sensor_spans
 
 _LOG = logging.getLogger(__name__)
 
@@ -46,13 +47,17 @@ def main(params_path: str | Path = DEFAULT_PARAMS_PATH) -> pd.DataFrame:
         The consolidated DataFrame that was written to Parquet.
 
     Raises:
-        FileNotFoundError: If params_path does not exist.
+        FileNotFoundError: If params_path or the span table does not exist.
+        KeyError: If the span table does not cover every TEP sensor tag.
         ValueError: If no TEP files were found in the configured raw_dir.
     """
     params = load_tep_params(params_path)
     _LOG.info("Adapting TEP files from %s", params.raw_dir)
 
-    adapter = TEPAdapter.from_params(params)
+    spans = load_sensor_spans(params.spans_path)
+    _LOG.info("Loaded %d calibrated sensor spans from %s", len(spans), params.spans_path)
+
+    adapter = TEPAdapter.from_params(params, spans)
     df = adapter.adapt_all(str(params.raw_dir))
 
     if df.empty:

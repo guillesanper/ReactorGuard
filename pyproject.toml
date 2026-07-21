@@ -135,12 +135,18 @@ addopts = "-v"
 # tests. Medido sobre api+data+ml el total es 33%, porque ml/ y api/ son
 # andamiaje de Fases 4 y 6 sin implementar (2 de 4 endpoints devuelven 501,
 # train.py no tiene loop). Incluirlos convertiria el gate en ruido permanente.
-# Alcance actual: la capa de contrato de datos, que es lo que la Fase 2 posee.
-# Cada exclusion vuelve a entrar cuando su fase la implemente.
-source = ["data"]
+# Alcance actual: la capa de contrato de datos mas ml/features, que es lo que la
+# Fase 2 posee. Cada exclusion vuelve a entrar cuando su fase la implemente.
+# ml/features entro al escribirse kalman.py (T4.1), que es codigo de Fase 2 con
+# tests propios, no andamiaje: dejarlo fuera del alcance seria medir el gate
+# contra menos codigo del que la fase realmente entrega.
+source = ["data", "ml/features"]
 omit = [
     # ROTO contra el schema canonico: se reescribe con sus tests en Fase 3 (T5.3).
     "data/generators/reactor_simulator.py",
+    # Superado por pipeline.py y sin call sites; se retira en T4.2. Usa ademas la
+    # API fillna(method=) eliminada en pandas 2.x, asi que no es ejecutable tal cual.
+    "ml/features/extractor.py",
 ]
 # tep_downloader.py y tep_explorer.py salieron de este omit al cerrar T3.2: sus
 # tests usan ficheros sinteticos en tmp_path y un doble de requests, de modo que

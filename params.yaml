@@ -26,9 +26,16 @@ tep:
   start_time: "2000-01-01T00:00:00+00:00"
   sample_interval_minutes: 3
 
-  # Denominador para escalar valores de proceso a cuentas ADC de 16 bits.
-  # Las presiones TEP llegan a ~3000 kPa; el resto de variables queda por debajo.
-  adc_scale_max: 3000.0
+  # Tabla de spans calibrados por transmisor, usada para escalar value ->
+  # raw_counts. Sustituye al antiguo adc_scale_max, un denominador global de
+  # 3000.0 que saturaba a 65535 el 5,86% de las lecturas (32.259 de 550.160, en
+  # XMEAS-02, -03, -07 y -16, cuyo maximo real es 5.003,7) y que al mismo tiempo
+  # dejaba las composiciones de ~30 mol% ocupando el 1% del rango del ADC.
+  #
+  # Solo la RUTA es un parametro; el contenido del fichero se declara como `deps`
+  # del stage, porque 52 entradas en params.yaml serian ilegibles y DVC versiona
+  # ficheros por hash igual de bien. Se genera con derive_sensor_spans.py.
+  spans_path: configs/sensor_spans.yaml
 
   # Campos de SensorMetadata (sinteticos: el dataset no los proporciona)
   calibration_date: "2023-06-01"
@@ -75,16 +82,19 @@ features:
   # Number of lag features per sensor
   n_lags: 5
 
-  # Sensors to include (mapped to Kafka topic fields)
-  sensor_channels:
-    - core_power
-    - coolant_temp_in
-    - coolant_temp_out
-    - primary_pressure
-    - coolant_flow_rate
-    - fuel_temp
-    - neutron_flux_ex_core
-    - steam_generator_level
+  # Politica de seleccion de sensores.
+  #
+  # Sustituye a la lista sensor_channels, que enumeraba los 8 canales de un
+  # schema plano que ya no existe. Enumerar en su lugar los 52 tags del TEP
+  # habria repetido el mismo error un nivel mas arriba: cablear el inventario de
+  # una planta concreta en la configuracion de features. El featurizer resuelve
+  # el conjunto real desde los datos y lo contrasta contra expected_sensor_count,
+  # de modo que una deriva de schema falla en voz alta en lugar de propagarse
+  # silenciosamente a las features.
+  sensor_selection:
+    include_types: [flow, pressure, thermocouple, normalized, position]
+    exclude_sensor_ids: []
+    expected_sensor_count: 52
 
 # -----------------------------------------------------------------------------
 # Training parameters  (ml/training/train.py)
