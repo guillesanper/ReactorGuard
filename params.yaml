@@ -76,11 +76,39 @@ simulation:
 # Feature engineering parameters  (ml/features/)
 # -----------------------------------------------------------------------------
 features:
-  # Rolling-window sizes for statistical features [seconds]
-  window_sizes: [10, 30, 60, 300]
+  # Raiz del arbol de features, particionado por fault_type igual que el parquet
+  # de lecturas. Es el out del stage featurize.
+  features_dir: data/processed/features
+
+  # Ventanas moviles en MUESTRAS, no en segundos.
+  #
+  # Sustituye a window_sizes: [10, 30, 60, 300], que estaban en segundos y venian
+  # del TDD 5.5, escrito asumiendo el sondeo SCADA de 1 s. A los 180 s de muestreo
+  # del TEP tres de esos cuatro valores caen POR DEBAJO DE UNA MUESTRA: una
+  # ventana de 60 s no contiene ninguna y su desviacion tipica sale NaN. Es el
+  # mismo fallo de cadencia medido en el umbral de deriva del validador, y aqui
+  # sale mas caro, porque produce columnas vacias que un modelo de Fase 4
+  # entrenaria como si fuesen senal.
+  #
+  # A 180 s: 10 muestras = 30 min, 20 = 1 h, 60 = 3 h.
+  window_samples: [10, 20, 60]
+
+  # Muestras minimas para emitir la estadistica de una ventana. Por debajo la
+  # celda queda nula en lugar de llevar un numero inventado sobre uno o dos
+  # puntos. Una std sobre una sola muestra vale cero, que es indistinguible de un
+  # canal genuinamente plano.
+  min_samples_per_window: 3
 
   # Number of lag features per sensor
   n_lags: 5
+
+  # Parejas cuyo coeficiente de Pearson movil se emite como feature.
+  #
+  # Vacio a proposito, por el mismo motivo que baseline_correlations en
+  # CrossCorrelationChecker: la tabla de parejas correlacionadas del TEP es una
+  # calibracion que nadie ha derivado todavia, e inventarla aqui seria cablear una
+  # suposicion sobre la planta.
+  correlation_pairs: []
 
   # Politica de seleccion de sensores.
   #
@@ -119,10 +147,28 @@ training:
   n_layers: 4                   # Number of hidden layers
   dropout: 0.2
 
-  # Train/val/test split ratios (must sum to 1.0)
+  # Train/val/test split ratios (must sum to 1.0).
+  #
+  # El corte es TEMPORAL DENTRO DE CADA fault_type: cada particion aporta sus
+  # primeros timesteps a train, los siguientes a val y los ultimos a test. Asi el
+  # reparto es estratificado (las 22 clases estan en los tres splits) sin dejar de
+  # respetar el orden temporal. El sobrante de la division entera va a test, de
+  # modo que no se pierde ninguna muestra.
   train_ratio: 0.70
   val_ratio: 0.15
   test_ratio: 0.15
+
+  # Salidas del stage split
+  splits_dir: data/processed/splits
+  # Fuera de data/ a proposito: son ficheros pequenos que SI se versionan en git,
+  # que es lo que permite a `dvc metrics diff` comparar dos commits.
+  #
+  # Van separados porque `dvc metrics show` aplana el JSON en una columna por
+  # hoja: meter el recuento de las 22 clases por cada split daba 66 columnas que
+  # en un terminal no se leen. metrics_path lleva las cifras de cabecera y
+  # distribution_path el desglose completo.
+  metrics_path: metrics/split_metrics.json
+  distribution_path: metrics/split_distribution.json
 
   # Random seed for reproducibility
   seed: 42

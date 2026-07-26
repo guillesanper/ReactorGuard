@@ -50,7 +50,13 @@ class ReactorPredictor:
             logger.warning("Model checkpoint not found at %s — predictor not ready.", model_path)
 
     def _load(self, model_path: Path) -> None:
-        checkpoint = torch.load(model_path, map_location="cpu")
+        # weights_only=True usa el unpickler restringido de PyTorch: solo tensores
+        # y tipos primitivos, nunca ejecución de pickle arbitrario. El checkpoint
+        # llega desde un bucket GCS; si esa cadena de custodia se compromete, un
+        # torch.load con el default inseguro seria RCE en el pod de inferencia
+        # safety-critical. El checkpoint solo contiene model_kwargs (primitivos)
+        # y model_state (tensores), ambos compatibles con weights_only=True.
+        checkpoint = torch.load(model_path, map_location="cpu", weights_only=True)
         self._model = ReactorPINN(**checkpoint["model_kwargs"])
         self._model.load_state_dict(checkpoint["model_state"])
         self._model.eval()
@@ -79,12 +85,23 @@ class ReactorPredictor:
 
         score = float(anomaly_score_t.squeeze())
 
-        # TODO: replace stub interval with calibrated MAPIE interval
+        # TODO(MAPIE, Fase 6): sustituir este intervalo stub por el intervalo
+        # conforme calibrado de MAPIE. Al implementarlo, el umbral definitivo
+        # debe leerse de serving.anomaly_threshold en params.yaml (3.0 sigma
+        # sobre el intervalo nominal), NO del default 0.5 de este constructor,
+        # que solo tiene sentido como placeholder sobre el score en [0, 1].
+        #
+        # Mientras sea stub, el intervalo se acota a [0, 1] para que el score y
+        # sus limites vivan en el mismo dominio [0, 1] del sigmoid: sin el clamp
+        # interval_low sale negativo para score < 0.5 e interval_high es 1.0
+        # constante, un intervalo que no es defendible ni como placeholder.
         margin = 1.0 - score
+        interval_low = max(0.0, score - margin)
+        interval_high = min(1.0, score + margin)
         return PredictionResult(
             anomaly_score=score,
             is_anomaly=score >= self.anomaly_threshold,
-            interval_low=score - margin,
-            interval_high=score + margin,
+            interval_low=interval_low,
+            interval_high=interval_high,
             confidence_level=self.confidence_level,
         )

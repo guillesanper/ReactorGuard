@@ -35,6 +35,12 @@ resource "google_kms_crypto_key" "storage_key" {
   }
 
   lifecycle {
-    prevent_destroy = false
+    # prevent_destroy = true: destruir esta CMEK inutiliza permanentemente el
+    # descifrado de los datos de auditoría nuclear (bucket models, retención
+    # 365 d exigida por IAEA SSG-39 / NRC 10 CFR 50.59). El comentario de
+    # cabecera de este fichero describe justamente esta protección; mantenerlos
+    # alineados. Para destruir el entorno a propósito, poner esto en false en un
+    # cambio explícito y revisado.
+    prevent_destroy = true
   }
 }

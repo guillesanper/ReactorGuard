@@ -63,8 +63,8 @@ stages:
       size: 2668
     - path: data/generators/tep_adapter.py
       hash: md5
-      md5: 5079d258fa3515c901baa8f6cc3183f2
-      size: 18956
+      md5: f0ac0eda503af196d04562f70ab76dbc
+      size: 24285
     - path: data/generators/tep_loader.py
       hash: md5
       md5: 4b1c39a335782e73a910c66d92b80b5b
@@ -100,6 +100,103 @@ stages:
     outs:
     - path: data/processed/tep
       hash: md5
-      md5: a8ac1f90781fb45561ab923f79621fa5.dir
-      size: 25615806
+      md5: 0b1c76367119831f9f54e0d921586581.dir
+      size: 25617339
       nfiles: 22
+  featurize:
+    cmd: python ml/features/batch_featurizer.py
+    deps:
+    - path: data/generators/tep_params.py
+      hash: md5
+      md5: 628f5b60f4bd5c30a2d886664451e994
+      size: 4973
+    - path: data/processed/tep
+      hash: md5
+      md5: 0b1c76367119831f9f54e0d921586581.dir
+      size: 25617339
+      nfiles: 22
+    - path: ml/features/batch_featurizer.py
+      hash: md5
+      md5: 6d099391ecf3790576ab595640b32bf9
+      size: 8709
+    - path: ml/features/feature_params.py
+      hash: md5
+      md5: 389d89a421e722c1681169406fd699ad
+      size: 10513
+    - path: ml/features/kalman.py
+      hash: md5
+      md5: e253a62d3bab671c3a9c01fd61a429d4
+      size: 21613
+    - path: ml/features/pipeline.py
+      hash: md5
+      md5: 209ad626dfb7fe1bc1dedb895a5a21bf
+      size: 23151
+    params:
+      params.yaml:
+        features.correlation_pairs: []
+        features.features_dir: data/processed/features
+        features.min_samples_per_window: 3
+        features.n_lags: 5
+        features.sensor_selection:
+          include_types:
+          - flow
+          - pressure
+          - thermocouple
+          - normalized
+          - position
+          exclude_sensor_ids: []
+          expected_sensor_count: 52
+        features.window_samples:
+        - 10
+        - 20
+        - 60
+        tep.processed_dir: data/processed/tep
+    outs:
+    - path: data/processed/features
+      hash: md5
+      md5: e948033389075f1227cecfcf9c311397.dir
+      size: 71323483
+      nfiles: 22
+  split:
+    cmd: python data/generators/train_val_test_split.py
+    deps:
+    - path: data/generators/train_val_test_split.py
+      hash: md5
+      md5: 5830ba8bfbd26b4209bc6b474d89a02d
+      size: 15507
+    - path: data/processed/features
+      hash: md5
+      md5: e948033389075f1227cecfcf9c311397.dir
+      size: 71323483
+      nfiles: 22
+    - path: ml/features/batch_featurizer.py
+      hash: md5
+      md5: 6d099391ecf3790576ab595640b32bf9
+      size: 8709
+    - path: ml/features/feature_params.py
+      hash: md5
+      md5: 389d89a421e722c1681169406fd699ad
+      size: 10513
+    params:
+      params.yaml:
+        features.features_dir: data/processed/features
+        training.distribution_path: metrics/split_distribution.json
+        training.metrics_path: metrics/split_metrics.json
+        training.splits_dir: data/processed/splits
+        training.test_ratio: 0.15
+        training.train_ratio: 0.7
+        training.val_ratio: 0.15
+    outs:
+    - path: data/processed/splits
+      hash: md5
+      md5: 38c6e13df8cdb5966c2977da97ef451b.dir
+      size: 62379566
+      nfiles: 3
+    - path: metrics/split_distribution.json
+      hash: md5
+      md5: a824c3ad5666ccfad041cec6e8cfe179
+      size: 1929
+    - path: metrics/split_metrics.json
+      hash: md5
+      md5: a6b41d402bf23a506a0ab7bf521160b6
+      size: 545

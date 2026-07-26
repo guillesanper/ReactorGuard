@@ -84,13 +84,20 @@ module "storage" {
 
 # ---------------------------------------------------------------------------
 # IAM (service accounts, bindings, Workload Identity)
-# Depende de vpc y gke (cluster SA); independiente de storage.
+# Depende de vpc y gke (cluster SA) y de storage: los bindings de GCS se
+# conceden POR BUCKET (least-privilege), así que necesita los nombres de bucket.
 # ---------------------------------------------------------------------------
 module "iam" {
   source = "../../modules/iam"
 
   project_id = local.project_id
   region     = local.region
+
+  # Nombres de bucket para bindings IAM por-bucket (no a nivel de proyecto).
+  data_raw_bucket       = module.storage.data_raw_bucket_name
+  data_processed_bucket = module.storage.data_processed_bucket_name
+  models_bucket         = module.storage.models_bucket_name
+  mlflow_bucket         = module.storage.mlflow_bucket_name
 }
 
 # ---------------------------------------------------------------------------

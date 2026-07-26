@@ -13,6 +13,12 @@ resource "google_container_cluster" "main" {
   project  = var.project_id
   location = var.region # Regional = réplica del control plane en 3 zonas
 
+  # deletion_protection = true impide `terraform destroy` / borrado accidental
+  # del cluster que sirve las predicciones de anomalías safety-critical. Para
+  # tear-down deliberado del entorno, poner var.deletion_protection = false en
+  # un cambio explícito.
+  deletion_protection = var.deletion_protection
+
   # Eliminar el node pool default que GKE crea automáticamente.
   # Usamos node pools separados con configuración explícita.
   remove_default_node_pool = true
@@ -28,6 +34,28 @@ resource "google_container_cluster" "main" {
     enable_private_nodes    = true  # CRÍTICO: nodos sin IP pública
     enable_private_endpoint = false # El master endpoint es accesible desde la VPC (y opcionalmente desde authorized_networks)
     master_ipv4_cidr_block  = var.master_ipv4_cidr
+  }
+
+  # --- Master authorized networks ---
+  # Con enable_private_endpoint = false el endpoint público del API server
+  # existiría sin restricción de origen. Este bloque restringe qué CIDRs
+  # públicos pueden alcanzarlo. Los nodos privados siguen hablando con el
+  # master por el camino privado de la VPC, independiente de esta lista.
+  #
+  # CIDR elegido para dev: lista VACÍA por defecto → ninguna red pública
+  # autorizada (postura deny-all). El operador añade su /32 público (oficina
+  # o VPN) vía var.master_authorized_networks; para acceso desde dentro de la
+  # VPC úsese un bastión o Cloud Shell sobre el endpoint privado.
+  master_authorized_networks_config {
+    gcp_public_cidrs_access_enabled = false
+
+    dynamic "cidr_blocks" {
+      for_each = var.master_authorized_networks
+      content {
+        cidr_block   = cidr_blocks.value.cidr_block
+        display_name = cidr_blocks.value.display_name
+      }
+    }
   }
 
   # --- VPC-native networking (alias IPs) ---

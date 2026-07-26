@@ -133,6 +133,47 @@ UNIT_MAP: dict[SensorType, MeasurementUnit] = {
 # ---------------------------------------------------------------------------
 
 
+READING_ID_NAMESPACE = uuid.uuid5(uuid.NAMESPACE_DNS, "reactorguard.sensor-reading")
+"""Espacio de nombres UUID5 de los identificadores de lectura.
+
+Derivado a su vez por UUID5 de un nombre DNS en lugar de ser una constante
+tecleada a mano, para que la propia semilla sea reproducible y auditable.
+"""
+
+
+def reading_uuid(
+    plant_id: str, fault_type: int, tag: str, timestamp: datetime
+) -> uuid.UUID:
+    """Return the deterministic identifier of one reading.
+
+    UUID5 sobre la identidad de la medida y no UUID4, que era lo que habia. Con
+    UUID4 el stage adapt_tep NO ERA REPRODUCIBLE: cada ejecucion producia 550.160
+    identificadores distintos, de modo que dos personas partiendo de los mismos
+    .dat obtenian parquets con hash distinto, la cache de DVC no se podia
+    compartir y el criterio "dvc repro reproducible desde cero" de la Fase 2 se
+    cumplia solo de nombre. Con UUID5 el identificador es funcion pura de lo que
+    identifica, que ademas es la semantica correcta: la misma medida readaptada
+    debe llevar el mismo id.
+
+    EL FAULT_TYPE ENTRA EN LA CLAVE y no es redundante. Cada fichero del TEP es
+    una corrida independiente que reinicia el reloj en start_time, asi que la
+    terna (plant_id, tag, timestamp) se REPITE en los 22 ficheros. Sin el
+    fault_type, la muestra 0 de XMEAS-01 en d00 y en d01 compartirian
+    identificador siendo medidas de experimentos distintos.
+
+    Args:
+        plant_id: Plant identifier stamped on the reading.
+        fault_type: Integer fault identifier of the source file (0 = normal).
+        tag: Canonical sensor identifier.
+        timestamp: UTC timestamp of the sample.
+
+    Returns:
+        The reading's UUID5, stable across runs and machines.
+    """
+    key = f"{plant_id}|{fault_type:02d}|{tag}|{timestamp.isoformat()}"
+    return uuid.uuid5(READING_ID_NAMESPACE, key)
+
+
 def sensor_id(col_idx: int) -> str:
     """Return the canonical sensor identifier for a given column index.
 
@@ -392,12 +433,15 @@ class TEPAdapter:
         self,
         row: list[float],
         row_index: int,
+        fault_type: int,
     ) -> list[SensorReading]:
         """Convert a single TEP data row to a list of 52 SensorReading objects.
 
         Args:
             row: List of 52 float values for a single timestep.
             row_index: Zero-based row index used to compute the timestamp.
+            fault_type: Fault identifier of the source file. Entra en la clave
+                del reading_id porque los 22 ficheros comparten linea temporal.
 
         Returns:
             List of 52 SensorReading instances, one per TEP variable.
@@ -409,7 +453,7 @@ class TEPAdapter:
             sensor_type = SENSOR_TYPE_MAP[col_idx]
             tag = sensor_id(col_idx)
             reading = SensorReading(
-                reading_id=uuid.uuid4(),
+                reading_id=reading_uuid(self.plant_id, fault_type, tag, timestamp),
                 timestamp=timestamp,
                 plant_id=self.plant_id,
                 sensor=SensorInfo(
@@ -464,7 +508,9 @@ class TEPAdapter:
 
         all_readings: list[SensorReading] = []
         for row_index, row_values in enumerate(df.itertuples(index=False, name=None)):
-            all_readings.extend(self._row_to_readings(list(row_values), row_index))
+            all_readings.extend(
+                self._row_to_readings(list(row_values), row_index, fault_type)
+            )
 
         _LOG.info(
             "Adapted %d rows x %d columns = %d readings from %s (fault_type=%d).",

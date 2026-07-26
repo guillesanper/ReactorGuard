@@ -95,7 +95,7 @@ spec:
 # Acepta:  reactorguard-ingestion (datos) + reactorguard-observability (métricas)
 # Envía:   internet vía Cloud NAT (GCP APIs: Secret Manager, GCS, Vertex AI)
 # ===========================================================================
-
+---
 # [DENY] Bloquea todo ingress y egress en reactorguard-ml.
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
@@ -160,7 +160,7 @@ spec:
 #          acceso a Grafana :3000 desde cualquier origen autorizado
 # Envía:   internet (alertas PagerDuty / Slack) + scraping a todos los namespaces
 # ===========================================================================
-
+---
 # [DENY] Bloquea todo ingress y egress en reactorguard-observability.
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
@@ -229,7 +229,7 @@ spec:
 #          reactorguard-ingestion en :9092/:9093 (clientes Kafka)
 # Envía:   solo tráfico interno del namespace + respuestas a ingestion
 # ===========================================================================
-
+---
 # [DENY] Bloquea todo ingress y egress en kafka-operator.
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy

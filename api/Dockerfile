@@ -11,8 +11,10 @@
 #     container is compromised.
 #   - HEALTHCHECK lets Kubernetes liveness/readiness probes use the same
 #     /health endpoint defined in the FastAPI app.
-#   - python:3.11-slim base is kept minimal; Trivy scans in CI enforce
-#     0 CRITICAL CVEs before any image is pushed to GCR.
+#   - python:3.11-slim base is kept minimal. The Trivy gate in CI blocks the
+#     push on any *fixable* CRITICAL CVE (severity=CRITICAL, ignore-unfixed=true):
+#     no fixable critical vulnerability reaches GCR. CVEs sin parche upstream y
+#     los HIGH no bloquean hoy; endurecer a CRITICAL,HIGH es deuda pendiente.
 # =============================================================================
 
 # ── Stage 1: builder ──────────────────────────────────────────────────────────

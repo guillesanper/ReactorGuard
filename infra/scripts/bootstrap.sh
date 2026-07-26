@@ -10,7 +10,7 @@
 #   - gcloud instalado y en el PATH
 #   - gcloud auth login + gcloud auth application-default login completados
 #   - Rol Owner (o roles/storage.admin + roles/serviceusage.serviceUsageAdmin)
-#     sobre el proyecto reactorguard-platform
+#     sobre el proyecto sentinel-platform-485714
 
 set -euo pipefail  # Salir en cualquier error, variables sin definir o pipe roto
 
@@ -18,7 +18,7 @@ set -euo pipefail  # Salir en cualquier error, variables sin definir o pipe roto
 # Variables de configuración
 # ---------------------------------------------------------------------------
 PROJECT_ID="sentinel-platform-485714"
-REGION="europe-west1"
+REGION="europe-southwest1"
 STATE_BUCKET="reactorguard-terraform-state"
 
 # APIs necesarias para la plataforma ReactorGuard

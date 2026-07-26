@@ -18,7 +18,9 @@ from data.generators.tep_adapter import (
     _N_COLUMNS,
     _PLANT_ID,
     _SAMPLE_INTERVAL,
+    READING_ID_NAMESPACE,
     TEPAdapter,
+    reading_uuid,
     readings_from_frame,
 )
 from data.schemas.sensor_reading import QualityFlag, SensorReading
@@ -323,3 +325,92 @@ class TestReadingsFromFrame:
         assert rebuilt.metadata.calibration_date == adapter.calibration_date
         assert rebuilt.metadata.last_maintenance == adapter.last_maintenance
         assert rebuilt.metadata.drift_coefficient == adapter.drift_coefficient
+
+
+# ---------------------------------------------------------------------------
+# Test: deterministic reading identifiers
+# ---------------------------------------------------------------------------
+
+
+class TestDeterministicReadingIds:
+    """reading_id es UUID5 sobre la identidad de la medida, no UUID4.
+
+    Con UUID4 el stage adapt_tep no era reproducible: cada ejecucion emitia
+    550.160 identificadores nuevos y el parquet salia con hash distinto, de modo
+    que el criterio "dvc repro reproducible desde cero" de la Fase 2 se cumplia
+    solo de nombre.
+    """
+
+    def test_the_same_file_yields_the_same_ids(
+        self, tmp_path: Path, sensor_spans: Spans
+    ) -> None:
+        """Two runs over identical input must produce identical identifiers."""
+        _write_dat_file(tmp_path / "d00.dat", _N_ROWS, _SAMPLE_ROW)
+        adapter = TEPAdapter(sensor_spans)
+
+        first = adapter.adapt_file(str(tmp_path / "d00.dat"), fault_type=0)
+        second = adapter.adapt_file(str(tmp_path / "d00.dat"), fault_type=0)
+
+        assert [r.reading_id for r in first] == [r.reading_id for r in second]
+
+    def test_a_fresh_adapter_yields_the_same_ids(
+        self, tmp_path: Path, sensor_spans: Spans
+    ) -> None:
+        """Reproducibility must not depend on reusing the adapter instance."""
+        _write_dat_file(tmp_path / "d00.dat", _N_ROWS, _SAMPLE_ROW)
+        path = str(tmp_path / "d00.dat")
+
+        first = TEPAdapter(sensor_spans).adapt_file(path, fault_type=0)
+        second = TEPAdapter(sensor_spans).adapt_file(path, fault_type=0)
+
+        assert [r.reading_id for r in first] == [r.reading_id for r in second]
+
+    def test_fault_type_separates_otherwise_identical_readings(
+        self, tmp_path: Path, sensor_spans: Spans
+    ) -> None:
+        """Los 22 ficheros comparten linea temporal: sin fault_type colisionarian.
+
+        Cada fichero del TEP reinicia el reloj en start_time, asi que la muestra 0
+        de XMEAS-01 tiene el mismo (plant_id, tag, timestamp) en d00 y en d01.
+        """
+        _write_dat_file(tmp_path / "d00.dat", _N_ROWS, _SAMPLE_ROW)
+        adapter = TEPAdapter(sensor_spans)
+        path = str(tmp_path / "d00.dat")
+
+        normal = adapter.adapt_file(path, fault_type=0)
+        faulty = adapter.adapt_file(path, fault_type=1)
+
+        assert normal[0].timestamp == faulty[0].timestamp
+        assert normal[0].sensor.id == faulty[0].sensor.id
+        assert normal[0].reading_id != faulty[0].reading_id
+
+    def test_ids_are_unique_across_a_full_adaptation(
+        self, tmp_path: Path, sensor_spans: Spans
+    ) -> None:
+        """A deterministic id is only usable if it is still a key."""
+        for name in ("d00.dat", "d01.dat", "d02.dat"):
+            _write_dat_file(tmp_path / name, _N_ROWS, _SAMPLE_ROW)
+
+        df = TEPAdapter(sensor_spans).adapt_all(str(tmp_path))
+        assert df["reading_id"].nunique() == len(df)
+
+    def test_plant_id_participates_in_the_identity(
+        self, sensor_spans: Spans
+    ) -> None:
+        """Two plants sampling at the same instant are different readings."""
+        moment = _START_TIME
+        assert reading_uuid("PLANT-A", 0, "TEP-XMEAS-01", moment) != reading_uuid(
+            "PLANT-B", 0, "TEP-XMEAS-01", moment
+        )
+
+    def test_the_identifier_is_a_uuid5(self, sensor_spans: Spans) -> None:
+        """Version 5 is what makes it a function of the name, not of chance."""
+        assert reading_uuid("TEP-PLANT-01", 0, "TEP-XMEAS-01", _START_TIME).version == 5
+
+    def test_the_namespace_is_itself_derived(self) -> None:
+        """The seed is reproducible rather than a hand-typed constant."""
+        import uuid as _uuid
+
+        assert READING_ID_NAMESPACE == _uuid.uuid5(
+            _uuid.NAMESPACE_DNS, "reactorguard.sensor-reading"
+        )

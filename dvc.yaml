@@ -60,3 +60,53 @@ stages:
       - tep.drift_coefficient
     outs:
       - data/processed/tep
+
+  featurize:
+    cmd: python ml/features/batch_featurizer.py
+    deps:
+      - ml/features/batch_featurizer.py
+      - ml/features/pipeline.py
+      - ml/features/feature_params.py
+      - ml/features/kalman.py
+      - data/generators/tep_params.py
+      - data/processed/tep
+    params:
+      # tep.processed_dir es de donde LEE: el out de adapt_tep. Se declara aunque
+      # la dependencia de fichero ya este arriba, porque cambiar la ruta cambia
+      # que se lee, no solo cuando se reejecuta.
+      - tep.processed_dir
+      - features.features_dir
+      - features.window_samples
+      - features.min_samples_per_window
+      - features.n_lags
+      - features.sensor_selection
+      - features.correlation_pairs
+    outs:
+      - data/processed/features
+
+  split:
+    cmd: python data/generators/train_val_test_split.py
+    deps:
+      - data/generators/train_val_test_split.py
+      - ml/features/batch_featurizer.py
+      - ml/features/feature_params.py
+      - data/processed/features
+    params:
+      - features.features_dir
+      - training.splits_dir
+      - training.metrics_path
+      - training.distribution_path
+      - training.train_ratio
+      - training.val_ratio
+      - training.test_ratio
+    outs:
+      - data/processed/splits
+      # El desglose por clase, fuera de `metrics:` para no reventar la tabla de
+      # `dvc metrics show`, pero versionado igual con cache: false.
+      - metrics/split_distribution.json:
+          cache: false
+    metrics:
+      # cache: false lo saca de la cache de DVC y lo deja en git, que es la
+      # condicion para que `dvc metrics diff` pueda comparar dos commits.
+      - metrics/split_metrics.json:
+          cache: false

@@ -1,0 +1,131 @@
+# =============================================================================
+# k8s/base/kafka/kafka-users.yaml
+# KafkaUser resources — identidad y ACLs de cada cliente del pipeline.
+#
+# Con `authorization: type: simple` en el Kafka cluster (kafka-cluster.yaml) el
+# acceso es DENY por defecto: sin un KafkaUser con ACLs explícitas, ningún pod
+# puede producir ni consumir. Antes los listeners eran anónimos y cualquier pod
+# que alcanzara el puerto podía leer/escribir datos de sensores sin credenciales.
+#
+# Autenticación: mTLS (type: tls). El User Operator de Strimzi emite un
+# certificado por usuario y lo publica en un Secret homónimo en el namespace
+# kafka-operator; el cliente lo monta y se conecta al listener TLS (9093).
+#
+# Principio de mínimo privilegio por rol del flujo de datos:
+#   ingestion → sensor-readings-raw → validator → sensor-validated
+#                                              → detector → anomaly-alerts
+# Cada usuario recibe SOLO las ACLs de los topics/grupos que su rol usa.
+# TDD sección 7.2 — Kafka Security
+# =============================================================================
+
+---
+# Ingestion (tep_streamer / ingestion pods): SOLO produce en sensor-readings-raw.
+apiVersion: kafka.strimzi.io/v1beta2
+kind: KafkaUser
+metadata:
+  name: reactorguard-ingestion
+  namespace: kafka-operator
+  labels:
+    strimzi.io/cluster: reactorguard-cluster
+    app.kubernetes.io/part-of: reactorguard
+spec:
+  authentication:
+    type: tls
+  authorization:
+    type: simple
+    acls:
+      # Producir en el topic de lecturas crudas (Write + Describe).
+      - resource:
+          type: topic
+          name: sensor-readings-raw
+          patternType: literal
+        operations:
+          - Write
+          - Describe
+        host: "*"
+
+---
+# Validator (sensor_validator): consume raw, produce validated.
+apiVersion: kafka.strimzi.io/v1beta2
+kind: KafkaUser
+metadata:
+  name: reactorguard-validator
+  namespace: kafka-operator
+  labels:
+    strimzi.io/cluster: reactorguard-cluster
+    app.kubernetes.io/part-of: reactorguard
+spec:
+  authentication:
+    type: tls
+  authorization:
+    type: simple
+    acls:
+      # Consumir del topic de lecturas crudas.
+      - resource:
+          type: topic
+          name: sensor-readings-raw
+          patternType: literal
+        operations:
+          - Read
+          - Describe
+        host: "*"
+      # Consumer group del validador.
+      - resource:
+          type: group
+          name: sensor-validator
+          patternType: literal
+        operations:
+          - Read
+        host: "*"
+      # Producir en el topic de lecturas validadas.
+      - resource:
+          type: topic
+          name: sensor-validated
+          patternType: literal
+        operations:
+          - Write
+          - Describe
+        host: "*"
+
+---
+# Detector (PINN + rules engine): consume validated, produce anomaly-alerts.
+apiVersion: kafka.strimzi.io/v1beta2
+kind: KafkaUser
+metadata:
+  name: reactorguard-detector
+  namespace: kafka-operator
+  labels:
+    strimzi.io/cluster: reactorguard-cluster
+    app.kubernetes.io/part-of: reactorguard
+spec:
+  authentication:
+    type: tls
+  authorization:
+    type: simple
+    acls:
+      # Consumir del topic de lecturas validadas.
+      - resource:
+          type: topic
+          name: sensor-validated
+          patternType: literal
+        operations:
+          - Read
+          - Describe
+        host: "*"
+      # Consumer group del detector.
+      - resource:
+          type: group
+          name: anomaly-detector
+          patternType: literal
+        operations:
+          - Read
+        host: "*"
+      # Producir alertas de anomalía (evidencia de auditoría nuclear).
+      - resource:
+          type: topic
+          name: anomaly-alerts
+          patternType: literal
+        operations:
+          - Write
+          - Describe
+        host: "*"

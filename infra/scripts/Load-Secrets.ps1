@@ -46,7 +46,7 @@ param(
     [Parameter(Mandatory, HelpMessage = "GCP API Key")]
     [string]$GcpApiKey,
 
-    [string]$ProjectId = "reactorguard-platform"
+    [string]$ProjectId = "sentinel-platform-485714"
 )
 
 Set-StrictMode -Version Latest

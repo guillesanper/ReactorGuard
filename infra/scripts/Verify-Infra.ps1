@@ -16,13 +16,13 @@
     Si todo pasa, imprime la tabla de resultados y termina con exit 0.
 
 .PARAMETER ProjectId
-    ID del proyecto GCP. Por defecto: reactorguard-platform
+    ID del proyecto GCP. Por defecto: sentinel-platform-485714
 
 .PARAMETER ClusterName
     Nombre del cluster GKE. Por defecto: reactorguard-cluster
 
 .PARAMETER Region
-    Región GCP donde está el cluster. Por defecto: europe-west1
+    Región GCP donde está el cluster. Por defecto: europe-southwest1
 
 .EXAMPLE
     .\Verify-Infra.ps1
@@ -34,9 +34,9 @@
 # =============================================================================
 [CmdletBinding()]
 param(
-    [string]$ProjectId   = "reactorguard-platform",
+    [string]$ProjectId   = "sentinel-platform-485714",
     [string]$ClusterName = "reactorguard-cluster",
-    [string]$Region      = "europe-west1"
+    [string]$Region      = "europe-southwest1"
 )
 
 Set-StrictMode -Version Latest

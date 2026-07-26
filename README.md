@@ -37,7 +37,7 @@ auditability and operates on Google Kubernetes Engine.
 | DVC | ≥ 3.49 | Data versioning |
 
 GCP access requirements:
-- Project: `reactorguard-platform`
+- Project: `sentinel-platform-485714`
 - Role: `Owner` (or a custom role with `container.admin`, `storage.admin`, `iam.admin`)
 - Billing account linked
 
@@ -50,7 +50,7 @@ GCP access requirements:
 ```bash
 # Authenticate with GCP
 gcloud auth application-default login
-gcloud config set project reactorguard-platform
+gcloud config set project sentinel-platform-485714
 
 # Create Terraform state bucket and enable required APIs
 bash infra/scripts/bootstrap.sh
@@ -69,8 +69,8 @@ terraform apply tfplan
 
 ```bash
 gcloud container clusters get-credentials reactorguard-cluster \
-  --region europe-west1 \
-  --project reactorguard-platform
+  --region europe-southwest1 \
+  --project sentinel-platform-485714
 ```
 
 ### 4. Install Python environment

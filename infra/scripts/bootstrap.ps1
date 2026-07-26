@@ -12,7 +12,7 @@ if (Test-Path $gcloudBin) {
 }
 
 $PROJECT_ID   = "sentinel-platform-485714"
-$REGION       = "europe-west1"
+$REGION       = "europe-southwest1"
 $STATE_BUCKET = "reactorguard-terraform-state"
 
 $APIS = @(

@@ -82,7 +82,9 @@ class ReactorPINN(nn.Module):
         anomaly_score = self.anomaly_head(lstm_out)  # (B, T, 1)
         return reconstruction, anomaly_score
 
-    def physics_residual(self, x: torch.Tensor, y_pred: torch.Tensor) -> torch.Tensor:
+    def physics_residual(
+        self, x: torch.Tensor, y_pred: torch.Tensor, dt: float = 180.0
+    ) -> torch.Tensor:
         """Compute physics constraint residual (point-kinetics approximation).
 
         Penalises predictions that violate dP/dt ≈ (ρ - β)/Λ · P,
@@ -92,13 +94,21 @@ class ReactorPINN(nn.Module):
         Args:
             x: Input sensor readings (batch, seq_len, input_size).
             y_pred: Predicted sensor readings (batch, seq_len, output_size).
+            dt: Seconds between consecutive samples. Defaults to the real TEP
+                cadence (180 s = tep.sample_interval_minutes), not the legacy
+                1 s SCADA rate: usar 1 s aqui escalaria dP/dt por 180 y es el
+                mismo fallo de cadencia que el resto del pipeline ya corrige.
 
         Returns:
-            Scalar physics residual loss.
+            Scalar physics residual (currently detached — see note below).
         """
-        # Simplified: enforce energy balance dT/dt ∝ (P_in - P_out)
-        # Full OpenMC-coupled version implemented in ml/training/physics_loss.py
-        dt = 1.0  # seconds, matches params.yaml simulation.dt_seconds
-        power_pred = y_pred[..., 0]  # core_power channel
+        # Andamiaje de Fase 4: la version completa acoplada a OpenMC (el termino
+        # L_physics real) aun no esta implementada. Se asume canal 0 = core_power,
+        # que todavia no corresponde al layout del featurizer del TEP; a revisar
+        # al cablear el loop de entrenamiento real.
+        power_pred = y_pred[..., 0]  # core_power channel (placeholder)
         dp_dt = (power_pred[:, 1:] - power_pred[:, :-1]) / dt
-        return torch.mean(dp_dt**2)
+        # .detach(): hoy es solo un diagnostico escalar, no un termino de perdida
+        # que retropropague. Retirar el detach cuando pase a ser un L_physics real
+        # en Fase 4 (asi el float() de los tests no dispara el UserWarning de grad).
+        return torch.mean(dp_dt**2).detach()

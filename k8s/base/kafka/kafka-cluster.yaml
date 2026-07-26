@@ -25,20 +25,34 @@ spec:
     replicas: 3
     version: "3.6.0"
 
+    # authorization simple (ACLs de Kafka): con esto el acceso es DENY por
+    # defecto y cada cliente necesita un KafkaUser con ACLs explícitas (ver
+    # kafka-users.yaml). Strimzi añade automáticamente sus componentes internos
+    # (inter-broker, entity operator) a super.users, así que el operador sigue
+    # gestionando topics y usuarios sin configuración manual adicional.
+    authorization:
+      type: simple
+
     listeners:
-      # Listener plain (PLAINTEXT) para tráfico interno del cluster K8s.
-      # No se expone externamente — solo accesible dentro del namespace.
+      # Listener plain (9092): tráfico interno del cluster K8s, sin cifrar por
+      # latencia (p99 < 10ms). YA NO es anónimo: exige autenticación SASL
+      # SCRAM-SHA-512, de modo que un pod que alcance el puerto no puede
+      # producir/consumir sin credenciales.
       - name: plain
         port: 9092
         type: internal
         tls: false
-      # Listener TLS para comunicación cifrada intra-cluster.
-      # Los servicios de ReactorGuard usarán plain en red interna (p99 < 10ms),
-      # TLS está disponible para componentes que lo requieran explícitamente.
+        authentication:
+          type: scram-sha-512
+      # Listener TLS (9093): entrypoint principal de los clientes ReactorGuard.
+      # Autenticación mTLS (type: tls) — el cliente presenta un certificado
+      # emitido por Strimzi para su KafkaUser. Cifrado + identidad en un paso.
       - name: tls
         port: 9093
         type: internal
         tls: true
+        authentication:
+          type: tls
 
     config:
       # Retención de logs: 7 días (168h). Los sensor readings tienen un SLA de

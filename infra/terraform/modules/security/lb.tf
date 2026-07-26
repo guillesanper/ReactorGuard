@@ -85,7 +85,8 @@ resource "tls_self_signed_cert" "reactorguard_dev" {
 # Health Check HTTP (requerido por el backend service)
 # ---------------------------------------------------------------------------
 # GCP requiere un health check para poder asociar backends al backend service.
-# El path /healthz es el endpoint estándar de liveness en las APIs FastAPI del proyecto.
+# El path /health es el endpoint de liveness que expone la API FastAPI del
+# proyecto (router montado en /health, ver api/main.py y api/routers/health.py).
 resource "google_compute_health_check" "reactorguard_http" {
   project = var.project_id
   name    = "reactorguard-http-health-check"
@@ -99,7 +100,7 @@ resource "google_compute_health_check" "reactorguard_http" {
 
   http_health_check {
     port         = 8000
-    request_path = "/healthz"
+    request_path = "/health"
   }
 }
 

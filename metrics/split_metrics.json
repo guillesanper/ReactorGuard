@@ -1,0 +1,21 @@
+{
+  "fault_types_in_every_split": true,
+  "fault_types_per_split": 22,
+  "rows_total": 550160,
+  "temporal_order_holds": true,
+  "test_max_timestep": 499,
+  "test_min_timestep": 408,
+  "test_ratio_configured": 0.15,
+  "test_rows": 82524,
+  "test_share": 0.15,
+  "train_max_timestep": 349,
+  "train_min_timestep": 0,
+  "train_ratio_configured": 0.7,
+  "train_rows": 385112,
+  "train_share": 0.7,
+  "val_max_timestep": 424,
+  "val_min_timestep": 336,
+  "val_ratio_configured": 0.15,
+  "val_rows": 82524,
+  "val_share": 0.15
+}

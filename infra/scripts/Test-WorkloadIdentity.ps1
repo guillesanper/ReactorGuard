@@ -31,7 +31,7 @@
 
 [CmdletBinding()]
 param(
-    [string]$ProjectId  = "reactorguard-platform",
+    [string]$ProjectId  = "sentinel-platform-485714",
     [string]$Namespace  = "reactorguard-ml",
     [string]$KsaName    = "pinn-server",
     [string]$SecretName = "reactorguard/jwt-secret"

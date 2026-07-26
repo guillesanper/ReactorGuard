@@ -131,6 +131,10 @@ credentials.json
 # Excepciones: json que es fuente, no credencial.
 # Los dashboards de Grafana (T4.6) se versionan y se despliegan como ConfigMap.
 !observability/**/*.json
+# Metricas de DVC: pequenas y versionadas, que es lo que permite a
+# `dvc metrics diff` comparar dos commits. Sin esta excepcion caerian bajo el
+# comodin y el comando no tendria contra que comparar.
+!metrics/*.json
 
 # Environment variable files
 .env

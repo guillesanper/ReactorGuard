@@ -50,6 +50,25 @@ variable "env" {
   default     = "dev"
 }
 
+variable "deletion_protection" {
+  description = "Protege el cluster de borrado accidental (terraform destroy). true por defecto; poner false solo para tear-down deliberado del entorno."
+  type        = bool
+  default     = true
+}
+
+variable "master_authorized_networks" {
+  description = <<-EOT
+    CIDRs públicos autorizados a alcanzar el endpoint del API server de GKE.
+    Lista vacía (default) = ninguna red pública autorizada (deny-all). Añadir
+    el /32 público del operador (oficina/VPN) para acceso con kubectl.
+  EOT
+  type = list(object({
+    cidr_block   = string
+    display_name = string
+  }))
+  default = []
+}
+
 # --- Node Pool: platform ---
 
 variable "platform_machine_type" {

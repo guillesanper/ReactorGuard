@@ -144,10 +144,10 @@ source = ["data", "ml/features"]
 omit = [
     # ROTO contra el schema canonico: se reescribe con sus tests en Fase 3 (T5.3).
     "data/generators/reactor_simulator.py",
-    # Superado por pipeline.py y sin call sites; se retira en T4.2. Usa ademas la
-    # API fillna(method=) eliminada en pandas 2.x, asi que no es ejecutable tal cual.
-    "ml/features/extractor.py",
 ]
+# ml/features/extractor.py salio de este omit al RETIRARSE en T4.2: lo sustituye
+# ml/features/pipeline.py, que si lee params.yaml y no depende del schema plano.
+# Recuperable en git en 3801d0b si hiciera falta consultarlo.
 # tep_downloader.py y tep_explorer.py salieron de este omit al cerrar T3.2: sus
 # tests usan ficheros sinteticos en tmp_path y un doble de requests, de modo que
 # la suite no depende de que data/raw/tep este poblado ni toca la red.
