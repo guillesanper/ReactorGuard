@@ -9,6 +9,20 @@ auditability and operates on Google Kubernetes Engine.
 
 ---
 
+## Project status
+
+Phase 2 (data pipeline) is partially complete and runs entirely locally; no cloud
+infrastructure has been deployed yet. See [Docs/ReactorGuard_Progreso.md](Docs/ReactorGuard_Progreso.md)
+for the verified per-task status and [Docs/Handoff_Paso4.md](Docs/Handoff_Paso4.md) for the next steps.
+
+| Phase | Status |
+|-------|--------|
+| 1. GKE + Kafka | Code complete, not deployed |
+| 2. Data pipeline + sensor validator | Partial: TEP ingestion, validator, features and DVC pipeline done; Kafka streamer/consumer, Feast, GCS client pending |
+| 3-8. Simulation, PINN, uncertainty, API, CI/CD, observability | Not started (scaffolding only) |
+
+---
+
 ## Overview
 
 | Component | Technology |
@@ -28,7 +42,7 @@ auditability and operates on Google Kubernetes Engine.
 
 | Tool | Version | Purpose |
 |------|---------|---------|
-| Python | 3.11+ | Runtime |
+| Python | 3.11+ (development venv uses 3.12) | Runtime |
 | Terraform | ≥ 1.6.0 | Infrastructure provisioning |
 | kubectl | ≥ 1.28 | Kubernetes management |
 | Helm | ≥ 3.14 | Kubernetes package manager |
@@ -53,7 +67,9 @@ gcloud auth application-default login
 gcloud config set project sentinel-platform-485714
 
 # Create Terraform state bucket and enable required APIs
-bash infra/scripts/bootstrap.sh
+# Windows (PowerShell 7+):
+.\infra\scripts\bootstrap.ps1
+# Linux/macOS or CI: bash infra/scripts/bootstrap.sh
 ```
 
 ### 2. Provision infrastructure
@@ -83,28 +99,33 @@ pip install -e ".[dev]"
 
 ### 5. Deploy Kafka (Strimzi)
 
-```bash
-helm repo add strimzi https://strimzi.io/charts/
-helm install strimzi-operator strimzi/strimzi-kafka-operator \
-  --namespace kafka --create-namespace
-kubectl apply -k k8s/overlays/dev
+```powershell
+.\infra\scripts\Install-Kafka.ps1
+kubectl apply -k k8s/base/
 ```
 
-### 6. Run data simulation
+Note: `k8s/base/kustomization.yaml` does not yet include the `kafka/` manifests (see
+the Phase 1 debt in `Docs/ReactorGuard_Progreso.md`); apply `k8s/base/kafka/` explicitly
+until that is fixed. Not yet deployed or verified against a real cluster.
 
-```bash
-python -m data.generators.reactor_simulator --config params.yaml
+### 6. Run the data pipeline (local, no GCP needed)
+
+```powershell
+.\infra\scripts\Invoke-Pipeline.ps1
 ```
 
-### 7. Train model
+Runs `download_tep -> explore_tep -> adapt_tep -> featurize -> split`. Use this script
+rather than a bare `dvc repro`: DVC does not activate the venv and deletes stage outputs
+before running.
 
-```bash
-dvc repro
-# or manually:
-python -m ml.training.train --params params.yaml
-```
+### 7. Simulation and model training
 
-### 8. Start API
+Not implemented yet (Phases 3-4). `data/generators/reactor_simulator.py` and
+`ml/training/train.py` are scaffolding.
+
+### 8. Start API (partial)
+
+`/health` works; `/predict` and `/explain` return HTTP 501 until Phase 6.
 
 ```bash
 uvicorn api.main:app --reload --host 0.0.0.0 --port 8080

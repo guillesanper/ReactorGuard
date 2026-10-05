@@ -14,6 +14,8 @@ from __future__ import annotations
 
 import uuid
 from datetime import UTC, datetime, timedelta
+from itertools import chain
+from types import SimpleNamespace
 
 import pytest
 
@@ -930,3 +932,83 @@ class TestValidatorMetrics:
         metrics = SensorValidator(spans).get_metrics()
         assert metrics["readings_total"] == 0
         assert metrics["latency_ms"]["p50"] == 0.0
+
+
+class TestLatencyWindow:
+    """The latency history must be bounded: a continuous service never stops."""
+
+    _WINDOW = 100
+
+    def test_history_does_not_grow_past_the_window(
+        self, spans: dict[str, SensorSpan]
+    ) -> None:
+        """After 3x the window the retained history must still equal the window."""
+        validator = SensorValidator(spans, latency_window=self._WINDOW)
+        sizes = []
+        for index in range(3 * self._WINDOW):
+            validator.validate(_reading(50.0, _T0 + _SAMPLE * index))
+            sizes.append(len(validator._latencies_seconds))
+
+        assert sizes[self._WINDOW - 1] == self._WINDOW
+        assert sizes[2 * self._WINDOW - 1] == self._WINDOW
+        assert sizes[-1] == self._WINDOW
+        assert max(sizes) == self._WINDOW
+
+    def test_counters_stay_cumulative_when_the_window_slides(
+        self, spans: dict[str, SensorSpan]
+    ) -> None:
+        """Bounding the latency history must not bound the counters."""
+        validator = SensorValidator(spans, latency_window=self._WINDOW)
+        for index in range(3 * self._WINDOW):
+            validator.validate(_reading(50.0, _T0 + _SAMPLE * index))
+
+        assert validator.get_metrics()["readings_total"] == 3 * self._WINDOW
+
+    def test_valueless_readings_are_bounded_too(
+        self, spans: dict[str, SensorSpan]
+    ) -> None:
+        """The early-return path for unjudged readings records latency as well."""
+        validator = SensorValidator(spans, latency_window=5)
+        for index in range(20):
+            validator.validate(_reading(None, _T0 + _SAMPLE * index))
+
+        assert len(validator._latencies_seconds) == 5
+
+    def test_percentiles_are_computed_over_the_recent_window(
+        self, spans: dict[str, SensorSpan], monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Percentiles must describe the last `window` readings, not the whole run.
+
+        Se sustituye el reloj del modulo por uno guionizado: la lectura i-esima
+        tarda (i + 1) ms, con i en [0, 300). La ventana de 100 retiene las
+        lecturas 201..300 ms, de modo que los valores esperados salen a mano:
+        media 250,5 ms, p50 250,5 ms y p99 = 201 + 0,99 * 99 = 299,01 ms. Si la
+        ventana no descartara lo antiguo, p50 seria 150,5 ms.
+        """
+        latencies = [(index + 1) / 1000.0 for index in range(3 * self._WINDOW)]
+        ticks = chain.from_iterable((0.0, latency) for latency in latencies)
+        clock = SimpleNamespace(perf_counter=lambda: next(ticks))
+        monkeypatch.setattr("data.validation.sensor_validator.time", clock)
+
+        validator = SensorValidator(spans, latency_window=self._WINDOW)
+        for index in range(3 * self._WINDOW):
+            validator.validate(_reading(50.0, _T0 + _SAMPLE * index))
+
+        latency = validator.get_metrics()["latency_ms"]
+        assert latency["mean"] == pytest.approx(250.5)
+        assert latency["p50"] == pytest.approx(250.5)
+        assert latency["p99"] == pytest.approx(299.01)
+
+    def test_default_window_is_ten_thousand(
+        self, spans: dict[str, SensorSpan]
+    ) -> None:
+        """The documented default must be the one actually applied."""
+        assert SensorValidator(spans)._latencies_seconds.maxlen == 10_000
+
+    @pytest.mark.parametrize("window", [0, -1])
+    def test_non_positive_window_is_rejected(
+        self, spans: dict[str, SensorSpan], window: int
+    ) -> None:
+        """A window of zero would silently disable latency reporting."""
+        with pytest.raises(ValueError, match="latency_window must be positive"):
+            SensorValidator(spans, latency_window=window)

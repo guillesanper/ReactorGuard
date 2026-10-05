@@ -852,6 +852,7 @@ class SensorValidator:
         spans: dict[str, SensorSpan],
         detectors: list[SensorFaultDetector] | None = None,
         baseline_correlations: dict[tuple[str, str], float] | None = None,
+        latency_window: int = 10_000,
     ) -> None:
         """Build a validator with the five default detectors, or a custom set.
 
@@ -861,7 +862,16 @@ class SensorValidator:
                 subset. Defaults to the five standard detectors in order.
             baseline_correlations: Passed to the default CrossCorrelationChecker.
                 Ignored when `detectors` is given.
+            latency_window: Number of most recent per-reading latencies kept
+                for the percentiles of `get_metrics`. Acotada a proposito: en un
+                servicio continuo una lista sin limite crece un float por
+                lectura y nunca se libera.
+
+        Raises:
+            ValueError: If `latency_window` is not positive.
         """
+        if latency_window <= 0:
+            raise ValueError(f"latency_window must be positive, got {latency_window}")
         self.spans = spans
         self.detectors: list[SensorFaultDetector] = (
             detectors
@@ -878,7 +888,7 @@ class SensorValidator:
         self._readings_total = 0
         self._readings_without_value = 0
         self._readings_unknown_sensor = 0
-        self._latencies_seconds: list[float] = []
+        self._latencies_seconds: deque[float] = deque(maxlen=latency_window)
 
     def validate(self, reading: SensorReading) -> ValidationResult:
         """Run every detector and consolidate the verdict.
@@ -943,7 +953,9 @@ class SensorValidator:
 
         Returns:
             Mapping with per-fault-type counts, reading totals and latency
-            percentiles in milliseconds.
+            percentiles in milliseconds. Los contadores son acumulados desde
+            la construccion; la latencia se calcula solo sobre las ultimas
+            `latency_window` lecturas.
         """
         latencies = np.array(self._latencies_seconds, dtype=np.float64) * 1000.0
         return {

@@ -21,10 +21,11 @@ dependencies = [
     "pydantic>=2.6.0",
 
     # Kafka
-    "kafka-python>=2.0.2",
+    "kafka-python>=3.0.8,<4",   # API verificada en 3.0.8 (idempotencia, cooperative-sticky)
+    "lz4>=4.0.0",               # compression_type="lz4" del productor Kafka
 
     # Feature Store
-    "feast[gcp]>=0.36.0",
+    "feast[gcp,redis]>=0.36.0",  # redis: online store del cluster (T4.3)
 
     # ML Experiment Tracking
     "mlflow>=2.11.0",
@@ -123,7 +124,10 @@ ignore_errors = true
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
-addopts = "-v"
+addopts = "-v --strict-markers"
+markers = [
+    "integration: needs Docker Kafka/Redis (KAFKA_BOOTSTRAP); excluded from CI unit run",
+]
 # El gate de cobertura (--cov --cov-fail-under=70) lo aplica ci.yaml sobre
 # tests/unit/ + tests/safety/. El alcance medido se define abajo.
 
