@@ -125,6 +125,70 @@ features:
     expected_sensor_count: 52
 
 # -----------------------------------------------------------------------------
+# Streaming parameters  (data/streaming/, streamer y consumidor de validacion)
+#
+# Leidos via data/streaming/streaming_params.py. Ningun stage de dvc.yaml los
+# declara: son configuracion de servicios, no de reproduccion de datos.
+# Endpoints y credenciales de Kafka NO viven aqui: solo en variables de entorno
+# KAFKA_* (data/streaming/kafka_settings.py).
+#
+# Calibracion a la cadencia del TEP (180 s, tep.sample_interval_minutes), no a la
+# del TDD (1 s): ver staleness_seconds. Los parametros de rendimiento del
+# productor (linger, batch, in-flight) son valores INICIALES; el benchmark de M5
+# los fija con datos.
+# -----------------------------------------------------------------------------
+streaming:
+  # Topics y grupo. El grupo es el que autoriza k8s/base/kafka/kafka-users.yaml.
+  raw_topic: sensor-readings-raw
+  validated_topic: sensor-validated
+  alerts_topic: anomaly-alerts
+  consumer_group: sensor-validator
+
+  # Consumidor. auto_offset_reset=earliest: un grupo nuevo no debe saltarse las
+  # lecturas ya publicadas. isolation_level=read_uncommitted porque el productor
+  # no es transaccional (read_committed solo anadiria latencia).
+  poll_timeout_ms: 1000
+  max_poll_records: 500
+  auto_offset_reset: earliest
+  isolation_level: read_uncommitted
+
+  # Commit sincrono tras publicar (at-least-once). Peor caso de un lote:
+  #   flush_timeout_s + (commit_retries + 1) * commit_timeout_ms
+  #   = 30 s + 4 * 30 s = 150 s,
+  # que debe quedar por debajo de max_poll_interval_ms (300 s) o Kafka expulsa al
+  # consumidor del grupo a mitad de lote. El loader lo valida. El computo del lote
+  # es despreciable: validador p99 0,23 ms por lectura, 500 lecturas = 115 ms.
+  commit_retries: 3
+  commit_timeout_ms: 30000
+  close_timeout_ms: 5000
+  max_poll_interval_ms: 300000
+
+  # Productor. Orden por sensor: idempotencia (fija en el adaptador) garantiza el
+  # orden con max_in_flight <= 5. lz4 reduce bytes en red a coste de CPU bajo.
+  # linger de 10 ms es despreciable frente a un intervalo de 180 s y permite
+  # agrupar en el modo rapido. delivery_timeout_ms >= linger + request_timeout.
+  compression_type: lz4          # none | gzip | snappy | lz4 | zstd
+  batch_linger_ms: 10
+  producer_batch_bytes: 131072
+  max_in_flight_requests: 5
+  request_timeout_ms: 30000
+  delivery_timeout_ms: 120000
+  flush_timeout_s: 30.0
+
+  # Observabilidad. 0.0.0.0 porque el kubelet y Prometheus acceden por la IP del
+  # pod; el acceso lo restringen las NetworkPolicies, no el bind.
+  bind_host: "0.0.0.0"
+  health_port: 8000
+  metrics_port: 9090
+
+  # Tiempo sin latido tras el cual /health devuelve 503. El silencio legitimo mas
+  # largo es el del streamer en modo realtime: una espera de 180 s entre lotes.
+  # 540 s = 3 intervalos (mismo factor que el TTL de Feast): tolera dos lotes
+  # perdidos antes de reiniciar el pod. Con 30 s (valor heredado del TDD) el pod
+  # se reiniciaria en cada espera. El test lo exige >= 2 intervalos.
+  staleness_seconds: 540
+
+# -----------------------------------------------------------------------------
 # Training parameters  (ml/training/train.py)
 # -----------------------------------------------------------------------------
 training:
