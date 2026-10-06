@@ -189,6 +189,36 @@ streaming:
   staleness_seconds: 540
 
 # -----------------------------------------------------------------------------
+# Storage parameters  (data/storage/, cliente de almacenamiento de lecturas)
+#
+# Leidos via data/storage/storage_params.py. Ningun stage de dvc.yaml los
+# declara: son configuracion de servicios, no de reproduccion de datos.
+#
+# bucket_prefix y env DEBEN coincidir con infra/terraform (locals.bucket_prefix y
+# locals.env del entorno dev): los nombres de bucket se derivan de ellos y
+# tests/unit/test_storage_params.py los contrasta con modules/storage/main.tf.
+# -----------------------------------------------------------------------------
+storage:
+  bucket_prefix: reactorguard
+  env: dev
+
+  # Raiz del backend en disco (LocalCache). Bajo data/processed/ a proposito: ya
+  # esta en .gitignore y no es un out de DVC, asi que no ensucia ni el arbol ni
+  # `dvc status`.
+  local_root: data/processed/local_store
+
+  # Hilos de lectura de partes. Una hora de TEP son 20 muestras x 52 sensores,
+  # es decir, partes de decenas de KB: el cuello es la latencia por objeto, no el
+  # ancho de banda. Valor inicial; se fija midiendo contra el bucket del cluster.
+  read_workers: 4
+
+  # Timeout de una operacion contra el almacen. Del mismo orden que
+  # streaming.flush_timeout_s: una escritura en el camino de un lote no debe
+  # consumir mas margen del que el lote ya reserva frente a max_poll_interval_ms.
+  # No medido todavia (requiere el bucket real).
+  request_timeout_s: 30.0
+
+# -----------------------------------------------------------------------------
 # Training parameters  (ml/training/train.py)
 # -----------------------------------------------------------------------------
 training:
