@@ -34,18 +34,19 @@ stream, no este stage por lotes.
 
 from __future__ import annotations
 
-from collections.abc import Mapping
-from datetime import datetime
+from collections.abc import Callable, Mapping
 from functools import lru_cache
 
 import numpy as np
 import numpy.typing as npt
 import pandas as pd
+from numpy.lib.stride_tricks import sliding_window_view
+from pandas.api.indexers import BaseIndexer
 
 from ml.features.feature_params import FeatureParams
 from ml.features.kalman import (
     DEFAULT_OBSERVATION_NOISE,
-    OnlineKalmanFilter,
+    filter_columns,
 )
 
 FEATURIZER_PROCESS_NOISE = 1e-6
@@ -88,18 +89,226 @@ def _slope_coefficients(window: int) -> npt.NDArray[np.float64]:
     return np.asarray(centred / np.square(centred).sum())
 
 
-def _least_squares_slope(block: npt.NDArray[np.float64]) -> float:
-    """Return the least-squares slope of a window, in units per sample.
+@lru_cache(maxsize=64)
+def _trailing_bounds(
+    window: int, steps: int
+) -> tuple[npt.NDArray[np.int64], npt.NDArray[np.int64]]:
+    """Return the [start, end) bounds of every trailing window of a series.
+
+    Son las mismas cotas que calcula pandas para una ventana entera (cierre por
+    la derecha, sin centrar): la ventana de la posicion i abarca las ultimas
+    window muestras hasta i incluida, mas corta al principio.
 
     Args:
-        block: Window values in sample order.
+        window: Window length in samples.
+        steps: Series length.
 
     Returns:
-        The slope, 0.0 for a block too short to define one.
+        The start and end positions of each window.
     """
-    if block.size < 2:
-        return 0.0
-    return float(block @ _slope_coefficients(block.size))
+    end = np.arange(1, steps + 1, dtype=np.int64)
+    return np.maximum(end - window, 0), end
+
+
+class _TrailingWindow(BaseIndexer):  # type: ignore[misc]  # pandas no publica stubs
+    """Window indexer that hands pandas precomputed bounds.
+
+    Para una ventana entera pandas recalcula las cotas (y recorta con np.clip)
+    una vez por COLUMNA y por llamada: con 52 sensores, tres ventanas y dos
+    estadisticas son 312 recalculos identicos por ventana de datos, casi la mitad
+    del coste de rolling.mean y rolling.std. Las cotas solo dependen de la
+    longitud de la ventana y de la serie, de modo que se calculan una vez. Es la
+    API publica de pandas para ventanas personalizadas y los nucleos que se
+    ejecutan son los mismos, con lo que el resultado no cambia.
+    """
+
+    def get_window_bounds(
+        self,
+        num_values: int = 0,
+        min_periods: int | None = None,
+        center: bool | None = None,
+        closed: str | None = None,
+        step: int | None = None,
+    ) -> tuple[npt.NDArray[np.int64], npt.NDArray[np.int64]]:
+        """Return the cached bounds of a series of num_values samples.
+
+        Args:
+            num_values: Series length.
+            min_periods: Ignored; pandas applies it itself.
+            center: Ignored; windows are always trailing.
+            closed: Ignored; windows are always closed on the right.
+            step: Ignored; every position is evaluated.
+
+        Returns:
+            The start and end positions of each window.
+        """
+        return _trailing_bounds(self.window_size, num_values)
+
+
+def _window_counts(present: npt.NDArray[np.bool_], window: int) -> npt.NDArray[np.int64]:
+    """Count the observations inside the trailing window of every position.
+
+    Args:
+        present: Boolean array (sensors, steps), True where a value exists.
+        window: Window length in samples.
+
+    Returns:
+        Array (sensors, steps) with how many values each trailing window holds.
+        Las primeras posiciones tienen ventanas mas cortas que window.
+    """
+    cumulative = np.zeros((present.shape[0], present.shape[1] + 1), dtype=np.int64)
+    np.cumsum(present, axis=1, out=cumulative[:, 1:])
+    ends = np.arange(1, present.shape[1] + 1)
+    return np.asarray(cumulative[:, ends] - cumulative[:, np.maximum(ends - window, 0)])
+
+
+def _rolling_reduce(
+    values: npt.NDArray[np.float64],
+    window: int,
+    min_periods: int,
+    reduce: Callable[[npt.NDArray[np.float64]], npt.NDArray[np.float64]],
+) -> npt.NDArray[np.float64]:
+    """Apply a window reducer along time for every column, without a Python loop.
+
+    Sustituye a DataFrame.rolling(...).apply(func, raw=True), que llamaba a func
+    una vez por ventana y por sensor (3.120 llamadas en una ventana de 60x52). Aqui
+    las ventanas completas son una vista sin copia (sliding_window_view) y se
+    reducen todas de una vez; solo las window - 1 primeras posiciones, que tienen
+    ventanas mas cortas, se reducen una a una. La semantica es la de pandas: el
+    bloque que recibe el reductor INCLUYE los NaN, y la celda sale NaN si la
+    ventana tiene menos de min_periods valores no nulos.
+
+    Args:
+        values: Array (steps, sensors) in time order. Infinities count as absent.
+        window: Window length in samples.
+        min_periods: Minimum non-NaN values for a cell to be emitted.
+        reduce: Maps an array (sensors, windows, length) of windows to an array
+            (sensors, windows). Debe tratar cada ventana de forma independiente.
+
+    Returns:
+        Array (steps, sensors) with the reduction of each trailing window.
+    """
+    series = _window_series(values)
+    steps = series.shape[1]
+    out = np.full(series.shape, np.nan, dtype=np.float64)
+    for end in range(min(window - 1, steps)):
+        out[:, end] = reduce(series[:, None, : end + 1])[:, 0]
+    if steps >= window:
+        out[:, window - 1 :] = reduce(sliding_window_view(series, window, axis=1))
+    out[_window_counts(~np.isnan(series), window) < min_periods] = np.nan
+    return np.ascontiguousarray(out.T)
+
+
+def _window_series(values: npt.NDArray[np.float64]) -> npt.NDArray[np.float64]:
+    """Lay values out the way a window operation consumes them.
+
+    Contiguo por sensor: cada ventana es un tramo contiguo de memoria, igual que
+    el bloque que pandas entregaba a func, y de eso depende el orden de suma de
+    numpy y por tanto que el resultado coincida bit a bit con el anterior. pandas
+    trata +-inf como ausente en toda operacion de ventana (los cambia a NaN antes
+    de contar y de operar); se replica para no divergir.
+
+    Args:
+        values: Array (steps, sensors) in time order.
+
+    Returns:
+        Contiguous array (sensors, steps) with infinities replaced by NaN.
+    """
+    return np.ascontiguousarray(np.where(np.isinf(values.T), np.nan, values.T))
+
+
+def _rolling_extreme(
+    values: npt.NDArray[np.float64],
+    window: int,
+    min_periods: int,
+    ufunc: np.ufunc,
+) -> npt.NDArray[np.float64]:
+    """Return the rolling minimum or maximum of every column.
+
+    Minimo y maximo no redondean: el resultado es uno de los valores de la
+    ventana, asi que cualquier algoritmo correcto da el mismo numero que
+    DataFrame.rolling().min() y .max() sin tener que replicar su cola monotona.
+    fmin y fmax ignoran los NaN como pandas. Las ventanas parciales del principio
+    son extremos acumulados, y se calculan de una vez.
+
+    Args:
+        values: Array (steps, sensors) in time order. Infinities count as absent.
+        window: Window length in samples.
+        min_periods: Minimum non-NaN values for a cell to be emitted.
+        ufunc: np.fmin for the minimum or np.fmax for the maximum.
+
+    Returns:
+        Array (steps, sensors) with the extreme of each trailing window.
+    """
+    series = _window_series(values)
+    steps = series.shape[1]
+    out = np.full(series.shape, np.nan, dtype=np.float64)
+    lead = min(window - 1, steps)
+    out[:, :lead] = ufunc.accumulate(series[:, :lead], axis=1)
+    if steps >= window:
+        out[:, window - 1 :] = ufunc.reduce(
+            sliding_window_view(series, window, axis=1), axis=-1
+        )
+    out[_window_counts(~np.isnan(series), window) < min_periods] = np.nan
+    return np.ascontiguousarray(out.T)
+
+
+def _slope_of_windows(windows: npt.NDArray[np.float64]) -> npt.NDArray[np.float64]:
+    """Return the least-squares slope of every window, in units per sample.
+
+    Se hace con matmul por lotes y no con windows @ pesos porque solo el primero
+    llama al producto escalar (ddot) que usaba el codigo anterior sobre cada
+    bloque; el segundo usa gemv, que suma en otro orden y difiere en el ultimo bit.
+
+    Args:
+        windows: Array (sensors, count, length) of windows in sample order.
+
+    Returns:
+        Array (sensors, count) of slopes, 0.0 for windows too short to define one.
+    """
+    length = windows.shape[-1]
+    if length < 2:
+        return np.zeros(windows.shape[:-1], dtype=np.float64)
+    weights = _slope_coefficients(length)[:, None]
+    return np.asarray((windows[:, :, None, :] @ weights)[:, :, 0, 0])
+
+
+def _zero_crossing_of_windows(windows: npt.NDArray[np.float64]) -> npt.NDArray[np.float64]:
+    """Return how often each window crosses its own mean, normalised to [0, 1].
+
+    Se cuenta contra la MEDIA de la ventana y no contra el cero absoluto: las
+    senales del TEP viven lejos del cero (una presion de 2.700 kPa no cruza el
+    cero jamas) y contra el cero la feature seria constante.
+
+    Cada cruce es un signo distinto del ultimo signo no nulo anterior dentro de la
+    ventana. La media se calcula sobre el eje contiguo para que numpy use la
+    misma suma por pares que usaba block.mean(): un canal congelado depende de
+    ello, porque la media de diez 0,1 identicos puede no ser exactamente 0,1 y
+    entonces el signo de (valor - media) deja de ser cero.
+
+    Args:
+        windows: Array (sensors, count, length) of windows in sample order.
+
+    Returns:
+        Array (sensors, count) of crossings divided by the transitions available,
+        0.0 for a flat window.
+    """
+    length = windows.shape[-1]
+    signs = np.sign(windows - windows.mean(axis=-1, keepdims=True))
+    non_zero = signs != 0.0
+    # Ultimo indice con signo no nulo hasta cada posicion, y el de la posicion previa.
+    last = np.maximum.accumulate(np.where(non_zero, np.arange(length), -1), axis=-1)
+    previous = np.concatenate(
+        [np.full(last.shape[:-1] + (1,), -1, dtype=last.dtype), last[..., :-1]], axis=-1
+    )
+    previous_sign = np.take_along_axis(signs, np.maximum(previous, 0), axis=-1)
+    crossings = np.count_nonzero(
+        non_zero & (previous >= 0) & (signs != previous_sign), axis=-1
+    )
+    transitions = np.count_nonzero(non_zero, axis=-1) - 1
+    return np.asarray(
+        np.where(transitions >= 1, crossings / np.maximum(transitions, 1), 0.0)
+    )
 
 
 class FeaturePipeline:
@@ -263,11 +472,12 @@ class FeaturePipeline:
         frame = values.loc[:, selected].astype(np.float64)
 
         columns: dict[str, npt.NDArray[np.float64]] = {"value": self._flat(frame)}
-        columns.update(self._rolling_statistics(frame))
+        statistics = self._rolling_statistics(frame)
+        columns.update(statistics)
         columns.update(self._lags(frame))
         columns.update(self._rates(frame))
         columns.update(self._kalman(frame, timestamps))
-        columns.update(self._distribution(frame))
+        columns.update(self._distribution(frame, statistics))
         columns.update(self._fault_indicators(frame))
         columns.update(self._context(frame, timestamps, sensor_types, selected))
         columns.update(self._correlations(frame))
@@ -302,21 +512,33 @@ class FeaturePipeline:
     ) -> dict[str, npt.NDArray[np.float64]]:
         """Group 1: rolling mean, std, min and max over each configured window.
 
+        La media y la desviacion se dejan a pandas: su algoritmo es incremental
+        (suma compensada que entra y sale), de modo que el ultimo bit de cada
+        celda depende de la historia de la ventana y solo su propio nucleo lo
+        reproduce; se le dan las cotas ya calculadas (_TrailingWindow). El minimo
+        y el maximo, que no redondean, se calculan con numpy.
+
         Args:
             frame: Wide value frame.
 
         Returns:
             Mapping from feature name to its flattened column.
         """
+        minimum = self.params.min_samples_per_window
+        values = frame.to_numpy(dtype=np.float64)
         out: dict[str, npt.NDArray[np.float64]] = {}
         for window in self.params.window_samples:
             rolling = frame.rolling(
-                window=window, min_periods=self.params.min_samples_per_window
+                window=_TrailingWindow(window_size=window), min_periods=minimum
             )
             out[f"rolling_mean_{window}"] = self._flat(rolling.mean())
             out[f"rolling_std_{window}"] = self._flat(rolling.std())
-            out[f"rolling_min_{window}"] = self._flat(rolling.min())
-            out[f"rolling_max_{window}"] = self._flat(rolling.max())
+            out[f"rolling_min_{window}"] = np.asarray(
+                _rolling_extreme(values, window, minimum, np.fmin).reshape(-1)
+            )
+            out[f"rolling_max_{window}"] = np.asarray(
+                _rolling_extreme(values, window, minimum, np.fmax).reshape(-1)
+            )
         return out
 
     def _lags(self, frame: pd.DataFrame) -> dict[str, npt.NDArray[np.float64]]:
@@ -351,13 +573,18 @@ class FeaturePipeline:
             Mapping from feature name to its flattened column.
         """
         window = self.params.shortest_window
-        slope = frame.rolling(
-            window=window, min_periods=self.params.min_samples_per_window
-        ).apply(_least_squares_slope, raw=True)
+        slope = _rolling_reduce(
+            frame.to_numpy(dtype=np.float64),
+            window,
+            self.params.min_samples_per_window,
+            _slope_of_windows,
+        )
 
         return {
             "rate_of_change": self._flat(frame.diff() / self.sample_interval_seconds),
-            f"slope_{window}": self._flat(slope / self.sample_interval_seconds),
+            f"slope_{window}": np.asarray(
+                (slope / self.sample_interval_seconds).reshape(-1)
+            ),
         }
 
     def _kalman(
@@ -365,10 +592,14 @@ class FeaturePipeline:
     ) -> dict[str, npt.NDArray[np.float64]]:
         """Group 3: normalized residual and innovation sigma, one filter per tag.
 
-        Se filtra columna a columna con OnlineKalmanFilter en lugar de con
+        Se filtran los sensores a la vez con filter_columns, que es el mismo
+        filtro que OnlineKalmanFilter con salida identica bit a bit, y no con
         KalmanFilterBank porque el banco consume SensorReading y aqui se parte de
-        un frame: construir 26.000 objetos pydantic por particion solo para
-        volver a extraerles el numero seria trabajo puro de traduccion.
+        un frame. El bucle sensor a sensor (24.960 llamadas a step() por ventana
+        de 60x52) era mas de la mitad de los 230 ms medidos por transform().
+
+        Una lectura ausente no se imputa: el filtro no avanza. Inventar el numero
+        fabricaria justo la evidencia que el residual mide.
 
         Args:
             frame: Wide value frame.
@@ -376,100 +607,68 @@ class FeaturePipeline:
 
         Returns:
             Mapping from feature name to its flattened column.
+
+        Raises:
+            ValueError: If a timestamp is missing or precedes the previous one.
         """
-        stamps = [pd.Timestamp(value).to_pydatetime() for value in timestamps]
-        residual = np.empty(frame.shape, dtype=np.float64)
-        sigma = np.empty(frame.shape, dtype=np.float64)
+        moments = pd.DatetimeIndex(timestamps)
+        if moments.hasnans:
+            raise ValueError("timestamps must not contain missing values (NaT).")
+        # asi8 es el instante UTC aunque haya huso, y en microsegundos reproduce
+        # exactamente timedelta.total_seconds() del camino anterior.
+        microseconds = np.asarray(moments.as_unit("us").asi8, dtype=np.int64)
 
-        for position, tag in enumerate(frame.columns):
-            series = frame[tag].to_numpy(dtype=np.float64)
-            filtered = OnlineKalmanFilter(
-                process_noise=self.process_noise,
-                observation_noise=self.observation_noise,
-            )
-            for step, (measurement, stamp) in enumerate(
-                zip(series, stamps, strict=True)
-            ):
-                residual[step, position], sigma[step, position] = self._filter_step(
-                    filtered, measurement, stamp
-                )
-
+        filtered = filter_columns(
+            frame.to_numpy(dtype=np.float64),
+            microseconds,
+            process_noise=self.process_noise,
+            observation_noise=self.observation_noise,
+        )
         return {
-            "kalman_residual": np.asarray(residual.reshape(-1)),
-            "kalman_uncertainty": np.asarray(sigma.reshape(-1)),
+            "kalman_residual": np.asarray(filtered.normalized_residual.reshape(-1)),
+            "kalman_uncertainty": np.asarray(filtered.innovation_sigma.reshape(-1)),
         }
 
-    @staticmethod
-    def _filter_step(
-        filtered: OnlineKalmanFilter, measurement: float, stamp: datetime
-    ) -> tuple[float, float]:
-        """Advance one filter by one sample.
-
-        Una lectura ausente no se imputa: se pasa como nula y el filtro no avanza.
-        Inventar el numero fabricaria justo la evidencia que el residual mide.
-
-        Args:
-            filtered: The sensor's filter.
-            measurement: Measured value, possibly NaN.
-            stamp: Timestamp of the sample.
-
-        Returns:
-            The normalized residual and the innovation sigma, both NaN when the
-            measurement is absent.
-        """
-        if not np.isfinite(measurement):
-            return float("nan"), float("nan")
-        result = filtered.step(float(measurement), stamp)
-        return result.normalized_residual, result.innovation_sigma
-
-    def _distribution(self, frame: pd.DataFrame) -> dict[str, npt.NDArray[np.float64]]:
+    def _distribution(
+        self,
+        frame: pd.DataFrame,
+        statistics: Mapping[str, npt.NDArray[np.float64]],
+    ) -> dict[str, npt.NDArray[np.float64]]:
         """Group 5: short-to-long volatility ratio and zero-crossing rate.
+
+        La razon reutiliza las desviaciones rolling_std_{corta} y rolling_std_{larga}
+        del grupo 1 en lugar de recalcularlas: son la misma llamada de pandas con
+        los mismos argumentos (la ventana corta y la larga siempre estan entre
+        window_samples), asi que el resultado es el mismo y se ahorra casi una
+        cuarta parte del tiempo de transform().
 
         Args:
             frame: Wide value frame.
+            statistics: Output of _rolling_statistics over the same frame.
 
         Returns:
             Mapping from feature name to its flattened column.
         """
         short = self.params.shortest_window
         long = self.params.longest_window
-        minimum = self.params.min_samples_per_window
 
-        short_std = frame.rolling(window=short, min_periods=minimum).std()
-        long_std = frame.rolling(window=long, min_periods=minimum).std()
+        short_std = statistics[f"rolling_std_{short}"]
+        long_std = statistics[f"rolling_std_{long}"]
         # Un canal plano en la ventana larga tiene volatilidad indefinida, no
         # infinita: dividir por cero daria inf y envenenaria cualquier escalado.
-        ratio = short_std / long_std.replace(0.0, np.nan)
+        ratio = short_std / np.where(long_std == 0.0, np.nan, long_std)
 
-        crossings = frame.rolling(window=short, min_periods=minimum).apply(
-            self._zero_crossing_rate, raw=True
+        crossings = _rolling_reduce(
+            frame.to_numpy(dtype=np.float64),
+            short,
+            self.params.min_samples_per_window,
+            _zero_crossing_of_windows,
         )
 
         return {
-            "variance_ratio": self._flat(ratio),
-            f"zero_crossing_rate_{short}": self._flat(crossings),
+            "variance_ratio": np.asarray(ratio),
+            f"zero_crossing_rate_{short}": np.asarray(crossings.reshape(-1)),
         }
-
-    @staticmethod
-    def _zero_crossing_rate(block: npt.NDArray[np.float64]) -> float:
-        """Return how often a window crosses its own mean, normalised to [0, 1].
-
-        Se cuenta contra la MEDIA de la ventana y no contra el cero absoluto: las
-        senales del TEP viven lejos del cero (una presion de 2.700 kPa no cruza
-        el cero jamas) y contra el cero la feature seria constante.
-
-        Args:
-            block: Window values.
-
-        Returns:
-            Crossings divided by the transitions available, 0.0 for a flat window.
-        """
-        centred = block - block.mean()
-        signs = np.sign(centred)
-        non_zero = signs[signs != 0.0]
-        if non_zero.size < 2:
-            return 0.0
-        return float(np.count_nonzero(np.diff(non_zero)) / (non_zero.size - 1))
 
     def _fault_indicators(
         self, frame: pd.DataFrame

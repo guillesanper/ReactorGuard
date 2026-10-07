@@ -533,3 +533,273 @@ class KalmanFilterBank:
             sensor_id: filter_.get_state()
             for sensor_id, filter_ in self._filters.items()
         }
+
+
+@dataclass(frozen=True)
+class KalmanColumns:
+    """Outcome of filtering many sensors over a shared timeline in one pass.
+
+    Attributes:
+        normalized_residual: Array of shape (steps, sensors) with the residual in
+            sigmas of every step. NaN where the measurement was not finite.
+        innovation_sigma: Array of the same shape with sqrt(S) of every step. NaN
+            where the measurement was not finite.
+    """
+
+    normalized_residual: npt.NDArray[np.float64]
+    innovation_sigma: npt.NDArray[np.float64]
+
+
+def filter_columns(
+    values: npt.NDArray[np.float64],
+    timestamps_us: npt.NDArray[np.int64],
+    process_noise: float = DEFAULT_PROCESS_NOISE,
+    observation_noise: float = DEFAULT_OBSERVATION_NOISE,
+    reset_sigma: float = DEFAULT_RESET_SIGMA,
+) -> KalmanColumns:
+    """Run one independent filter per column, all of them at each time step.
+
+    Es el mismo filtro que OnlineKalmanFilter, aplicado a todos los sensores a la
+    vez en cada paso: con 60 muestras y 52 sensores son 60 pasos sobre arrays en
+    lugar de 3.120 llamadas a step(). Existe porque el featurizer necesita pasar
+    de unos 230 ms a menos de 100 ms por ventana (criterio 3 de la Fase 2) y el
+    perfil mostro que mas de la mitad del tiempo era ese bucle.
+
+    La salida es IDENTICA bit a bit a la del filtro escalar, y eso no es
+    casualidad: las multiplicaciones de matrices 2x2 se hacen con matmul por
+    lotes, que recorre las mismas rutinas que el matmul del filtro escalar. La
+    version "elemento a elemento" (sumas y productos escritos a mano) difiere en
+    el ultimo bit por el orden de suma del producto, y a 180 s de cadencia ese
+    bit se acumula hasta 1e-13 en el residual. Si cambias una operacion de aqui,
+    ejecuta tests/unit/test_kalman.py::TestFilterColumns, que exige igualdad
+    exacta contra OnlineKalmanFilter, y tests/unit/test_feature_pipeline_equivalence.py.
+
+    El comportamiento por columna replica step(): la primera medida finita
+    inicializa el filtro y devuelve residual cero y sigma sqrt(P0 + R); una medida
+    no finita se omite sin avanzar el filtro ni su reloj, de modo que el dt de la
+    siguiente medida cruza todo el hueco; y un residual por encima de reset_sigma
+    reinicia el estado sobre la medida.
+
+    Args:
+        values: Measurements, shape (steps, sensors). NaN and infinities mark
+            absent readings and are skipped, never imputed.
+        timestamps_us: Timestamp of every step as integer microseconds since the
+            epoch, shape (steps,). Shared by all columns.
+        process_noise: Spectral density q of the acceleration noise.
+        observation_noise: Measurement noise variance R.
+        reset_sigma: Normalized residual above which a filter discards its state.
+
+    Returns:
+        The normalized residuals and innovation sigmas, shape (steps, sensors).
+
+    Raises:
+        ValueError: If the tuning is rejected by OnlineKalmanFilter, if the shapes
+            do not match, or if a timestamp precedes the previous valid one of
+            the same column.
+    """
+    # Construir un filtro descartable valida el ajuste con los mismos mensajes
+    # que el escalar y evita duplicar las comprobaciones.
+    OnlineKalmanFilter(
+        process_noise=process_noise,
+        observation_noise=observation_noise,
+        reset_sigma=reset_sigma,
+    )
+    measurements = np.asarray(values, dtype=np.float64)
+    stamps = np.asarray(timestamps_us, dtype=np.int64)
+    if measurements.ndim != 2 or stamps.shape != (measurements.shape[0],):
+        raise ValueError(
+            "values must have shape (steps, sensors) and timestamps_us shape "
+            f"(steps,); got {measurements.shape} and {stamps.shape}."
+        )
+
+    steps, width = measurements.shape
+    residual = np.full((steps, width), np.nan, dtype=np.float64)
+    sigma = np.full((steps, width), np.nan, dtype=np.float64)
+
+    # Todo lo que no depende del estado del filtro se calcula de una vez, para
+    # los pasos y los sensores a la vez: quien es primera medida, quien avanza y
+    # cuanto tiempo ha pasado desde la ultima medida valida DE CADA COLUMNA.
+    finite = np.isfinite(measurements)
+    last_valid = np.maximum.accumulate(
+        np.where(finite, np.arange(steps)[:, None], -1), axis=0
+    )
+    previous = np.full((steps, width), -1, dtype=last_valid.dtype)
+    previous[1:] = last_valid[:-1]
+    is_fresh = finite & (previous < 0)
+    is_active = finite & (previous >= 0)
+    elapsed_us = np.where(
+        is_active, stamps[:, None] - stamps[np.maximum(previous, 0)], 0
+    )
+    if (elapsed_us < 0).any():
+        step, column = (int(index) for index in np.argwhere(elapsed_us < 0)[0])
+        raise ValueError(
+            f"Timestamp {int(stamps[step])} us precedes the previous one "
+            f"{int(stamps[previous[step, column]])} us on column {column}. "
+            "Readings must be filtered in chronological order."
+        )
+    transition, process_covariance = _step_matrices(
+        elapsed_us.astype(np.float64) / 1e6, process_noise
+    )
+
+    state = np.zeros((width, 2), dtype=np.float64)
+    covariance = np.zeros((width, 2, 2), dtype=np.float64)
+    seed_sigma = math.sqrt(INITIAL_COVARIANCE + observation_noise)
+
+    for step in range(steps):
+        row = measurements[step]
+        fresh = np.flatnonzero(is_fresh[step])
+        active = np.flatnonzero(is_active[step])
+
+        if fresh.size:
+            _seed_filters(state, covariance, fresh, row)
+            residual[step, fresh] = 0.0
+            sigma[step, fresh] = seed_sigma
+        if active.size == 0:
+            continue
+
+        # Con todos los sensores activos, que es el caso normal, se trabaja sobre
+        # vistas y no sobre copias de indexado avanzado.
+        columns: _Columns = slice(None) if active.size == width else active
+        normalized, innovation = _advance_filters(
+            state,
+            covariance,
+            columns,
+            row[columns],
+            transition[step][columns],
+            process_covariance[step][columns],
+            observation_noise,
+        )
+        residual[step, columns] = normalized
+        sigma[step, columns] = innovation
+        diverged = active[np.abs(normalized) > reset_sigma]
+        if diverged.size:
+            _seed_filters(state, covariance, diverged, row)
+
+    return KalmanColumns(normalized_residual=residual, innovation_sigma=sigma)
+
+
+_Columns = slice | npt.NDArray[np.intp]
+"""Filtros a los que se aplica un paso: todos (slice) o un subconjunto (indices)."""
+
+_IDENTITY = np.eye(2, dtype=np.float64)
+_OBSERVATION_ROW = np.array([[1.0, 0.0]], dtype=np.float64)
+"""H de la observacion escalar: solo se mide la posicion."""
+
+
+def _python_powers(
+    dt: npt.NDArray[np.float64],
+) -> tuple[npt.NDArray[np.float64], npt.NDArray[np.float64]]:
+    """Return dt**2 and dt**3 computed with Python's float power.
+
+    OnlineKalmanFilter.predict() eleva un float de Python, y numpy puede usar una
+    variante SIMD de pow que difiere en el ultimo bit segun la CPU. Con una
+    cadencia fija solo hay un dt distinto, asi que se eleva cada valor distinto
+    una vez con el mismo operador que el filtro escalar y se reparte.
+
+    Args:
+        dt: Elapsed seconds, any shape.
+
+    Returns:
+        The squares and the cubes, in the shape of dt.
+    """
+    distinct, inverse = np.unique(dt, return_inverse=True)
+    values = distinct.tolist()
+    squares = np.array([value**2 for value in values], dtype=np.float64)
+    cubes = np.array([value**3 for value in values], dtype=np.float64)
+    return squares[inverse].reshape(dt.shape), cubes[inverse].reshape(dt.shape)
+
+
+def _step_matrices(
+    dt: npt.NDArray[np.float64], process_noise: float
+) -> tuple[npt.NDArray[np.float64], npt.NDArray[np.float64]]:
+    """Build F and Q for every (step, sensor) at once.
+
+    Args:
+        dt: Elapsed seconds, shape (steps, sensors). Entries of columns that do
+            not advance at a step are never used.
+        process_noise: Spectral density q of the acceleration noise.
+
+    Returns:
+        The transition matrices F and the process covariances Q, both of shape
+        (steps, sensors, 2, 2).
+    """
+    squares, cubes = _python_powers(dt)
+    transition = np.zeros((*dt.shape, 2, 2), dtype=np.float64)
+    transition[..., 0, 0] = 1.0
+    transition[..., 1, 1] = 1.0
+    transition[..., 0, 1] = dt
+    process_covariance = np.empty((*dt.shape, 2, 2), dtype=np.float64)
+    process_covariance[..., 0, 0] = cubes / 3.0
+    process_covariance[..., 0, 1] = squares / 2.0
+    process_covariance[..., 1, 0] = squares / 2.0
+    process_covariance[..., 1, 1] = dt
+    return transition, process_noise * process_covariance
+
+
+def _seed_filters(
+    state: npt.NDArray[np.float64],
+    covariance: npt.NDArray[np.float64],
+    columns: npt.NDArray[np.intp],
+    row: npt.NDArray[np.float64],
+) -> None:
+    """Initialise the given columns on their measurement, in place.
+
+    Equivale a OnlineKalmanFilter.initialize: posicion en la medida, velocidad
+    cero y covarianza vaga.
+
+    Args:
+        state: Array (sensors, 2) of [position, velocity] pairs.
+        covariance: Array (sensors, 2, 2) of covariances.
+        columns: Indices of the filters to seed.
+        row: Measurements of the current step, indexed by column.
+    """
+    state[columns, 0] = row[columns]
+    state[columns, 1] = 0.0
+    covariance[columns] = _IDENTITY * INITIAL_COVARIANCE
+
+
+def _advance_filters(
+    state: npt.NDArray[np.float64],
+    covariance: npt.NDArray[np.float64],
+    columns: _Columns,
+    measurement: npt.NDArray[np.float64],
+    transition: npt.NDArray[np.float64],
+    process_covariance: npt.NDArray[np.float64],
+    observation_noise: float,
+) -> tuple[npt.NDArray[np.float64], npt.NDArray[np.float64]]:
+    """Predict and correct the given columns, in place.
+
+    Es predict() seguido de update() de OnlineKalmanFilter, con las mismas
+    operaciones en el mismo orden pero sobre un lote de filtros.
+
+    Args:
+        state: Array (sensors, 2) of [position, velocity] pairs.
+        covariance: Array (sensors, 2, 2) of covariances.
+        columns: The filters to advance: a slice for all of them or their indices.
+        measurement: Measurement of each of those filters.
+        transition: Matrices F of each of those filters.
+        process_covariance: Matrices Q of each of those filters.
+        observation_noise: Measurement noise variance R.
+
+    Returns:
+        The normalized residual and the innovation sigma of each filter.
+    """
+    predicted_state = (transition @ state[columns][:, :, None])[:, :, 0]
+    predicted_cov = (
+        transition @ covariance[columns] @ transition.transpose(0, 2, 1)
+        + process_covariance
+    )
+
+    residual = measurement - predicted_state[:, 0]
+    innovation_variance = predicted_cov[:, 0, 0] + observation_noise
+    innovation_sigma = np.sqrt(innovation_variance)
+
+    gain = predicted_cov[:, :, 0] / innovation_variance[:, None]
+    corrected_state = predicted_state + gain * residual[:, None]
+    corrected_cov = (_IDENTITY - gain[:, :, None] @ _OBSERVATION_ROW) @ predicted_cov
+    # Misma simetrizacion que update(): evita que P deje de ser definida positiva.
+    corrected_cov = (corrected_cov + corrected_cov.transpose(0, 2, 1)) / 2.0
+
+    state[columns] = corrected_state
+    covariance[columns] = corrected_cov
+    return residual / innovation_sigma, innovation_sigma

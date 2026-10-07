@@ -10,19 +10,26 @@ positiva, covarianza simetrica, residual normalizado adimensional.
 
 from __future__ import annotations
 
+import math
 import uuid
+from dataclasses import FrozenInstanceError
 from datetime import UTC, datetime, timedelta
 
 import numpy as np
+import numpy.typing as npt
 import pytest
 
 from data.schemas.sensor_reading import SensorReading
 from ml.features.kalman import (
     DEFAULT_K_SIGMA,
+    DEFAULT_OBSERVATION_NOISE,
+    DEFAULT_PROCESS_NOISE,
+    DEFAULT_RESET_SIGMA,
     INITIAL_COVARIANCE,
     KalmanFilterBank,
     KalmanResult,
     OnlineKalmanFilter,
+    filter_columns,
 )
 
 _T0 = datetime(2024, 1, 15, 12, 0, 0, tzinfo=UTC)
@@ -609,3 +616,202 @@ class TestKalmanFilterBank:
         bank = KalmanFilterBank()
         bank.get_filter("TC-01")
         assert bank.get_all_states()["TC-01"]["last_timestamp"] is None
+
+
+# ---------------------------------------------------------------------------
+# filter_columns: el filtro aplicado a todos los sensores a la vez
+# ---------------------------------------------------------------------------
+
+_EPOCH_US = int(_T0.timestamp()) * 1_000_000
+
+
+def _micros(offsets_us: list[int]) -> npt.NDArray[np.int64]:
+    """Return timestamps as integer microseconds since the epoch.
+
+    Args:
+        offsets_us: Microseconds elapsed since _T0 at each step.
+
+    Returns:
+        The timestamps, one per step.
+    """
+    return np.asarray([_EPOCH_US + offset for offset in offsets_us], dtype=np.int64)
+
+
+def _scalar_reference(
+    values: npt.NDArray[np.float64],
+    timestamps_us: npt.NDArray[np.int64],
+    process_noise: float,
+    observation_noise: float,
+    reset_sigma: float,
+) -> tuple[npt.NDArray[np.float64], npt.NDArray[np.float64]]:
+    """Filter every column with OnlineKalmanFilter, skipping non-finite readings.
+
+    Es el oraculo: el filtro escalar de siempre, columna a columna.
+
+    Args:
+        values: Measurements, shape (steps, sensors).
+        timestamps_us: Timestamp of every step in microseconds.
+        process_noise: Spectral density q.
+        observation_noise: Measurement noise variance R.
+        reset_sigma: Divergence threshold.
+
+    Returns:
+        The normalized residuals and the innovation sigmas, NaN where skipped.
+    """
+    residual = np.full(values.shape, np.nan)
+    sigma = np.full(values.shape, np.nan)
+    stamps = [_T0 + timedelta(microseconds=int(us - _EPOCH_US)) for us in timestamps_us]
+    for column in range(values.shape[1]):
+        filtered = OnlineKalmanFilter(
+            process_noise=process_noise,
+            observation_noise=observation_noise,
+            reset_sigma=reset_sigma,
+        )
+        for step in range(values.shape[0]):
+            if not np.isfinite(values[step, column]):
+                continue
+            result = filtered.step(float(values[step, column]), stamps[step])
+            residual[step, column] = result.normalized_residual
+            sigma[step, column] = result.innovation_sigma
+    return residual, sigma
+
+
+class TestFilterColumns:
+    """filter_columns debe ser el mismo filtro que OnlineKalmanFilter, bit a bit."""
+
+    @pytest.mark.parametrize("seed", [0, 1, 2])
+    @pytest.mark.parametrize("irregular", [False, True])
+    def test_matches_the_scalar_filter_exactly(self, seed: int, irregular: bool) -> None:
+        """Ruido, huecos, saltos que disparan el reinicio y muestreo irregular."""
+        rng = np.random.default_rng(seed)
+        steps, width = 90, 7
+        values = np.cumsum(rng.normal(size=(steps, width)), axis=0) * 2.0 + 500.0
+        values[rng.random(values.shape) < 0.08] = np.nan
+        values[rng.random(values.shape) < 0.03] = np.inf
+        values[rng.random(values.shape) < 0.05] += 4_000.0
+        if irregular:
+            offsets = np.cumsum(rng.integers(0, 400_000_000, size=steps)).tolist()
+        else:
+            offsets = [180_000_000 * step for step in range(steps)]
+        stamps = _micros(offsets)
+
+        result = filter_columns(values, stamps, 1e-6, 1.0, 10.0)
+        residual, sigma = _scalar_reference(values, stamps, 1e-6, 1.0, 10.0)
+
+        assert np.array_equal(result.normalized_residual, residual, equal_nan=True)
+        assert np.array_equal(result.innovation_sigma, sigma, equal_nan=True)
+
+    def test_the_default_tuning_matches_the_scalar_defaults(self) -> None:
+        """Sin argumentos, q, R y reset_sigma son los del filtro escalar."""
+        values = np.linspace(10.0, 40.0, 30).reshape(-1, 1) + np.sin(np.arange(30))[:, None]
+        stamps = _micros([1_000_000 * step for step in range(30)])
+        result = filter_columns(values, stamps)
+        residual, sigma = _scalar_reference(
+            values, stamps, DEFAULT_PROCESS_NOISE, DEFAULT_OBSERVATION_NOISE, DEFAULT_RESET_SIGMA
+        )
+        assert np.array_equal(result.normalized_residual, residual, equal_nan=True)
+        assert np.array_equal(result.innovation_sigma, sigma, equal_nan=True)
+
+    def test_the_first_reading_of_a_column_has_zero_residual(self) -> None:
+        """No hay nada que predecir: residual cero y sigma de la covarianza vaga."""
+        values = np.array([[5.0, np.nan], [6.0, 7.0]])
+        result = filter_columns(values, _micros([0, 1_000_000]), 0.1, 2.0, 10.0)
+
+        assert result.normalized_residual[0, 0] == 0.0
+        assert result.innovation_sigma[0, 0] == pytest.approx(math.sqrt(INITIAL_COVARIANCE + 2.0))
+        # La segunda columna arranca en el segundo paso, no en el primero.
+        assert np.isnan(result.normalized_residual[0, 1])
+        assert result.normalized_residual[1, 1] == 0.0
+
+    def test_missing_readings_are_skipped_and_not_imputed(self) -> None:
+        """Una medida ausente no avanza el filtro y su celda queda en NaN."""
+        values = np.array([[1.0], [np.nan], [np.inf], [1.0]])
+        result = filter_columns(values, _micros([0, 1, 2, 3]))
+        assert np.isnan(result.normalized_residual[1:3]).all()
+        assert np.isnan(result.innovation_sigma[1:3]).all()
+        assert np.isfinite(result.normalized_residual[3]).all()
+
+    def test_a_step_without_any_finite_reading_is_a_noop(self) -> None:
+        """Un paso con todas las medidas ausentes no toca el estado."""
+        values = np.array([[1.0, 2.0], [np.nan, np.nan], [1.5, 2.5]])
+        stamps = _micros([0, 1_000_000, 2_000_000])
+        result = filter_columns(values, stamps, 0.1, 1.0, 10.0)
+        residual, sigma = _scalar_reference(values, stamps, 0.1, 1.0, 10.0)
+        assert np.array_equal(result.normalized_residual, residual, equal_nan=True)
+        assert np.array_equal(result.innovation_sigma, sigma, equal_nan=True)
+
+    def test_the_gap_widens_the_next_dt(self) -> None:
+        """El dt de la medida que sigue a un hueco cruza todo el hueco."""
+        gapped = np.array([[1.0], [np.nan], [np.nan], [4.0]])
+        dense = np.array([[1.0], [4.0]])
+        with_gap = filter_columns(gapped, _micros([0, 1, 2, 3_000_000]), 0.1, 1.0, 10.0)
+        without = filter_columns(dense, _micros([0, 3_000_000]), 0.1, 1.0, 10.0)
+        assert with_gap.normalized_residual[3, 0] == without.normalized_residual[1, 0]
+
+    def test_a_divergent_reading_reseeds_only_its_own_column(self) -> None:
+        """El reinicio de una columna no contamina a las demas."""
+        flat = np.full((20, 2), 100.0)
+        flat[10, 0] = 100_000.0
+        result = filter_columns(flat, _micros([1_000_000 * s for s in range(20)]), 0.1, 1.0, 10.0)
+        assert abs(result.normalized_residual[10, 0]) > 10.0
+        assert np.all(np.abs(result.normalized_residual[:, 1]) < 1.0)
+
+    def test_equal_timestamps_are_allowed(self) -> None:
+        """Dos lecturas con el mismo instante son un dt cero, no un error."""
+        values = np.array([[1.0], [1.2], [1.1]])
+        result = filter_columns(values, _micros([0, 0, 1_000_000]), 0.1, 1.0, 10.0)
+        assert np.isfinite(result.normalized_residual).all()
+
+    def test_a_timestamp_that_goes_back_is_rejected(self) -> None:
+        """Mismo error que el filtro escalar, y nombra la columna."""
+        values = np.ones((3, 2))
+        with pytest.raises(ValueError, match=r"precedes the previous one .* on column 0"):
+            filter_columns(values, _micros([0, 2_000_000, 1_000_000]))
+
+    def test_a_backwards_clock_across_a_gap_is_rejected(self) -> None:
+        """El retroceso se mide contra la ultima medida valida, no contra el paso anterior."""
+        values = np.array([[1.0], [np.nan], [1.0]])
+        with pytest.raises(ValueError, match="precedes"):
+            filter_columns(values, _micros([5_000_000, 9_000_000, 1_000_000]))
+
+    def test_an_empty_input_gives_empty_output(self) -> None:
+        """Cero pasos no es un error: no hay nada que filtrar."""
+        result = filter_columns(np.empty((0, 4)), _micros([]))
+        assert result.normalized_residual.shape == (0, 4)
+        assert result.innovation_sigma.shape == (0, 4)
+
+    @pytest.mark.parametrize(
+        ("values", "timestamps"),
+        [
+            (np.ones(5), _micros([0, 1, 2, 3, 4])),
+            (np.ones((5, 2)), _micros([0, 1, 2])),
+            (np.ones((5, 2)), np.zeros((5, 1), dtype=np.int64)),
+        ],
+    )
+    def test_shapes_are_validated(
+        self, values: npt.NDArray[np.float64], timestamps: npt.NDArray[np.int64]
+    ) -> None:
+        """values es (pasos, sensores) y timestamps_us es (pasos,)."""
+        with pytest.raises(ValueError, match="shape"):
+            filter_columns(values, timestamps)
+
+    @pytest.mark.parametrize(
+        "tuning",
+        [
+            {"process_noise": -1.0},
+            {"observation_noise": 0.0},
+            {"reset_sigma": 1.0},
+        ],
+    )
+    def test_invalid_tuning_is_rejected_like_the_scalar_filter(
+        self, tuning: dict[str, float]
+    ) -> None:
+        """Los ajustes invalidos fallan con los mismos mensajes que el filtro escalar."""
+        with pytest.raises(ValueError, match=r"process_noise|observation_noise|reset_sigma"):
+            filter_columns(np.ones((3, 1)), _micros([0, 1, 2]), **tuning)
+
+    def test_the_result_is_frozen(self) -> None:
+        """KalmanColumns es un valor, no un contenedor mutable."""
+        result = filter_columns(np.ones((2, 1)), _micros([0, 1]))
+        with pytest.raises(FrozenInstanceError):
+            result.normalized_residual = np.zeros((2, 1))  # type: ignore[misc]

@@ -556,6 +556,15 @@ class TestGuards:
         with pytest.raises(ValueError, match="same timestep index"):
             pipeline.transform(frame, _stamps(frame).iloc[:5], _TYPES)
 
+    def test_a_missing_timestamp_is_rejected(self) -> None:
+        """A NaT would date a Kalman step wrongly, so it fails instead of filtering."""
+        frame = _wide(n=10)
+        stamps = _stamps(frame)
+        stamps.iloc[3] = pd.NaT
+        pipeline = FeaturePipeline(_params(), sample_interval_seconds=_INTERVAL)
+        with pytest.raises(ValueError, match="NaT"):
+            pipeline.transform(frame, stamps, _TYPES)
+
     def test_an_empty_frame_is_rejected(self) -> None:
         """There is nothing to featurise."""
         empty = pd.DataFrame({tag: [] for tag in _TAGS}, index=pd.RangeIndex(0))
