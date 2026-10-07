@@ -98,7 +98,7 @@ class StreamMetrics:
         )
         self.produce_errors = Counter(
             STREAM_PRODUCE_ERRORS,
-            "Messages whose delivery failed.",
+            "Failed produce operations (a refused send or a flush that reported failures).",
             registry=self.registry,
         )
         self.produce_latency = Histogram(

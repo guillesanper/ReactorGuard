@@ -219,6 +219,46 @@ storage:
   request_timeout_s: 30.0
 
 # -----------------------------------------------------------------------------
+# Streamer parameters  (data/generators/tep_streamer*.py)
+#
+# Leidos via data/generators/tep_streamer_params.py. Ningun stage de dvc.yaml los
+# declara: son configuracion de servicio. NO se repite aqui lo que ya declara tep:
+# el intervalo entre muestras (tep.sample_interval_minutes, 180 s), el directorio
+# del parquet (tep.processed_dir) y los metadatos de planta se derivan de esa
+# seccion al cargar. Las variables de entorno STREAM_MODE, SPEED_MULTIPLIER y
+# DATA_SOURCE sobrescriben mode, speed_multiplier y data_source.
+# -----------------------------------------------------------------------------
+streamer:
+  # fast: sin pausas (benchmark). realtime: un lote de 52 lecturas por timestep,
+  # separados por sample_interval / speed_multiplier con plazos absolutos.
+  mode: fast
+  speed_multiplier: 1.0   # > 0; 60 comprime 180 s en 3 s
+
+  # Repetir los 22 runs sin fin. Cada vuelta cambia el run-id (fault_type + bucle)
+  # y el consumidor reinicia el estado de los detectores (D2).
+  loop: false
+
+  # parquet: tep.processed_dir en disco. gcs: bucket data-raw del cluster, con el
+  # layout de DVC subido con gsutil rsync (<storage_prefix>/fault_type=NN/).
+  data_source: parquet
+  storage_prefix: tep
+
+  # Solo modo fast: cada cuantos timesteps se hace flush. 100 timesteps = 5.200
+  # mensajes: acota los futures pendientes del productor y el retraso con que se
+  # detecta un PublishError. Valor INICIAL; el benchmark de M5 lo fija con datos.
+  # En realtime se hace flush tras cada lote.
+  flush_every_timesteps: 100
+
+  # En realtime la espera entre lotes (180 s a velocidad 1) se trocea en tramos de
+  # este tamano y entre tramos se da el latido, para que /health no caduque con
+  # staleness_seconds = 540 s. 30 s deja 18 latidos por ventana de caducidad (el
+  # loader del servicio exige al menos 2) y acota lo que tarda stop() en surtir
+  # efecto cuando el sleeper no es interrumpible.
+  wait_slice_s: 30.0
+
+  client_id: tep-streamer
+
+# -----------------------------------------------------------------------------
 # Training parameters  (ml/training/train.py)
 # -----------------------------------------------------------------------------
 training:
