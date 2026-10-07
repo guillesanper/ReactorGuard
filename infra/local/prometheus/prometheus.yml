@@ -1,0 +1,18 @@
+# Prometheus del perfil "observability" del stack local.
+#
+# Los servicios (tep_streamer_service y validation_service) corren en el HOST, no en
+# compose, y exponen /metrics en streaming.metrics_port (9090 en params.yaml).
+# Prometheus alcanza el host por host.docker.internal. Ambos servicios usan el mismo
+# puerto, asi que en local se arrancan de uno en uno o con puertos distintos.
+#
+# El intervalo de scrape (15 s) es muy inferior a la cadencia del TEP (180 s por
+# muestra): cualquier rate() sobre estas series necesita una ventana de varios
+# intervalos del TEP (15 m por defecto en el dashboard), no de 1 m.
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+scrape_configs:
+  - job_name: reactorguard-host
+    static_configs:
+      - targets: ["host.docker.internal:9090"]

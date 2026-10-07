@@ -1,332 +1,449 @@
+"""Sustained production throughput of the Kafka pipeline (criterio 1 de la Fase 2).
+
+Criterio: mas de 50.000 lecturas por segundo SOSTENIDAS. Este benchmark mide eso y
+nada mas: cuantos mensajes por segundo confirma el broker (acks=all) a un unico
+proceso productor durante N segundos, usando el MISMO adaptador que el streamer de
+produccion (`KafkaMessageProducer`: idempotencia, lz4, batch y linger de params.yaml,
+y verificacion del resultado de cada mensaje en cada flush).
+
+Sustituye al benchmark anterior, que media la latencia round-trip produce-consume de
+mensajes sinteticos de 1 KB contra un :9092 sin autenticacion que el cluster rechaza.
+La latencia de extremo a extremo es otra pregunta (criterio de la Fase 1) y no se
+mezcla con el throughput.
+
+Metodologia:
+  - Los mensajes son lecturas REALES del TEP (d00), serializadas con
+    `SensorReading.to_kafka_bytes()` ANTES de medir y reutilizadas en ciclo: la
+    serializacion pydantic no entra en la medida, porque este es el techo del
+    transporte. El coste de serializar por mensaje se mide aparte (ver el informe).
+  - Clave `sensor_id` y cabecera `run-id`, como en produccion.
+  - Una fase de calentamiento (conexiones, metadatos, JIT del compresor) que se descarta.
+  - Se flushea cada `flush_every_timesteps x sensores` mensajes (el cadence del
+    streamer en modo FAST) y el tiempo incluye el flush final: solo cuentan los
+    mensajes CONFIRMADOS.
+  - Ademas de la media, se reportan las tasas por ventanas de 1 s (min, mediana, max)
+    para ver si el rendimiento es estable o tiene rachas.
+
+Una medicion `--environment local` es INFORMATIVA (un broker, sin replicacion, en la
+misma maquina que el productor). Solo `--environment cluster` puede cerrar el criterio.
+
+Uso (desde la raiz del repositorio, con el stack local levantado):
+
+    $env:KAFKA_BOOTSTRAP = "127.0.0.1:9092"
+    .\\.venv\\Scripts\\python.exe -m tests.integration.benchmark_kafka --create-topic
+
+Se ejecuta como modulo (-m) porque comparte `benchmark_report` con el benchmark de
+latencia de features. Salida: tests/results/kafka_throughput.json.
 """
-tests/integration/benchmark_kafka.py
-Benchmark de latencia y throughput de Kafka para ReactorGuard.
 
-Criterio de éxito (TDD Fase 1):
-  latencia p99 produce→consume < 10ms en red interna del cluster K8s.
-
-Metodología:
-  - Produce 10.000 mensajes de ~1KB (tamaño típico sensor reading + metadata).
-  - El consumidor los recibe en paralelo (thread daemon).
-  - La latencia se mide como: tiempo en que el consumer recibe el mensaje
-    menos el tiempo en que el producer llamó a send() (perf_counter).
-  - Se usan headers Kafka para pasar el timestamp del producer al consumer
-    sin contaminar el payload de negocio.
-
-Salida:
-  - Estadísticas por consola (p50, p95, p99, p99.9, throughput).
-  - Archivo JSON: tests/results/kafka_benchmark.json
-  - Exit code 1 si p99 > 10ms (criterio de fallo de la Fase 1).
-
-Uso:
-  # Desde dentro del pod kafka-client:
-  pip install kafka-python
-  python benchmark_kafka.py [--messages 10000] [--output /results/kafka_benchmark.json]
-"""
+from __future__ import annotations
 
 import argparse
-import json
+import dataclasses
+import itertools
 import logging
 import os
-import threading
+import platform
+import statistics
+import sys
 import time
 import uuid
-from dataclasses import dataclass, field
+from collections.abc import Callable, Iterator, Sequence
+from contextlib import contextmanager
+from pathlib import Path
+from typing import Any
 
-from kafka import KafkaConsumer, KafkaProducer
-from kafka.errors import KafkaError
+import pandas as pd
+from kafka.admin import KafkaAdminClient, NewTopic
 
-logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
-log = logging.getLogger(__name__)
+from data.generators.tep_adapter import readings_from_frame
+from data.generators.tep_streamer import format_run_id
+from data.generators.tep_streamer_params import load_streamer_params
+from data.streaming.kafka_adapters import KafkaMessageProducer
+from data.streaming.kafka_settings import KafkaConnectionSettings
+from data.streaming.streaming_params import StreamingParams, load_streaming_params
+from data.streaming.transport import HEADER_RUN_ID, MessageProducer
+from tests.integration.benchmark_report import ENVIRONMENTS, build_report, write_report
 
-# ─── Configuración ────────────────────────────────────────────────────────────
-BOOTSTRAP_SERVERS = "reactorguard-cluster-kafka-bootstrap.kafka-operator:9092"
-TOPIC = "sensor-readings-raw"
-P99_THRESHOLD_MS = 10.0       # Criterio de éxito Fase 1: p99 < 10ms
-MESSAGE_SIZE_BYTES = 1024     # ~1KB por mensaje (sensor reading con metadata)
-DEFAULT_NUM_MESSAGES = 10_000
-CONSUMER_GROUP = f"benchmark-{uuid.uuid4().hex[:8]}"
+_LOG = logging.getLogger("benchmark_kafka")
 
-# ─── Tipos de datos ───────────────────────────────────────────────────────────
+CRITERION = "kafka_throughput"
+UNIT = "messages_per_second"
+THROUGHPUT_THRESHOLD = 50_000.0
+"""Criterio de la Fase 2 (TDD): lecturas por segundo sostenidas."""
 
-@dataclass
-class BenchmarkResult:
-    num_messages: int = 0
-    duration_seconds: float = 0.0
-    latencies_ms: list[float] = field(default_factory=list)
-    p50_ms: float = 0.0
-    p95_ms: float = 0.0
-    p99_ms: float = 0.0
-    p999_ms: float = 0.0
-    throughput_msg_per_sec: float = 0.0
-    throughput_mb_per_sec: float = 0.0
-    passed: bool = False
-    failure_reason: str = ""
+DEFAULT_DURATION_S = 20.0
+DEFAULT_WARMUP_S = 3.0
+DEFAULT_OUTPUT = Path("tests/results/kafka_throughput.json")
+DEFAULT_PARAMS = Path("params.yaml")
+_PAYLOAD_PARTITION = Path("data/processed/tep/fault_type=00/readings.parquet")
+_BENCH_PARTITIONS = 12
+_WINDOW_S = 1.0
 
-
-# ─── Helpers ──────────────────────────────────────────────────────────────────
-
-def _make_1kb_payload(sequence_id: int) -> bytes:
-    """
-    Genera un payload JSON de aproximadamente 1KB.
-    El tamaño real de un sensor reading incluye:
-      - 52 sensores × ~15 bytes cada uno + metadata OpenTelemetry
-    El padding asegura exactamente ~1024 bytes para el benchmark.
-    """
-    base = {
-        "sensor_id": f"TC-{100 + (sequence_id % 52):03d}",
-        "timestamp": time.time(),
-        "value": round(300.0 + (sequence_id % 100) * 0.1, 6),
-        "unit": "°C",
-        "quality": 192,
-        "sequence_id": sequence_id,
-        "reactor_id": "reactor-01",
-        "plant_id": "reactorguard-platform",
-        "scan_cycle": sequence_id // 52,
-        # Metadata de trazabilidad (OpenTelemetry compatible)
-        "trace_id": uuid.uuid4().hex,
-        "span_id": uuid.uuid4().hex[:16],
-    }
-    base_bytes = json.dumps(base).encode("utf-8")
-    # Padding para alcanzar ~1KB exactos
-    padding_needed = max(0, MESSAGE_SIZE_BYTES - len(base_bytes) - 12)
-    base["_pad"] = "x" * padding_needed
-    return json.dumps(base).encode("utf-8")
+Payload = tuple[bytes, bytes]
+"""(key, value) ya serializados."""
 
 
-def _percentile(data: list[float], pct: float) -> float:
-    """Calcula el percentil `pct` (0-100) de una lista ordenada."""
-    if not data:
-        return 0.0
-    sorted_data = sorted(data)
-    index = (pct / 100) * (len(sorted_data) - 1)
-    lower = int(index)
-    upper = min(lower + 1, len(sorted_data) - 1)
-    fraction = index - lower
-    return sorted_data[lower] * (1 - fraction) + sorted_data[upper] * fraction
+@dataclasses.dataclass(frozen=True)
+class ThroughputResult:
+    """Outcome of one timed production phase.
 
-
-# ─── Lógica principal del benchmark ───────────────────────────────────────────
-
-class KafkaBenchmark:
-    """
-    Benchmark de latencia end-to-end Kafka.
-
-    El producer y el consumer corren concurrentemente:
-      - El producer envía mensajes con el timestamp en un header Kafka.
-      - El consumer lee los mensajes y calcula la diferencia.
-    Esto evita la deriva de reloj entre perf_counter() del producer y del consumer
-    porque ambos corren en el mismo proceso Python.
+    Attributes:
+        messages: Messages confirmed by the broker during the phase.
+        payload_bytes: Bytes of those messages' values (keys and headers excluded).
+        elapsed_s: Duration of the phase, final flush included.
+        flushes: Number of flushes performed.
+        window_rates: Messages per second in consecutive windows of about 1 s.
     """
 
-    def __init__(self, num_messages: int = DEFAULT_NUM_MESSAGES):
-        self.num_messages = num_messages
-        self._latencies: list[float] = []
-        self._consume_done = threading.Event()
-        self._produce_done = threading.Event()
-        self._lock = threading.Lock()
+    messages: int
+    payload_bytes: int
+    elapsed_s: float
+    flushes: int
+    window_rates: tuple[float, ...]
 
-    def _consume_worker(self) -> None:
-        """Thread daemon que consume mensajes y registra latencias."""
-        consumer = KafkaConsumer(
-            TOPIC,
-            bootstrap_servers=BOOTSTRAP_SERVERS,
-            group_id=CONSUMER_GROUP,
-            auto_offset_reset="latest",   # sólo mensajes nuevos del benchmark
-            enable_auto_commit=False,
-            consumer_timeout_ms=15_000,
+    @property
+    def messages_per_second(self) -> float:
+        """Return the mean confirmed throughput of the phase."""
+        return self.messages / self.elapsed_s if self.elapsed_s > 0 else 0.0
+
+    @property
+    def megabytes_per_second(self) -> float:
+        """Return the mean confirmed payload throughput in MB/s (1 MB = 2**20 bytes)."""
+        return self.payload_bytes / (1024 * 1024) / self.elapsed_s if self.elapsed_s > 0 else 0.0
+
+
+def windowed_rates(marks: Sequence[tuple[float, int]], window_s: float = _WINDOW_S) -> list[float]:
+    """Turn cumulative (time, messages) marks into per-window rates.
+
+    Args:
+        marks: Points (seconds since the start, messages confirmed so far), in
+            increasing time. The origin (0.0, 0) is implied.
+        window_s: Minimum window length. A window closes at the first mark at least
+            this far from the previous window's end, so its length is a multiple of
+            the flush spacing and not exactly window_s.
+
+    Returns:
+        One rate per closed window; the trailing partial window is dropped.
+    """
+    rates: list[float] = []
+    anchor_time = 0.0
+    anchor_count = 0
+    for time_s, count in marks:
+        if time_s - anchor_time >= window_s:
+            rates.append((count - anchor_count) / (time_s - anchor_time))
+            anchor_time, anchor_count = time_s, count
+    return rates
+
+
+def run_phase(
+    producer: MessageProducer,
+    topic: str,
+    payloads: Sequence[Payload],
+    header: tuple[tuple[str, bytes], ...],
+    *,
+    duration_s: float,
+    flush_every: int,
+    flush_timeout_s: float | None,
+    clock: Callable[[], float] = time.perf_counter,
+) -> ThroughputResult:
+    """Produce in a loop for a fixed time and count what the broker confirmed.
+
+    Args:
+        producer: The transport under test.
+        topic: Destination topic.
+        payloads: Pre-serialized (key, value) pairs, sent cyclically.
+        header: Headers of every message.
+        duration_s: Length of the sending phase. The final flush is extra and is
+            included in the elapsed time.
+        flush_every: Messages between flushes.
+        flush_timeout_s: Timeout of every flush.
+        clock: Monotonic time source in seconds.
+
+    Returns:
+        The messages confirmed, their bytes, the elapsed time and the window rates.
+
+    Raises:
+        ValueError: If payloads is empty or a parameter is not positive.
+        PublishError: If a message fails delivery (a benchmark with losses is not a
+            measurement).
+    """
+    if not payloads:
+        raise ValueError("payloads must not be empty.")
+    if duration_s <= 0 or flush_every <= 0:
+        raise ValueError("duration_s and flush_every must be positive.")
+
+    sent = 0
+    sent_bytes = 0
+    confirmed = 0
+    confirmed_bytes = 0
+    flushes = 0
+    marks: list[tuple[float, int]] = []
+    started = clock()
+    send = producer.send
+    for key, value in itertools.cycle(payloads):
+        send(topic, key, value, header)
+        sent += 1
+        sent_bytes += len(value)
+        if sent % flush_every == 0:
+            producer.flush(flush_timeout_s)
+            flushes += 1
+            confirmed, confirmed_bytes = sent, sent_bytes
+            now = clock() - started
+            marks.append((now, confirmed))
+            if now >= duration_s:
+                break
+    # Si el tiempo se cumplio entre dos flushes, lo pendiente aun no cuenta.
+    elapsed = clock() - started
+    return ThroughputResult(
+        messages=confirmed,
+        payload_bytes=confirmed_bytes,
+        elapsed_s=marks[-1][0] if marks else elapsed,
+        flushes=flushes,
+        window_rates=tuple(windowed_rates(marks)),
+    )
+
+
+def build_payloads(partition: Path, params_path: Path) -> tuple[list[Payload], int]:
+    """Serialize the readings of one real TEP run, ahead of the measurement.
+
+    Args:
+        partition: Parquet file of a run (d00).
+        params_path: params.yaml, for the streamer metadata stamped on each reading.
+
+    Returns:
+        The (key, value) pairs in emission order and the number of sensors per
+        timestep.
+
+    Raises:
+        FileNotFoundError: If the parquet is not populated.
+    """
+    if not partition.exists():
+        raise FileNotFoundError(
+            f"{partition} not found. Generate it with .\\infra\\scripts\\Invoke-Pipeline.ps1."
         )
-
-        count = 0
-        try:
-            for record in consumer:
-                received_at = time.perf_counter()
-
-                # El producer embedó el timestamp en los headers
-                produce_ts: float | None = None
-                for key, value in record.headers:
-                    if key == "produce_ts":
-                        produce_ts = float(value.decode("utf-8"))
-                        break
-
-                if produce_ts is not None:
-                    lat_ms = (received_at - produce_ts) * 1000.0
-                    with self._lock:
-                        self._latencies.append(lat_ms)
-
-                count += 1
-                if count >= self.num_messages:
-                    break
-        finally:
-            consumer.close()
-            self._consume_done.set()
-            log.debug("Consumer terminado: %d mensajes recibidos.", count)
-
-    def run(self) -> BenchmarkResult:
-        result = BenchmarkResult(num_messages=self.num_messages)
-
-        # Iniciar el consumer en un thread daemon antes de producir
-        consumer_thread = threading.Thread(target=self._consume_worker, daemon=True)
-        consumer_thread.start()
-
-        # Breve pausa para que el consumer se suscriba antes de que el producer envíe
-        time.sleep(2)
-
-        producer = KafkaProducer(
-            bootstrap_servers=BOOTSTRAP_SERVERS,
-            value_serializer=lambda v: v,   # ya es bytes
-            acks="all",
-            linger_ms=0,       # sin batching: mide latencia real sin acumulación artificial
-            request_timeout_ms=5000,
+    streamer = load_streamer_params(params_path)
+    frame = pd.read_parquet(partition).sort_values(["timestep", "sensor_id"], kind="stable")
+    payloads = [
+        (reading.sensor.id.encode("utf-8"), reading.to_kafka_bytes())
+        for reading in readings_from_frame(
+            frame,
+            calibration_date=streamer.calibration_date,
+            last_maintenance=streamer.last_maintenance,
+            drift_coefficient=streamer.drift_coefficient,
         )
-
-        log.info("Produciendo %d mensajes de ~%dB...", self.num_messages, MESSAGE_SIZE_BYTES)
-        produce_start = time.perf_counter()
-
-        for i in range(self.num_messages):
-            payload = _make_1kb_payload(i)
-            produce_ts = time.perf_counter()
-            producer.send(
-                topic=TOPIC,
-                value=payload,
-                headers=[("produce_ts", str(produce_ts).encode("utf-8"))],
-            )
-
-        producer.flush()
-        producer.close()
-
-        produce_end = time.perf_counter()
-        result.duration_seconds = produce_end - produce_start
-
-        log.info(
-            "Producción completada en %.2fs. Esperando al consumer...",
-            result.duration_seconds,
-        )
-
-        # Esperar a que el consumer termine (máx 20s)
-        self._consume_done.wait(timeout=20)
-        consumer_thread.join(timeout=5)
-
-        with self._lock:
-            result.latencies_ms = list(self._latencies)
-
-        return result
+    ]
+    return payloads, int(frame["sensor_id"].nunique())
 
 
-def compute_stats(result: BenchmarkResult) -> BenchmarkResult:
-    """Calcula los percentiles y throughput a partir de las latencias recopiladas."""
-    lats = result.latencies_ms
+@contextmanager
+def benchmark_topic(
+    settings: KafkaConnectionSettings, name: str | None, *, create: bool
+) -> Iterator[str]:
+    """Provide the topic to produce into, creating and removing it when asked.
 
-    if not lats:
-        result.failure_reason = "No se recibieron mensajes."
-        result.passed = False
-        return result
+    Args:
+        settings: Connection settings.
+        name: Topic to use; a random private name when create is set and name is None.
+        create: Create the topic (12 partitions, replication 1) and delete it at the
+            end. Para el stack local; en el cluster los topics ya existen y las ACLs
+            no permiten crearlos.
 
-    result.p50_ms  = _percentile(lats, 50)
-    result.p95_ms  = _percentile(lats, 95)
-    result.p99_ms  = _percentile(lats, 99)
-    result.p999_ms = _percentile(lats, 99.9)
-
-    n = len(lats)
-    duration = result.duration_seconds if result.duration_seconds > 0 else 1.0
-    result.throughput_msg_per_sec = n / duration
-    result.throughput_mb_per_sec  = (n * MESSAGE_SIZE_BYTES) / (duration * 1024 * 1024)
-
-    if result.p99_ms > P99_THRESHOLD_MS:
-        result.passed = False
-        result.failure_reason = (
-            f"p99 ({result.p99_ms:.2f}ms) excede el umbral de {P99_THRESHOLD_MS}ms. "
-            "Verificar carga del cluster y configuración de linger_ms."
-        )
-    else:
-        result.passed = True
-
-    return result
-
-
-def print_report(result: BenchmarkResult) -> None:
-    """Imprime el reporte de benchmark formateado."""
-    print("\n" + "=" * 62)
-    print("  ReactorGuard — Kafka Benchmark Report")
-    print("=" * 62)
-    print(f"  Mensajes producidos : {result.num_messages:,}")
-    print(f"  Mensajes recibidos  : {len(result.latencies_ms):,}")
-    print(f"  Duración producción : {result.duration_seconds:.2f}s")
-    print()
-    print("  Latencia produce → consume:")
-    print(f"    p50   : {result.p50_ms:7.2f} ms")
-    print(f"    p95   : {result.p95_ms:7.2f} ms")
-    p99_label = "✅ < 10ms" if result.p99_ms < P99_THRESHOLD_MS else f"❌ > {P99_THRESHOLD_MS}ms"
-    print(f"    p99   : {result.p99_ms:7.2f} ms  {p99_label}")
-    print(f"    p99.9 : {result.p999_ms:7.2f} ms")
-    print()
-    print("  Throughput:")
-    print(f"    {result.throughput_msg_per_sec:,.0f} msg/s")
-    print(f"    {result.throughput_mb_per_sec:.2f} MB/s")
-    print()
-    if result.passed:
-        print("   RESULTADO: PASSED — p99 dentro del criterio Fase 1 (< 10ms)")
-    else:
-        print(f"  RESULTADO: FAILED — {result.failure_reason}")
-    print("=" * 62 + "\n")
-
-
-def save_json(result: BenchmarkResult, output_path: str) -> None:
-    """Guarda los resultados en JSON para archivar y comparar entre runs."""
-    os.makedirs(os.path.dirname(output_path), exist_ok=True)
-    data = {
-        "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
-        "bootstrap_servers": BOOTSTRAP_SERVERS,
-        "topic": TOPIC,
-        "num_messages": result.num_messages,
-        "messages_received": len(result.latencies_ms),
-        "duration_seconds": round(result.duration_seconds, 4),
-        "latency_ms": {
-            "p50":   round(result.p50_ms, 4),
-            "p95":   round(result.p95_ms, 4),
-            "p99":   round(result.p99_ms, 4),
-            "p99_9": round(result.p999_ms, 4),
-        },
-        "throughput": {
-            "msg_per_sec": round(result.throughput_msg_per_sec, 2),
-            "mb_per_sec":  round(result.throughput_mb_per_sec, 4),
-        },
-        "criteria": {
-            "p99_threshold_ms": P99_THRESHOLD_MS,
-            "passed": result.passed,
-            "failure_reason": result.failure_reason,
-        },
-    }
-    with open(output_path, "w", encoding="utf-8") as f:
-        json.dump(data, f, indent=2)
-    log.info("Resultados guardados en: %s", output_path)
-
-
-def main() -> None:
-    parser = argparse.ArgumentParser(description="Benchmark de Kafka para ReactorGuard.")
-    parser.add_argument("--messages", type=int, default=DEFAULT_NUM_MESSAGES,
-                        help=f"Número de mensajes a producir (default: {DEFAULT_NUM_MESSAGES})")
-    parser.add_argument("--output", type=str, default="tests/results/kafka_benchmark.json",
-                        help="Ruta del archivo JSON de resultados.")
-    args = parser.parse_args()
-
-    log.info("Iniciando benchmark de Kafka (n=%d, threshold p99 < %.0fms)...",
-             args.messages, P99_THRESHOLD_MS)
-
+    Yields:
+        The topic name.
+    """
+    if not create:
+        if name is None:
+            raise ValueError("A topic name is required unless --create-topic is given.")
+        yield name
+        return
+    topic = name or f"bench-throughput-{uuid.uuid4().hex[:8]}"
+    admin = KafkaAdminClient(**settings.to_client_config())
     try:
-        bench = KafkaBenchmark(num_messages=args.messages)
-        result = bench.run()
-        result = compute_stats(result)
-        print_report(result)
-        save_json(result, args.output)
+        admin.create_topics([NewTopic(topic, _BENCH_PARTITIONS, 1)])
+        yield topic
+    finally:
+        admin.delete_topics([topic])
+        admin.close()
 
-        if not result.passed:
-            raise SystemExit(1)
 
-    except KafkaError as exc:
-        log.error(" Error de conexión con Kafka: %s", exc)
-        raise SystemExit(1) from exc
+def _producer_details(streaming: StreamingParams) -> dict[str, Any]:
+    """Return the producer settings that shape the throughput figure."""
+    return {
+        "compression_type": streaming.compression_type,
+        "batch_linger_ms": streaming.batch_linger_ms,
+        "producer_batch_bytes": streaming.producer_batch_bytes,
+        "max_in_flight_requests": streaming.max_in_flight_requests,
+        "acks": "all",
+        "idempotence": True,
+    }
+
+
+def make_report(
+    result: ThroughputResult,
+    *,
+    environment: str,
+    streaming: StreamingParams,
+    details: dict[str, Any],
+) -> dict[str, Any]:
+    """Build the JSON document of a throughput measurement.
+
+    Args:
+        result: The measured phase.
+        environment: "local" or "cluster".
+        streaming: Streaming params the producer ran with.
+        details: Extra context of the run (topic, payload size, durations).
+
+    Returns:
+        The document in the shared benchmark format.
+    """
+    rates = list(result.window_rates)
+    return build_report(
+        criterion=CRITERION,
+        environment=environment,
+        value=round(result.messages_per_second, 2),
+        unit=UNIT,
+        threshold=THROUGHPUT_THRESHOLD,
+        direction="at_least",
+        details={
+            **details,
+            "messages_confirmed": result.messages,
+            "elapsed_s": round(result.elapsed_s, 3),
+            "flushes": result.flushes,
+            "megabytes_per_second": round(result.megabytes_per_second, 3),
+            "window_rates": {
+                "windows": len(rates),
+                "min": round(min(rates), 1) if rates else None,
+                "median": round(statistics.median(rates), 1) if rates else None,
+                "max": round(max(rates), 1) if rates else None,
+            },
+            "producer": _producer_details(streaming),
+            "host": {
+                "platform": platform.platform(),
+                "python": platform.python_version(),
+                "cpus": os.cpu_count(),
+            },
+        },
+    )
+
+
+def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
+    """Parse the command line.
+
+    Args:
+        argv: Arguments; sys.argv[1:] when omitted.
+
+    Returns:
+        The parsed namespace.
+    """
+    parser = argparse.ArgumentParser(description="Sustained Kafka production throughput.")
+    parser.add_argument("--duration", type=float, default=DEFAULT_DURATION_S, help="seconds")
+    parser.add_argument("--warmup", type=float, default=DEFAULT_WARMUP_S, help="seconds")
+    parser.add_argument("--topic", default=None, help="topic (default: streaming.raw_topic)")
+    parser.add_argument(
+        "--create-topic",
+        action="store_true",
+        help="create a private 12-partition topic and delete it afterwards (local stack)",
+    )
+    parser.add_argument("--environment", choices=ENVIRONMENTS, default="local")
+    parser.add_argument("--output", type=Path, default=DEFAULT_OUTPUT)
+    parser.add_argument("--params", type=Path, default=DEFAULT_PARAMS)
+    parser.add_argument("--linger-ms", type=int, default=None, help="override batch_linger_ms")
+    parser.add_argument(
+        "--batch-bytes", type=int, default=None, help="override producer_batch_bytes"
+    )
+    parser.add_argument("--compression", default=None, help="override compression_type")
+    parser.add_argument(
+        "--fail-below-threshold",
+        action="store_true",
+        help="exit 2 when the figure does not reach the criterion (default: exit 0)",
+    )
+    return parser.parse_args(argv)
+
+
+def main(argv: Sequence[str] | None = None) -> int:
+    """Run the benchmark and write its report.
+
+    Args:
+        argv: Command-line arguments; sys.argv[1:] when omitted.
+
+    Returns:
+        0 when the measurement completed, 2 when --fail-below-threshold is set and the
+        figure is below the criterion.
+    """
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+    args = parse_args(argv)
+    settings = KafkaConnectionSettings.from_env()
+    streaming = load_streaming_params(args.params)
+    overrides = {
+        key: value
+        for key, value in (
+            ("batch_linger_ms", args.linger_ms),
+            ("producer_batch_bytes", args.batch_bytes),
+            ("compression_type", args.compression),
+        )
+        if value is not None
+    }
+    streaming = dataclasses.replace(streaming, **overrides)
+    streamer = load_streamer_params(args.params)
+
+    _LOG.info("Serializing the d00 readings ahead of the measurement")
+    payloads, sensors = build_payloads(_PAYLOAD_PARTITION, args.params)
+    flush_every = streamer.flush_every_timesteps * sensors
+    header = ((HEADER_RUN_ID, format_run_id("fault_type=00", 0).encode("ascii")),)
+    mean_bytes = sum(len(value) for _, value in payloads) / len(payloads)
+
+    with benchmark_topic(
+        settings, args.topic or (None if args.create_topic else streaming.raw_topic),
+        create=args.create_topic,
+    ) as topic:
+        producer = KafkaMessageProducer(settings, streaming, client_id="benchmark-throughput")
+        try:
+            _LOG.info("Warm-up %.1f s", args.warmup)
+            run_phase(
+                producer, topic, payloads, header,
+                duration_s=args.warmup, flush_every=flush_every,
+                flush_timeout_s=streaming.flush_timeout_s,
+            )
+            _LOG.info("Measuring %.1f s into '%s'", args.duration, topic)
+            result = run_phase(
+                producer, topic, payloads, header,
+                duration_s=args.duration, flush_every=flush_every,
+                flush_timeout_s=streaming.flush_timeout_s,
+            )
+        finally:
+            producer.close()
+
+    report = make_report(
+        result,
+        environment=args.environment,
+        streaming=streaming,
+        details={
+            "topic": topic,
+            "bootstrap_servers": list(settings.bootstrap_servers),
+            "payload_source": str(_PAYLOAD_PARTITION),
+            "distinct_payloads": len(payloads),
+            "mean_value_bytes": round(mean_bytes, 1),
+            "flush_every_messages": flush_every,
+            "duration_requested_s": args.duration,
+            "warmup_s": args.warmup,
+        },
+    )
+    write_report(args.output, report)
+    _LOG.info(
+        "%.0f msg/s (%.2f MB/s) over %.1f s, environment=%s, threshold %.0f -> %s. Report: %s",
+        report["value"],
+        result.megabytes_per_second,
+        result.elapsed_s,
+        args.environment,
+        THROUGHPUT_THRESHOLD,
+        "meets" if report["passed"] else "BELOW",
+        args.output,
+    )
+    if args.fail_below_threshold and not report["passed"]:
+        return 2
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())
