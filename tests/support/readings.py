@@ -69,6 +69,49 @@ def make_reading(
     )
 
 
+def make_value_reading(
+    sensor_id: str,
+    timestamp: datetime,
+    value: float | None,
+    *,
+    plant_id: str = "TEP-PLANT-01",
+) -> SensorReading:
+    """Build a GOOD reading of a given sensor, timestamp and value.
+
+    Args:
+        sensor_id: Sensor tag.
+        timestamp: Timestamp of the reading.
+        value: Measured value, or None for a reading without one.
+        plant_id: Plant identifier.
+
+    Returns:
+        A reading whose reading_id is a UUID5 of (plant, sensor, timestamp), the
+        way the adapter derives it, so the same arguments give the same identifier.
+    """
+    return SensorReading(
+        reading_id=uuid.uuid5(_NAMESPACE, f"{plant_id}|{sensor_id}|{timestamp.isoformat()}"),
+        timestamp=timestamp,
+        plant_id=plant_id,
+        sensor=SensorInfo(
+            id=sensor_id,
+            type=SensorType.NORMALIZED,
+            location=SensorLocation.PRIMARY_LOOP,
+            elevation_m=0.0,
+        ),
+        measurement=Measurement(
+            value=value,
+            unit=MeasurementUnit.NORMALIZED,
+            quality=QualityFlag.GOOD,
+            raw_counts=1000,
+        ),
+        metadata=SensorMetadata(
+            calibration_date=date(2023, 6, 1),
+            last_maintenance=date(2023, 12, 1),
+            drift_coefficient=0.0001,
+        ),
+    )
+
+
 def make_batch(
     count: int,
     start: datetime | None = None,
