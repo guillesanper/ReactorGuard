@@ -6,9 +6,19 @@
 # Diferencia clave entre el operador y los recursos custom:
 #   - El OPERADOR (Strimzi) es un Deployment K8s que corre continuamente y
 #     observa recursos de tipo Kafka, KafkaTopic, KafkaUser.
-#   - Los RECURSOS CUSTOM (kafka-cluster.yaml, kafka-topics.yaml) son
-#     declaraciones de la intención deseada. El operador los lee y actúa.
+#   - Los RECURSOS CUSTOM (kafka-cluster.yaml, kafka-topics.yaml, kafka-users.yaml)
+#     son declaraciones de la intención deseada. El operador los lee y actúa.
 #   Sin el operador activo, apply de los CRDs no tiene ningún efecto.
+#
+# Orden de aplicación (importa):
+#   1. kafka-metrics.yaml  ConfigMap que kafka-cluster.yaml referencia; sin él los
+#                          brokers no arrancan.
+#   2. kafka-cluster.yaml  brokers, ZooKeeper y Entity Operator.
+#   3. kafka-topics.yaml   los 4 topics (3 del flujo y bench-throughput).
+#   4. kafka-users.yaml    los 4 KafkaUser (mTLS + ACLs). El User Operator publica el
+#                          Secret de cada uno en este namespace; después hay que
+#                          copiarlos a reactorguard-ingestion con
+#                          infra/scripts/Sync-KafkaCredentials.ps1.
 #
 # Uso:
 #   .\infra\scripts\Install-Kafka.ps1
@@ -170,6 +180,16 @@ function Deploy-KafkaCluster {
     [CmdletBinding()]
     param()
 
+    $metricsPath = Join-Path $PSScriptRoot ".." ".." "k8s" "base" "kafka" "kafka-metrics.yaml"
+    $metricsPath = [System.IO.Path]::GetFullPath($metricsPath)
+
+    Write-Step "Aplicando el ConfigMap kafka-metrics (debe existir antes que el cluster)..."
+    kubectl apply --filename="$metricsPath" --namespace="$Namespace" 2>&1 | Write-Verbose
+
+    if ($LASTEXITCODE -ne 0) {
+        throw "kubectl apply de kafka-metrics.yaml falló."
+    }
+
     $manifestPath = Join-Path $PSScriptRoot ".." ".." "k8s" "base" "kafka" "kafka-cluster.yaml"
     $manifestPath = [System.IO.Path]::GetFullPath($manifestPath)
 
@@ -210,10 +230,10 @@ function Deploy-KafkaCluster {
 function Deploy-KafkaTopics {
     <#
     .SYNOPSIS
-        Aplica kafka-topics.yaml y verifica que los 3 topics existen.
+        Aplica kafka-topics.yaml y verifica que los 4 topics existen.
     .DESCRIPTION
         El Entity Operator (parte de Strimzi) observa los recursos KafkaTopic y
-        los crea dentro del cluster Kafka. La verificación comprueba que los 3
+        los crea dentro del cluster Kafka. La verificación comprueba que los 4
         topics esperados existen en el namespace.
     #>
     [CmdletBinding()]
@@ -222,7 +242,7 @@ function Deploy-KafkaTopics {
     $manifestPath = Join-Path $PSScriptRoot ".." ".." "k8s" "base" "kafka" "kafka-topics.yaml"
     $manifestPath = [System.IO.Path]::GetFullPath($manifestPath)
 
-    Write-Step "Desplegando KafkaTopics (sensor-readings-raw, sensor-validated, anomaly-alerts)..."
+    Write-Step "Desplegando KafkaTopics (sensor-readings-raw, sensor-validated, anomaly-alerts, bench-throughput)..."
     kubectl apply --filename="$manifestPath" --namespace="$Namespace" 2>&1 | Write-Verbose
 
     if ($LASTEXITCODE -ne 0) {
@@ -233,8 +253,8 @@ function Deploy-KafkaTopics {
     Write-Step "Esperando reconciliación de topics (10s)..."
     Start-Sleep -Seconds 10
 
-    # Verificar que los 3 topics existen
-    $expectedTopics = @("sensor-readings-raw", "sensor-validated", "anomaly-alerts")
+    # Verificar que los 4 topics existen
+    $expectedTopics = @("sensor-readings-raw", "sensor-validated", "anomaly-alerts", "bench-throughput")
     $existingTopics = kubectl get kafkatopic `
         --namespace="$Namespace" `
         --output=jsonpath='{.items[*].metadata.name}' 2>$null
@@ -248,7 +268,47 @@ function Deploy-KafkaTopics {
         Write-Host "  ✅ Topic: $topic" -ForegroundColor Green
     }
 
-    Write-Step "Los 3 topics KafkaTopic están creados y reconciliados."
+    Write-Step "Los 4 topics KafkaTopic están creados y reconciliados."
+}
+
+function Deploy-KafkaUsers {
+    <#
+    .SYNOPSIS
+        Aplica kafka-users.yaml y espera a que los 4 KafkaUser estén Ready.
+    .DESCRIPTION
+        Con authorization simple el acceso es DENY por defecto: sin estos usuarios
+        ningún cliente puede producir ni consumir. El User Operator emite el
+        certificado de cada usuario y lo publica en un Secret homónimo de este
+        namespace; ese Secret es lo que copia Sync-KafkaCredentials.ps1.
+    #>
+    [CmdletBinding()]
+    param()
+
+    $manifestPath = Join-Path $PSScriptRoot ".." ".." "k8s" "base" "kafka" "kafka-users.yaml"
+    $manifestPath = [System.IO.Path]::GetFullPath($manifestPath)
+
+    Write-Step "Desplegando KafkaUsers (ingestion, validator, detector, benchmark)..."
+    kubectl apply --filename="$manifestPath" --namespace="$Namespace" 2>&1 | Write-Verbose
+
+    if ($LASTEXITCODE -ne 0) {
+        throw "kubectl apply de kafka-users.yaml falló."
+    }
+
+    $expectedUsers = @("reactorguard-ingestion", "reactorguard-validator", "reactorguard-detector", "reactorguard-benchmark")
+    foreach ($user in $expectedUsers) {
+        Write-Verbose "Esperando a que KafkaUser/$user esté Ready..."
+        $result = kubectl wait kafkauser/$user `
+            --namespace="$Namespace" `
+            --for=condition=Ready `
+            --timeout="120s" 2>&1
+
+        if ($LASTEXITCODE -ne 0) {
+            throw "KafkaUser '$user' no alcanzó Ready: $result"
+        }
+        Write-Host "  OK KafkaUser: $user" -ForegroundColor Green
+    }
+
+    Write-Step "Los 4 KafkaUser están Ready. Siguiente paso: .\infra\scripts\Sync-KafkaCredentials.ps1"
 }
 
 # =============================================================================
@@ -276,6 +336,7 @@ function Invoke-KafkaInstall {
         Install-StrimziOperator
         Deploy-KafkaCluster
         Deploy-KafkaTopics
+        Deploy-KafkaUsers
 
         Write-Host ""
         Write-Host "╔══════════════════════════════════════════════════════════╗" -ForegroundColor Green
@@ -285,7 +346,8 @@ function Invoke-KafkaInstall {
         Write-Host "Verificación manual:" -ForegroundColor Yellow
         Write-Host "  kubectl get pods -n $Namespace        # strimzi-operator + 3 brokers + 3 zookeepers" -ForegroundColor Yellow
         Write-Host "  kubectl get kafka -n $Namespace       # reactorguard-cluster, READY=True" -ForegroundColor Yellow
-        Write-Host "  kubectl get kafkatopic -n $Namespace  # 3 topics" -ForegroundColor Yellow
+        Write-Host "  kubectl get kafkatopic -n $Namespace  # 4 topics" -ForegroundColor Yellow
+        Write-Host "  kubectl get kafkauser -n $Namespace   # 4 usuarios, READY=True" -ForegroundColor Yellow
     }
     catch {
         Write-Host ""

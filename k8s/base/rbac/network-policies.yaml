@@ -31,8 +31,12 @@ spec:
 # [ALLOW] Abre únicamente los flujos autorizados para reactorguard-ingestion:
 #   Ingress: kafka-operator puede conectar (Kafka back-channel)
 #            observability puede raspar métricas en :9090
+#            Redis :6379 desde este namespace y desde reactorguard-ml (Feast)
 #   Egress:  puede conectar a kafka-operator:9092/9093 (consumidor Kafka)
 #            puede enviar datos a reactorguard-ml:8000
+#            Redis :6379 dentro del namespace
+#            HTTPS :443 a Google APIs (GCS: el streamer lee data-raw)
+#            servidor de metadatos de GKE 169.254.169.252:988 (Workload Identity)
 #            DNS siempre permitido (resolución de nombres de servicio)
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
@@ -63,6 +67,18 @@ spec:
       ports:
         - port: 9090
           protocol: TCP
+    # Redis (online store de Feast): los pods de este namespace y los de reactorguard-ml.
+    # Los dos elementos de `from` son alternativas (OR). El puerto 6379 queda abierto en
+    # todos los pods del namespace porque la policy selecciona podSelector {}, pero solo
+    # Redis escucha ahi.
+    - from:
+        - podSelector: {}
+        - namespaceSelector:
+            matchLabels:
+              name: reactorguard-ml
+      ports:
+        - port: 6379
+          protocol: TCP
   egress:
     # sensor-validator conecta a Kafka brokers como consumidor (bootstrap + fetch)
     - to:
@@ -81,6 +97,30 @@ spec:
               name: reactorguard-ml
       ports:
         - port: 8000
+          protocol: TCP
+    # Redis dentro del namespace (cliente de Feast / materializacion).
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: redis
+      ports:
+        - port: 6379
+          protocol: TCP
+    # HTTPS saliente hacia Google APIs: el streamer lee el bucket data-raw (GCS) con
+    # Workload Identity. Sin destino (`to`) a proposito: las IPs de las APIs de Google
+    # no son un rango estable, y es la misma regla que ya usa reactorguard-ml. El
+    # trafico sale por Cloud NAT. No abre ningun otro puerto.
+    - ports:
+        - port: 443
+          protocol: TCP
+    # Servidor de metadatos de GKE (Workload Identity con Calico). Sin esta regla el pod
+    # no obtiene el token de la GSA y GCS responde 401/403 aunque el 443 este abierto.
+    # Es una IP local del nodo, no una apertura a internet.
+    - to:
+        - ipBlock:
+            cidr: 169.254.169.252/32
+      ports:
+        - port: 988
           protocol: TCP
     # DNS (kube-dns) — necesario para resolver nombres de servicio internos
     - ports:
@@ -112,6 +152,7 @@ spec:
 #   Ingress: ingestion envía datos validados en :8000
 #            observability raspa métricas en :9090
 #   Egress:  HTTPS saliente para GCP APIs (Secret Manager, GCS) vía Cloud NAT
+#            Redis :6379 en reactorguard-ingestion (online store de Feast)
 #            DNS para resolución de nombres
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
@@ -145,6 +186,18 @@ spec:
     # El tráfico sale por Cloud NAT configurado en T1.3 — no hay IP pública en los pods.
     - ports:
         - port: 443
+          protocol: TCP
+    # Redis del online store de Feast. Los dos selectores van en el MISMO elemento de
+    # `to` (AND): solo los pods de Redis de reactorguard-ingestion, no todo el namespace.
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              name: reactorguard-ingestion
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: redis
+      ports:
+        - port: 6379
           protocol: TCP
     # DNS (kube-dns) para resolución de nombres de servicios y APIs GCP
     - ports:
@@ -211,6 +264,15 @@ spec:
           protocol: TCP
         - port: 9090
           protocol: TCP
+    # JMX Exporter de los brokers de Kafka (kafka-operator, :9404). Solo ese namespace y
+    # ese puerto: el selector `namespaceSelector: {}` de arriba no cubre 9404.
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              name: kafka-operator
+      ports:
+        - port: 9404
+          protocol: TCP
     # HTTPS para alertas externas: PagerDuty, Slack, OpsGenie, etc.
     - ports:
         - port: 443
@@ -245,8 +307,11 @@ spec:
 # [ALLOW] Flujos autorizados para kafka-operator:
 #   Ingress: pods internos entre sí (brokers ↔ ZooKeeper ↔ Strimzi operator)
 #            reactorguard-ingestion conecta como cliente Kafka en :9092/:9093
+#            reactorguard-observability raspa el JMX Exporter en :9404
 #   Egress:  tráfico interno del namespace
 #            respuestas hacia reactorguard-ingestion
+#            API server de Kubernetes (master privado) en :443: el operador Strimzi y el
+#            Entity Operator reconcilian recursos contra la API; sin esto no hay cluster
 #            DNS
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
@@ -273,10 +338,28 @@ spec:
           protocol: TCP
         - port: 9093
           protocol: TCP
+    # Prometheus (observability) raspa el JMX Prometheus Exporter de los brokers
+    # (puerto 9404, fijado por Strimzi; ver kafka-metrics.yaml).
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              name: reactorguard-observability
+      ports:
+        - port: 9404
+          protocol: TCP
   egress:
     # Tráfico intra-namespace (replicación entre brokers, heartbeats ZooKeeper)
     - to:
         - podSelector: {}
+    # API server de Kubernetes. El cluster es privado: los pods hablan con el master por
+    # su rango privado (master_ipv4_cidr de Terraform; un test comprueba que coincide).
+    # El operador y el Entity Operator (topics y usuarios) no funcionan sin esta ruta.
+    - to:
+        - ipBlock:
+            cidr: 172.16.0.0/28
+      ports:
+        - port: 443
+          protocol: TCP
     # Respuestas y notificaciones hacia reactorguard-ingestion
     - to:
         - namespaceSelector:

@@ -1,8 +1,17 @@
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
 
+# Requisitos de `kubectl apply -k k8s/base/` (ver el orden completo en infra/scripts):
+#   1. El operador Strimzi instalado (Install-Kafka.ps1): kafka/ declara CRDs de Strimzi.
+#   2. Los Secrets de mTLS en reactorguard-ingestion (Sync-KafkaCredentials.ps1) y el
+#      Secret redis-credentials (fuera de banda): los Deployments y Redis no arrancan sin ellos.
 resources:
   - namespaces.yaml
   - rbac/
+  - kafka/
   - ingestion/serviceaccount.yaml
+  - ingestion/params-configmap.yaml
+  - ingestion/redis.yaml
+  - ingestion/tep-streamer-deployment.yaml
+  - ingestion/sensor-validator-deployment.yaml
   - ml/serviceaccount.yaml

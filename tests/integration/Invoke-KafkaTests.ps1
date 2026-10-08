@@ -1,360 +1,446 @@
 #Requires -Version 7.0
-# =============================================================================
-# tests/integration/Invoke-KafkaTests.ps1
-# Orquesta el despliegue del pod cliente, ejecución de tests Kafka y limpieza.
-#
-# Flujo:
-#   1. Crea el directorio de resultados.
-#   2. Despliega kafka-client-pod.yaml y espera a que esté Running.
-#   3. Instala kafka-python en el pod (pip).
-#   4. Copia los scripts Python al pod y ejecuta test_kafka_connectivity.py.
-#   5. (Si -SkipBenchmark no está activo) Ejecuta benchmark_kafka.py y
-#      recoge el JSON de resultados.
-#   6. Limpieza garantizada del pod (try/finally).
-#   7. Imprime el resumen de resultados con ✅/❌.
-#
-# Uso:
-#   .\tests\integration\Invoke-KafkaTests.ps1
-#   .\tests\integration\Invoke-KafkaTests.ps1 -SkipBenchmark -Verbose
-# =============================================================================
+<#
+.SYNOPSIS
+    Mide Kafka en el cluster: latencia produce -> consume y throughput sostenido.
 
+.DESCRIPTION
+    Es la unica forma de cerrar el criterio 1 de la Fase 2 (throughput > 50.000 msg/s) y
+    el de latencia de la Fase 1 (p99 < 10 ms): una medicion en local es informativa.
+
+    Como llega el codigo al cluster (decision de M6):
+      1. Se levanta un pod efimero (k8s/tools/kafka-benchmark-pod.yaml) con la IMAGEN DEL
+         PROYECTO, que ya trae data.* y las dependencias con la version fijada en el build.
+      2. Se copian al pod, con kubectl cp, SOLO el codigo de tests/integration y el parquet
+         de d00 (los mensajes del benchmark son lecturas reales del TEP). No se instala
+         nada en caliente ni se lleva codigo de test a la imagen que se despliega.
+      3. Se ejecutan los dos benchmarks como modulos (python -m tests.integration...).
+      4. Se recuperan los JSON a tests/results/ y se borra el pod (siempre, aunque falle).
+
+    Lo que se mide va a un topic PROPIO, bench-throughput, con un KafkaUser propio
+    (reactorguard-benchmark). Medir en sensor-readings-raw inyectaria cientos de miles de
+    lecturas sinteticas en el topic que consume el validador.
+
+    Este script NO juzga el criterio: imprime la cifra, el umbral y el entorno. Quien lo
+    da por CUMPLIDO / FALLADO / NO MEDIDO es Verify-Phase2.ps1.
+
+    Cifra de throughput: un proceso de kafka-python tiene un techo medido de unos 12.000
+    msg/s, asi que el resultado depende de ese techo y no solo del broker. Se imprime
+    junto al limite de CPU del pod para que se pueda interpretar.
+
+    Prerrequisitos:
+      - Cluster operativo y kubectl apuntando a el.
+      - Install-Kafka.ps1 ejecutado (topic bench-throughput y KafkaUser benchmark) y
+        Sync-KafkaCredentials.ps1 ejecutado despues (copia las credenciales al namespace).
+      - data/processed/tep/fault_type=00/readings.parquet (Invoke-Pipeline.ps1).
+      - La imagen reactorguard-api publicada en el registro (CI).
+
+.PARAMETER Namespace
+    Namespace donde corre el pod de benchmark.
+
+.PARAMETER DurationSeconds
+    Duracion de la fase medida del throughput.
+
+.PARAMETER Messages
+    Mensajes medidos del test de latencia (ademas del calentamiento).
+
+.PARAMETER SkipThroughput
+    No ejecuta el benchmark de throughput.
+
+.PARAMETER SkipLatency
+    No ejecuta el test de latencia.
+
+.EXAMPLE
+    .\tests\integration\Invoke-KafkaTests.ps1
+    .\tests\integration\Invoke-KafkaTests.ps1 -SkipThroughput -Verbose
+#>
+
+# =============================================================================
+# CAPA 1 - CONFIGURACION
+# =============================================================================
 [CmdletBinding()]
 param(
-    [string]$Namespace    = "kafka-operator",
-    [string]$ResultsPath  = "tests/results",
-    [switch]$SkipBenchmark
+    [string]$Namespace      = "reactorguard-ingestion",
+    [string]$Topic          = "bench-throughput",
+    [string]$ResultsPath    = "tests/results",
+    [int]$DurationSeconds   = 20,
+    [int]$Messages          = 100,
+    [switch]$SkipThroughput,
+    [switch]$SkipLatency
 )
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 
+$PodName         = "kafka-benchmark"
+$RemoteWorkDir   = "/work"
+$RemoteParams    = "/app/params.yaml"
+$ThroughputJson  = "kafka_throughput.json"
+$LatencyJson     = "kafka_latency.json"
+$PayloadRelative = "data/processed/tep/fault_type=00/readings.parquet"
+$CredentialSecrets = @("reactorguard-benchmark", "reactorguard-cluster-cluster-ca-cert")
+$KafkaNamespace  = "kafka-operator"
+
+# Codigo que viaja al pod (rutas relativas a la raiz del repositorio). Lista explicita: lo
+# que no esta aqui no se copia.
+$StagedFiles = @(
+    "tests/__init__.py",
+    "tests/integration/__init__.py",
+    "tests/integration/benchmark_kafka.py",
+    "tests/integration/benchmark_report.py",
+    "tests/integration/test_kafka_connectivity.py"
+)
+
 # =============================================================================
-# CAPA 2 — FUNCIONES DE UTILIDAD (sin efectos secundarios, reutilizables)
+# CAPA 2 - UTILIDADES PURAS (sin kubectl)
 # =============================================================================
 
-function New-TestResultsDir {
+function Get-RepoRoot {
     <#
     .SYNOPSIS
-        Crea el directorio de resultados si no existe.
+        Devuelve la raiz del repositorio (dos niveles por encima de este script).
     #>
-    param([Parameter(Mandatory)][string]$Path)
+    [CmdletBinding()]
+    param()
 
-    if (-not (Test-Path $Path)) {
-        New-Item -ItemType Directory -Path $Path -Force | Out-Null
-        Write-Verbose "Directorio de resultados creado: $Path"
-    }
-    else {
-        Write-Verbose "Directorio de resultados ya existe: $Path"
-    }
+    return [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot ".." ".."))
 }
 
-function Get-BenchmarkResult {
+function Get-ThroughputArguments {
     <#
     .SYNOPSIS
-        Lee y parsea el JSON de resultados del benchmark.
-    .OUTPUTS
-        [PSCustomObject] con las propiedades del benchmark, o $null si no existe.
+        Argumentos de python para el benchmark de throughput del cluster.
     #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][string]$TopicName,
+        [Parameter(Mandatory)][int]$Duration,
+        [Parameter(Mandatory)][string]$OutputPath,
+        [Parameter(Mandatory)][string]$ParamsPath
+    )
+
+    return @(
+        "python", "-m", "tests.integration.benchmark_kafka",
+        "--environment", "cluster",
+        "--topic", $TopicName,
+        "--duration", "$Duration",
+        "--output", $OutputPath,
+        "--params", $ParamsPath
+    )
+}
+
+function Get-LatencyArguments {
+    <#
+    .SYNOPSIS
+        Argumentos de python para el test de latencia del cluster.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][string]$TopicName,
+        [Parameter(Mandatory)][int]$Count,
+        [Parameter(Mandatory)][string]$OutputPath
+    )
+
+    return @(
+        "python", "-m", "tests.integration.test_kafka_connectivity",
+        "--environment", "cluster",
+        "--topic", $TopicName,
+        "--messages", "$Count",
+        "--output", $OutputPath
+    )
+}
+
+function Read-BenchmarkReport {
+    <#
+    .SYNOPSIS
+        Lee un informe JSON del formato comun de benchmarks.
+    .OUTPUTS
+        [psobject] con el informe, o $null si no existe o no se puede leer.
+    #>
+    [CmdletBinding()]
     param([Parameter(Mandatory)][string]$JsonPath)
 
     if (-not (Test-Path $JsonPath)) {
-        Write-Verbose "Archivo de resultados no encontrado: $JsonPath"
         return $null
     }
-
     try {
-        $content = Get-Content $JsonPath -Raw -Encoding UTF8
-        return $content | ConvertFrom-Json
+        return (Get-Content $JsonPath -Raw -Encoding UTF8 | ConvertFrom-Json)
     }
     catch {
-        Write-Warning "Error al parsear JSON de resultados '$JsonPath': $_"
+        Write-Warning "No se pudo parsear '$JsonPath': $_"
         return $null
     }
 }
 
-function Write-TestResult {
+function Format-ReportLine {
     <#
     .SYNOPSIS
-        Imprime el resultado de un test con formato ✅/❌.
+        Una linea legible por informe: cifra, umbral, entorno y si el valor lo cumple.
+    .DESCRIPTION
+        Solo describe la medicion; no da el criterio por cumplido. Un valor medido fuera
+        del cluster se marca como informativo.
     #>
-    param(
-        [Parameter(Mandatory)][string]$Name,
-        [Parameter(Mandatory)][bool]$Passed,
-        [string]$Value = ""
-    )
+    [CmdletBinding()]
+    param([Parameter(Mandatory)][psobject]$Report)
 
-    $icon  = if ($Passed) { "✅" } else { "❌" }
-    $color = if ($Passed) { "Green" } else { "Red" }
-    $line  = "$icon $Name"
-    if ($Value) { $line += ": $Value" }
-    Write-Host $line -ForegroundColor $color
+    $comparison = if ($Report.direction -eq "at_least") { ">=" } else { "<=" }
+    $verdict = if ($Report.passed) { "dentro del umbral" } else { "FUERA del umbral" }
+    $scope = if ($Report.environment -eq "cluster") { "cluster" } else { "INFORMATIVO (no es cluster)" }
+    return ("{0}: {1} {2} (umbral {3} {4}; entorno: {5}) -> {6}" -f
+        $Report.criterion, $Report.value, $Report.unit, $comparison, $Report.threshold, $scope, $verdict)
 }
 
 function Write-Step {
+    <#
+    .SYNOPSIS
+        Imprime un mensaje de progreso con timestamp.
+    #>
     param([Parameter(Mandatory)][string]$Message)
     $ts = Get-Date -Format "HH:mm:ss"
     Write-Host "[$ts] $Message" -ForegroundColor Cyan
 }
 
 # =============================================================================
-# CAPA 3 — FUNCIONES DE SERVICIO (efectos secundarios aislados)
+# CAPA 3 - SERVICIO (kubectl; efectos secundarios aislados)
 # =============================================================================
 
-function Deploy-KafkaClientPod {
+function Assert-Prerequisites {
     <#
     .SYNOPSIS
-        Despliega el pod utilitario kafka-client y espera a que esté Running.
-    .DESCRIPTION
-        Aplica k8s/tools/kafka-client-pod.yaml. Si el pod ya existe lo elimina
-        primero para asegurar una imagen y configuración limpias.
+        Falla pronto y con un mensaje util si falta algo, antes de crear ningun pod.
     #>
     [CmdletBinding()]
     param()
 
-    $manifestPath = Join-Path $PSScriptRoot ".." ".." "k8s" "tools" "kafka-client-pod.yaml"
-    $manifestPath = [System.IO.Path]::GetFullPath($manifestPath)
-
-    # Eliminar pod anterior si existe (puede quedar de un run anterior fallido)
-    $existing = kubectl get pod kafka-client --namespace="$Namespace" --ignore-not-found 2>$null
-    if ($existing) {
-        Write-Step "Eliminando pod anterior kafka-client..."
-        kubectl delete pod kafka-client --namespace="$Namespace" --wait=true 2>&1 | Write-Verbose
+    if (-not (Get-Command kubectl -ErrorAction SilentlyContinue)) {
+        throw "kubectl no esta en el PATH."
     }
-
-    Write-Step "Desplegando kafka-client-pod.yaml..."
-    kubectl apply --filename="$manifestPath" --namespace="$Namespace" 2>&1 | Write-Verbose
-
+    $payload = Join-Path (Get-RepoRoot) $PayloadRelative
+    if (-not (Test-Path $payload)) {
+        throw "Falta $PayloadRelative. Generalo con .\infra\scripts\Invoke-Pipeline.ps1."
+    }
+    foreach ($secret in $CredentialSecrets) {
+        kubectl get secret $secret --namespace=$Namespace --output=name 2>&1 | Out-Null
+        if ($LASTEXITCODE -ne 0) {
+            throw "Falta el Secret '$secret' en '$Namespace'. Ejecuta .\infra\scripts\Sync-KafkaCredentials.ps1."
+        }
+    }
+    kubectl get kafkatopic $Topic --namespace=$KafkaNamespace --output=name 2>&1 | Out-Null
     if ($LASTEXITCODE -ne 0) {
-        throw "Error al desplegar kafka-client-pod.yaml"
+        throw "Falta el KafkaTopic '$Topic' en '$KafkaNamespace'. Ejecuta .\infra\scripts\Install-Kafka.ps1."
     }
-
-    Write-Step "Esperando a que el pod kafka-client esté Running..."
-    kubectl wait pod kafka-client `
-        --namespace="$Namespace" `
-        --for=condition=Ready `
-        --timeout=120s 2>&1 | Write-Verbose
-
-    if ($LASTEXITCODE -ne 0) {
-        throw "Timeout esperando al pod kafka-client. Revisar: kubectl describe pod kafka-client -n $Namespace"
-    }
-
-    Write-Step "Pod kafka-client está Running."
 }
 
-function Install-PythonDependencies {
+function Deploy-BenchmarkPod {
     <#
     .SYNOPSIS
-        Instala kafka-python dentro del pod kafka-client.
-    .DESCRIPTION
-        El pod confluentinc/cp-kafka no incluye Python por defecto — instala
-        miniconda/python si es necesario, o usa el Python del sistema.
-        Nota: cp-kafka 7.5.0 está basado en UBI8 y tiene Python 3.9 disponible.
+        Crea el pod de benchmark (borrando uno anterior) y espera a que este Ready.
     #>
     [CmdletBinding()]
     param()
 
-    Write-Step "Instalando kafka-python en el pod..."
-    kubectl exec kafka-client `
-        --namespace="$Namespace" `
-        -- bash -c "pip install --quiet kafka-python 2>&1 || python3 -m pip install --quiet kafka-python 2>&1" `
-        2>&1 | Write-Verbose
+    $manifest = Join-Path (Get-RepoRoot) "k8s" "tools" "kafka-benchmark-pod.yaml"
+    kubectl delete pod $PodName --namespace=$Namespace --ignore-not-found --wait=true 2>&1 | Write-Verbose
 
-    # No fallar si pip no está disponible — los tests lo detectarán
-    Write-Verbose "Dependencias Python instaladas (o ya presentes)."
+    Write-Step "Creando el pod $PodName en $Namespace..."
+    kubectl apply --filename=$manifest 2>&1 | Write-Verbose
+    if ($LASTEXITCODE -ne 0) {
+        throw "kubectl apply de kafka-benchmark-pod.yaml fallo."
+    }
+
+    # La imagen del proyecto es grande: el primer pull puede tardar varios minutos.
+    kubectl wait pod $PodName --namespace=$Namespace --for=condition=Ready --timeout=600s 2>&1 | Write-Verbose
+    if ($LASTEXITCODE -ne 0) {
+        throw "El pod $PodName no llego a Ready. Revisa: kubectl describe pod $PodName -n $Namespace"
+    }
 }
 
-function Invoke-ConnectivityTest {
+function Copy-BenchmarkCode {
     <#
     .SYNOPSIS
-        Copia y ejecuta test_kafka_connectivity.py dentro del pod.
+        Copia al pod el codigo de tests/integration y el parquet de d00.
+    .DESCRIPTION
+        Se prepara un directorio temporal con solo los ficheros de $StagedFiles (sin
+        __pycache__) y se copia con rutas RELATIVAS: kubectl cp interpreta "C:\..." como
+        pod:ruta y falla en Windows.
+    #>
+    [CmdletBinding()]
+    param()
+
+    $root = Get-RepoRoot
+    $staging = Join-Path ([System.IO.Path]::GetTempPath()) "reactorguard-bench-$([guid]::NewGuid().ToString('N'))"
+    New-Item -ItemType Directory -Path $staging | Out-Null
+    Push-Location $staging
+    try {
+        foreach ($file in $StagedFiles) {
+            $target = Join-Path $staging $file
+            New-Item -ItemType Directory -Path (Split-Path $target) -Force | Out-Null
+            Copy-Item (Join-Path $root $file) $target
+        }
+        Write-Step "Copiando el codigo del benchmark a ${PodName}:$RemoteWorkDir/tests ..."
+        kubectl cp "tests" "${Namespace}/${PodName}:${RemoteWorkDir}/tests" 2>&1 | Write-Verbose
+        if ($LASTEXITCODE -ne 0) {
+            throw "kubectl cp del codigo fallo."
+        }
+
+        $remoteDir = "$RemoteWorkDir/" + (Split-Path $PayloadRelative -Parent).Replace("\", "/")
+        kubectl exec $PodName --namespace=$Namespace -- mkdir -p $remoteDir 2>&1 | Write-Verbose
+        Copy-Item (Join-Path $root $PayloadRelative) (Join-Path $staging "readings.parquet")
+        Write-Step "Copiando el parquet de d00 a ${PodName}:$remoteDir ..."
+        kubectl cp "readings.parquet" "${Namespace}/${PodName}:${remoteDir}/readings.parquet" 2>&1 | Write-Verbose
+        if ($LASTEXITCODE -ne 0) {
+            throw "kubectl cp del parquet fallo."
+        }
+    }
+    finally {
+        Pop-Location
+        Remove-Item $staging -Recurse -Force -ErrorAction SilentlyContinue
+    }
+}
+
+function Invoke-RemoteCommand {
+    <#
+    .SYNOPSIS
+        Ejecuta un comando dentro del pod y devuelve su codigo de salida.
+    .DESCRIPTION
+        La salida del comando (logs de Python en stderr) se muestra tal cual; el exito
+        se decide por el codigo de salida, no por el texto.
     .OUTPUTS
-        [bool] True si el test pasó.
+        [int] codigo de salida.
     #>
     [CmdletBinding()]
-    param()
+    param([Parameter(Mandatory)][string[]]$Command)
 
-    $scriptSrc = Join-Path $PSScriptRoot "test_kafka_connectivity.py"
-    $scriptSrc = [System.IO.Path]::GetFullPath($scriptSrc)
-
-    Write-Step "Copiando test_kafka_connectivity.py al pod..."
-    kubectl cp "$scriptSrc" "${Namespace}/kafka-client:/tmp/test_kafka_connectivity.py" 2>&1 | Write-Verbose
-
-    if ($LASTEXITCODE -ne 0) {
-        throw "Error al copiar test_kafka_connectivity.py al pod."
-    }
-
-    Write-Step "Ejecutando test de conectividad (100 mensajes)..."
-    $output = kubectl exec kafka-client `
-        --namespace="$Namespace" `
-        -- python3 /tmp/test_kafka_connectivity.py 2>&1
-
-    $testPassed = ($LASTEXITCODE -eq 0)
-    Write-Verbose "Salida del test de conectividad:`n$output"
-
-    # Extraer número de mensajes recibidos del output
-    $deliveredLine = $output | Select-String "Conteo correcto"
-    $deliveredInfo = if ($deliveredLine) { "100/100 mensajes entregados" } else { "verificar logs" }
-
-    return [PSCustomObject]@{
-        Passed       = $testPassed
-        DeliveredInfo = $deliveredInfo
-        Output       = $output -join "`n"
-    }
+    kubectl exec $PodName --namespace=$Namespace -- @Command 2>&1 | ForEach-Object { Write-Host "  $_" }
+    return $LASTEXITCODE
 }
 
-function Invoke-BenchmarkTest {
+function Receive-Report {
     <#
     .SYNOPSIS
-        Copia y ejecuta benchmark_kafka.py, recoge el JSON de resultados.
-    .OUTPUTS
-        [PSCustomObject] con Passed, P99Ms, ThroughputMsg, JsonPath.
+        Copia un informe JSON del pod a tests/results/.
     #>
     [CmdletBinding()]
-    param()
+    param([Parameter(Mandatory)][string]$FileName)
 
-    $scriptSrc  = Join-Path $PSScriptRoot "benchmark_kafka.py"
-    $scriptSrc  = [System.IO.Path]::GetFullPath($scriptSrc)
-    $remoteJson = "/tmp/kafka_benchmark.json"
-    $localJson  = Join-Path $ResultsPath "kafka_benchmark.json"
-    $localJson  = [System.IO.Path]::GetFullPath($localJson)
-
-    Write-Step "Copiando benchmark_kafka.py al pod..."
-    kubectl cp "$scriptSrc" "${Namespace}/kafka-client:/tmp/benchmark_kafka.py" 2>&1 | Write-Verbose
-
-    Write-Step "Ejecutando benchmark (10.000 mensajes de 1KB). Puede tardar ~30s..."
-    $output = kubectl exec kafka-client `
-        --namespace="$Namespace" `
-        -- python3 /tmp/benchmark_kafka.py --messages 10000 --output "$remoteJson" 2>&1
-
-    $benchPassed = ($LASTEXITCODE -eq 0)
-    Write-Verbose "Salida del benchmark:`n$output"
-
-    # Copiar el JSON de resultados desde el pod al host
-    Write-Step "Recuperando JSON de resultados del pod..."
-    kubectl cp "${Namespace}/kafka-client:${remoteJson}" "$localJson" 2>&1 | Write-Verbose
-
-    # Parsear el JSON para el resumen
-    $benchResult = Get-BenchmarkResult -JsonPath $localJson
-
-    $p99 = if ($benchResult) { [math]::Round($benchResult.latency_ms.p99, 2) } else { 0 }
-    $tps = if ($benchResult) { [math]::Round($benchResult.throughput.msg_per_sec, 0) } else { 0 }
-
-    return [PSCustomObject]@{
-        Passed        = $benchPassed
-        P99Ms         = $p99
-        ThroughputMsg = $tps
-        JsonPath      = $localJson
-        Output        = $output -join "`n"
+    $resultsDir = Join-Path (Get-RepoRoot) $ResultsPath
+    New-Item -ItemType Directory -Path $resultsDir -Force | Out-Null
+    Push-Location $resultsDir
+    try {
+        kubectl cp "${Namespace}/${PodName}:${RemoteWorkDir}/${FileName}" $FileName 2>&1 | Write-Verbose
+        if ($LASTEXITCODE -ne 0) {
+            throw "No se pudo recuperar $FileName del pod."
+        }
     }
+    finally {
+        Pop-Location
+    }
+    return (Join-Path $resultsDir $FileName)
 }
 
-function Remove-KafkaClientPod {
+function Get-PodCpuLimit {
     <#
     .SYNOPSIS
-        Elimina el pod utilitario kafka-client (limpieza garantizada).
-    .DESCRIPTION
-        Siempre se llama desde un bloque `finally` para asegurar que el pod
-        no queda corriendo tras los tests, independientemente del resultado.
+        Limite de CPU del pod de benchmark, para interpretar la cifra de throughput.
     #>
     [CmdletBinding()]
     param()
 
-    Write-Step "Limpiando pod kafka-client..."
-    kubectl delete pod kafka-client `
-        --namespace="$Namespace" `
-        --ignore-not-found `
-        --wait=false 2>&1 | Write-Verbose
+    $limit = kubectl get pod $PodName --namespace=$Namespace --output=jsonpath='{.spec.containers[0].resources.limits.cpu}' 2>$null
+    return $(if ($limit) { $limit } else { "desconocido" })
+}
 
-    Write-Verbose "Pod kafka-client eliminado."
+function Remove-BenchmarkPod {
+    <#
+    .SYNOPSIS
+        Borra el pod de benchmark. Se llama siempre desde un finally.
+    #>
+    [CmdletBinding()]
+    param()
+
+    Write-Step "Eliminando el pod $PodName..."
+    kubectl delete pod $PodName --namespace=$Namespace --ignore-not-found --wait=false 2>&1 | Write-Verbose
 }
 
 # =============================================================================
-# CAPA 4 — ORQUESTACIÓN
+# CAPA 4 - ORQUESTACION
 # =============================================================================
 
 function Invoke-AllKafkaTests {
     <#
     .SYNOPSIS
-        Punto de entrada principal. Orquesta todos los tests de Kafka.
+        Punto de entrada: prepara el pod, ejecuta las mediciones y resume.
+    .OUTPUTS
+        Codigo de salida: 0 si todas las mediciones pedidas se ejecutaron, 1 si alguna fallo.
     #>
     [CmdletBinding()]
     param()
 
     Write-Host ""
-    Write-Host "╔══════════════════════════════════════════════════════════╗" -ForegroundColor Magenta
-    Write-Host "║       ReactorGuard — Verificación de Kafka               ║" -ForegroundColor Magenta
-    Write-Host "╚══════════════════════════════════════════════════════════╝" -ForegroundColor Magenta
-    Write-Host "  Namespace    : $Namespace"
-    Write-Host "  Results dir  : $ResultsPath"
-    Write-Host "  Skip bench   : $($SkipBenchmark.IsPresent)"
-    Write-Host ""
+    Write-Host "============================================================" -ForegroundColor Magenta
+    Write-Host " ReactorGuard - Medicion de Kafka en el cluster" -ForegroundColor Magenta
+    Write-Host " Namespace: $Namespace   Topic: $Topic" -ForegroundColor Magenta
+    Write-Host "============================================================" -ForegroundColor Magenta
 
-    New-TestResultsDir -Path $ResultsPath
+    Assert-Prerequisites
 
-    $connectivityResult = $null
-    $benchmarkResult    = $null
+    $failures = [System.Collections.Generic.List[string]]::new()
+    $reports = [System.Collections.Generic.List[string]]::new()
+    $cpuLimit = "desconocido"
 
     try {
-        Deploy-KafkaClientPod
-        Install-PythonDependencies
+        Deploy-BenchmarkPod
+        Copy-BenchmarkCode
+        $cpuLimit = Get-PodCpuLimit
 
-        # Test 1: conectividad básica
-        $connectivityResult = Invoke-ConnectivityTest
+        if (-not $SkipLatency) {
+            Write-Step "Midiendo la latencia produce -> consume ($Messages mensajes)..."
+            $code = Invoke-RemoteCommand (Get-LatencyArguments `
+                    -TopicName $Topic -Count $Messages -OutputPath "$RemoteWorkDir/$LatencyJson")
+            if ($code -ne 0) { $failures.Add("latencia (codigo $code)") }
+            else { $reports.Add((Receive-Report -FileName $LatencyJson)) }
+        }
 
-        # Test 2: benchmark (opcional)
-        if (-not $SkipBenchmark) {
-            $benchmarkResult = Invoke-BenchmarkTest
+        if (-not $SkipThroughput) {
+            Write-Step "Midiendo el throughput sostenido ($DurationSeconds s)..."
+            $code = Invoke-RemoteCommand (Get-ThroughputArguments `
+                    -TopicName $Topic -Duration $DurationSeconds `
+                    -OutputPath "$RemoteWorkDir/$ThroughputJson" -ParamsPath $RemoteParams)
+            if ($code -ne 0) { $failures.Add("throughput (codigo $code)") }
+            else { $reports.Add((Receive-Report -FileName $ThroughputJson)) }
         }
     }
     finally {
-        # Limpieza garantizada aunque los tests fallen
-        Remove-KafkaClientPod
+        Remove-BenchmarkPod
     }
 
-    # ─── Resumen de resultados ───────────────────────────────────────────────
     Write-Host ""
-    Write-Host "══════════════════════════════════════════════════════════" -ForegroundColor White
-    Write-Host "  Resumen de Tests Kafka — ReactorGuard Fase 1"            -ForegroundColor White
-    Write-Host "══════════════════════════════════════════════════════════" -ForegroundColor White
-
-    $allPassed = $true
-
-    if ($null -ne $connectivityResult) {
-        Write-TestResult `
-            -Name "Kafka connectivity" `
-            -Passed $connectivityResult.Passed `
-            -Value $(if ($connectivityResult.Passed) { "OK ($($connectivityResult.DeliveredInfo))" } else { "FAILED" })
-        if (-not $connectivityResult.Passed) { $allPassed = $false }
+    Write-Host "------------------------------------------------------------" -ForegroundColor White
+    foreach ($path in $reports) {
+        $report = Read-BenchmarkReport -JsonPath $path
+        if ($null -ne $report) {
+            Write-Host ("  " + (Format-ReportLine -Report $report))
+            Write-Host "    informe: $path" -ForegroundColor Gray
+        }
     }
+    Write-Host "  Limite de CPU del pod de benchmark: $cpuLimit (un productor Python usa como mucho ~1,5 nucleos)." -ForegroundColor Gray
+    Write-Host "  Este script no da los criterios por cumplidos: eso lo decide Verify-Phase2.ps1." -ForegroundColor Gray
+    Write-Host "------------------------------------------------------------" -ForegroundColor White
 
-    if ($null -ne $benchmarkResult) {
-        Write-TestResult `
-            -Name "Latency p99" `
-            -Passed $benchmarkResult.Passed `
-            -Value "$($benchmarkResult.P99Ms)ms (umbral: < 10ms)"
-
-        Write-TestResult `
-            -Name "Throughput" `
-            -Passed $true `
-            -Value "$($benchmarkResult.ThroughputMsg) msg/s"
-
-        if (-not $benchmarkResult.Passed) { $allPassed = $false }
-
-        Write-Host ""
-        Write-Host "  Resultados JSON: $($benchmarkResult.JsonPath)" -ForegroundColor Gray
+    if ($failures.Count -gt 0) {
+        Write-Host "ERROR: fallaron las mediciones: $($failures -join ', ')" -ForegroundColor Red
+        return 1
     }
-
-    Write-Host "══════════════════════════════════════════════════════════" -ForegroundColor White
-    Write-Host ""
-
-    if (-not $allPassed) {
-        Write-Host "❌ Uno o más tests fallaron. Ver logs arriba para detalles." -ForegroundColor Red
-        exit 1
-    }
-    else {
-        Write-Host "✅ Todos los tests de Kafka pasaron. Criterios Fase 1 cumplidos." -ForegroundColor Green
-    }
+    return 0
 }
 
-# Punto de entrada
-Invoke-AllKafkaTests
+# Punto de entrada. No se ejecuta si el fichero se carga con dot-sourcing (pruebas de la capa 2).
+if ($MyInvocation.InvocationName -ne ".") {
+    try {
+        exit (Invoke-AllKafkaTests)
+    }
+    catch {
+        Write-Host ""
+        Write-Host "ERROR: $($_.Exception.Message)" -ForegroundColor Red
+        exit 1
+    }
+}

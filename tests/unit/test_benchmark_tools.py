@@ -22,6 +22,7 @@ from data.streaming.streaming_params import load_streaming_params
 from tests.integration import benchmark_feature_latency as feature_bench
 from tests.integration import benchmark_kafka as kafka_bench
 from tests.integration import benchmark_report as report_tools
+from tests.integration import test_kafka_connectivity as latency_tool
 from tests.support.in_memory_broker import InMemoryBroker
 
 
@@ -253,15 +254,15 @@ class TestKafkaReport:
 
 class TestFeatureLatencyTools:
     def test_percentile_interpolates(self) -> None:
-        assert feature_bench.percentile([1.0, 2.0, 3.0, 4.0], 50.0) == 2.5
-        assert feature_bench.percentile([5.0], 99.0) == 5.0
-        assert feature_bench.percentile([1.0, 3.0], 100.0) == 3.0
+        assert report_tools.percentile([1.0, 2.0, 3.0, 4.0], 50.0) == 2.5
+        assert report_tools.percentile([5.0], 99.0) == 5.0
+        assert report_tools.percentile([1.0, 3.0], 100.0) == 3.0
 
     def test_percentile_rejects_bad_input(self) -> None:
         with pytest.raises(ValueError, match="empty"):
-            feature_bench.percentile([], 50.0)
+            report_tools.percentile([], 50.0)
         with pytest.raises(ValueError, match="within"):
-            feature_bench.percentile([1.0], 101.0)
+            report_tools.percentile([1.0], 101.0)
 
     def test_summary_orders_before_ranking(self) -> None:
         summary = feature_bench.summarize([4.0, 1.0, 3.0, 2.0])
@@ -318,3 +319,103 @@ class TestFeatureLatencyTools:
         assert args.load_workers == 0
         assert args.environment == "local"
         assert args.output == feature_bench.DEFAULT_OUTPUT
+
+
+class _FakeRecord:
+    def __init__(self, value: bytes) -> None:
+        self.value = value
+
+
+class _FakeFuture:
+    def get(self, timeout: float) -> None:
+        return None
+
+
+class _EchoProducer:
+    """Producer whose messages are handed to the paired consumer on the next poll."""
+
+    def __init__(self) -> None:
+        self.sent: list[tuple[str, bytes, bytes, int]] = []
+
+    def send(self, topic: str, key: bytes, value: bytes, partition: int) -> _FakeFuture:
+        self.sent.append((topic, key, value, partition))
+        return _FakeFuture()
+
+
+class _EchoConsumer:
+    def __init__(
+        self, producer: _EchoProducer, *, deliver: bool = True, noise: bool = False
+    ) -> None:
+        self._producer = producer
+        self._deliver = deliver
+        self._noise = noise
+        self._seen = 0
+
+    def poll(self, timeout_ms: int) -> dict[str, list[_FakeRecord]]:
+        records: list[_FakeRecord] = []
+        if self._noise:
+            records.append(_FakeRecord(b'{"nonce": "another-run", "seq": 0}'))
+        if self._deliver:
+            records.extend(_FakeRecord(sent[2]) for sent in self._producer.sent[self._seen :])
+            self._seen = len(self._producer.sent)
+        return {"tp": records}
+
+
+class TestKafkaLatencyTool:
+    """El test de conectividad/latencia: logica de ida y vuelta sin broker."""
+
+    def test_round_trip_sends_one_keyed_message_to_the_fixed_partition(self) -> None:
+        producer = _EchoProducer()
+        roundtrip = latency_tool.KafkaRoundTrip(producer, _EchoConsumer(producer), "bench-topic")
+        roundtrip(0)
+        topic, key, value, partition = producer.sent[0]
+        assert (topic, key, partition) == ("bench-topic", b"connectivity", latency_tool.PARTITION)
+        assert json.loads(value) == {"nonce": roundtrip.nonce, "seq": 0}
+
+    def test_messages_of_other_runs_are_ignored(self) -> None:
+        producer = _EchoProducer()
+        consumer = _EchoConsumer(producer, noise=True)
+        latency_tool.KafkaRoundTrip(producer, consumer, "t")(3)
+
+    def test_undelivered_message_raises_after_the_timeout(self) -> None:
+        producer = _EchoProducer()
+        consumer = _EchoConsumer(producer, deliver=False)
+        roundtrip = latency_tool.KafkaRoundTrip(
+            producer, consumer, "t", timeout_s=0.05
+        )
+        with pytest.raises(latency_tool.RoundTripError, match="not delivered"):
+            roundtrip(0)
+
+    def test_warmup_is_run_but_not_kept(self) -> None:
+        calls: list[int] = []
+        latencies = latency_tool.run_roundtrips(
+            calls.append, 3, 2, clock=FakeClock(0.004)
+        )
+        assert calls == [0, 1, 2, 3, 4]
+        assert latencies == pytest.approx([4.0, 4.0, 4.0])
+
+    @pytest.mark.parametrize(("count", "warmup"), [(0, 0), (-1, 0), (5, -1)])
+    def test_invalid_counts_are_refused(self, count: int, warmup: int) -> None:
+        with pytest.raises(ValueError, match="count must be positive"):
+            latency_tool.run_roundtrips(lambda n: None, count, warmup)
+
+    def test_report_value_is_the_p99_and_lower_is_better(self) -> None:
+        within = latency_tool.make_report([1.0] * 100, environment="cluster", details={"k": 1})
+        above = latency_tool.make_report([1.0] * 98 + [50.0, 50.0], environment="local", details={})
+        assert within["criterion"] == "kafka_latency"
+        assert within["direction"] == "at_most"
+        assert within["threshold"] == 10.0
+        assert within["value"] == 1.0
+        assert within["passed"] is True
+        assert within["details"]["messages_delivered"] == 100
+        assert within["details"]["k"] == 1
+        assert above["passed"] is False
+        assert above["environment"] == "local"
+
+    def test_defaults_of_the_command_line(self) -> None:
+        args = latency_tool.parse_args([])
+        assert args.topic == "bench-throughput"
+        assert args.environment == "local"
+        assert args.output == latency_tool.DEFAULT_OUTPUT
+        assert args.create_topic is False
+        assert args.fail_above_threshold is False

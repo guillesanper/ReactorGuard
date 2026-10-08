@@ -5,12 +5,12 @@ escriben el mismo esquema de JSON para que `Verify-Phase2.ps1` (M9) los lea igua
 
     {
       "schema_version": 1,
-      "criterion": "kafka_throughput" | "feature_latency",
+      "criterion": "kafka_throughput" | "feature_latency" | "kafka_latency",
       "environment": "local" | "cluster",
       "measured_at": "2026-10-07T12:00:00Z",
       "commit": "a428e71" | "a428e71-dirty" | "unknown",
       "value": <number>,
-      "unit": "messages_per_second" | "milliseconds",
+      "unit": "messages_per_second" | "milliseconds",   (kafka_latency: criterio de la Fase 1)
       "threshold": <number>,
       "direction": "at_least" | "at_most",
       "passed": <bool>,
@@ -26,7 +26,9 @@ Los resultados van a tests/results/, que esta en .gitignore: no se versionan.
 from __future__ import annotations
 
 import json
+import statistics
 import subprocess
+from collections.abc import Sequence
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -159,3 +161,50 @@ def write_report(path: Path, report: dict[str, Any]) -> None:
     """
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(report, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+
+def percentile(sorted_values: Sequence[float], pct: float) -> float:
+    """Return a percentile of an ascending series, linearly interpolated.
+
+    Args:
+        sorted_values: Values in ascending order.
+        pct: Percentile between 0 and 100.
+
+    Returns:
+        The interpolated percentile.
+
+    Raises:
+        ValueError: If the series is empty or pct is outside [0, 100].
+    """
+    if not sorted_values:
+        raise ValueError("Cannot take a percentile of an empty series.")
+    if not 0.0 <= pct <= 100.0:
+        raise ValueError(f"pct must be within [0, 100], got {pct}.")
+    index = pct / 100.0 * (len(sorted_values) - 1)
+    lower = int(index)
+    upper = min(lower + 1, len(sorted_values) - 1)
+    fraction = index - lower
+    return float(sorted_values[lower] * (1.0 - fraction) + sorted_values[upper] * fraction)
+
+
+def summarize(latencies_ms: Sequence[float]) -> dict[str, float]:
+    """Summarize call latencies.
+
+    Args:
+        latencies_ms: One latency per call, in milliseconds.
+
+    Returns:
+        count, mean, p50, p95, p99 and max, all in milliseconds (count excepted).
+
+    Raises:
+        ValueError: If there are no latencies.
+    """
+    ordered = sorted(latencies_ms)
+    return {
+        "count": float(len(ordered)),
+        "mean_ms": statistics.fmean(ordered),
+        "p50_ms": percentile(ordered, 50.0),
+        "p95_ms": percentile(ordered, 95.0),
+        "p99_ms": percentile(ordered, 99.0),
+        "max_ms": float(ordered[-1]),
+    }

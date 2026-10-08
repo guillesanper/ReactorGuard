@@ -1,0 +1,182 @@
+# =============================================================================
+# k8s/base/ingestion/tep-streamer-deployment.yaml
+# Productor del TEP (T3.3): lee los 22 runs del bucket data-raw y los publica en
+# sensor-readings-raw. Servicio: data/generators/tep_streamer_service.py.
+#
+# UNA SOLA REPLICA, estrategia Recreate. El streamer es el unico escritor del topic
+# raw: dos instancias emitirian cada lectura dos veces, y durante un rollout con
+# RollingUpdate coexistirian. Recreate mata el pod viejo antes de crear el nuevo.
+# Escalar a N productores exige repartir los sensores entre ellos (cada sensor en un
+# unico productor para no romper el orden por clave); no es un cambio de replicas.
+#
+# IDENTIDAD.
+#   - Kafka: KafkaUser `reactorguard-ingestion` por mTLS (solo Write en raw). Secrets
+#     copiados con infra/scripts/Sync-KafkaCredentials.ps1.
+#   - GCP: reutiliza la KSA `sensor-validator`, la unica con Workload Identity en este
+#     namespace (-> reactorguard-ingestion-sa, objectViewer en data-raw). Un KSA propio
+#     seria mas limpio, pero exige otro binding en modules/iam; fuera del alcance de M6.
+#
+# FUENTE DE DATOS. DATA_SOURCE=gcs lee gs://reactorguard-data-raw-dev/tep/. PRERREQUISITO
+# DE DESPLIEGUE (no lo hace ningun manifiesto): subir los datos, porque no hay remoto DVC:
+#   gsutil rsync -r data/processed/tep gs://reactorguard-data-raw-dev/tep/
+# Sin ellos el streamer termina con "No ... objects in the store" (codigo 1) y el pod
+# entra en CrashLoopBackOff, que es lo correcto: no hay nada que emitir.
+#
+# RITMO. STREAM_MODE=realtime y SPEED_MULTIPLIER=1: 52 lecturas cada 180 s, la cadencia
+# real del TEP. Una vuelta de los 22 runs son ~22 dias; para una demostracion:
+#   kubectl set env deployment/tep-streamer SPEED_MULTIPLIER=60 -n reactorguard-ingestion
+# El modo fast (benchmark del criterio 1) NO se despliega aqui: se mide con
+# tests/integration/benchmark_kafka.py.
+#
+# TERMINACION. Peor caso tras SIGTERM: un tramo de espera (wait_slice_s) mas el flush
+# final mas el cierre del productor = 30 s + 30 s + 5 s = 65 s  ->  90 s. Un test lo
+# recalcula desde params.yaml.
+#
+# RECURSOS. Iniciales, no medidos. Un run entero en memoria (pandas) mas el cliente.
+# =============================================================================
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: tep-streamer
+  namespace: reactorguard-ingestion
+  labels:
+    app.kubernetes.io/name: tep-streamer
+    app.kubernetes.io/part-of: reactorguard
+    app.kubernetes.io/component: ingestion
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: tep-streamer
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: tep-streamer
+        app.kubernetes.io/part-of: reactorguard
+        app.kubernetes.io/component: ingestion
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "9090"
+        prometheus.io/path: /metrics
+    spec:
+      serviceAccountName: sensor-validator
+      automountServiceAccountToken: false
+      terminationGracePeriodSeconds: 90
+      nodeSelector:
+        node-pool: platform
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        fsGroup: 1000
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: tep-streamer
+          # Mutable a proposito hasta Fase 6/7: CI publica :latest y :<sha>. Un overlay
+          # fijara el sha con el bloque `images:` de kustomize.
+          image: gcr.io/sentinel-platform-485714/reactorguard-api:latest
+          imagePullPolicy: Always
+          command: ["python", "-m", "data.generators.tep_streamer_service"]
+          args: ["--params", "/etc/reactorguard/params.yaml"]
+          ports:
+            - name: health
+              containerPort: 8000
+              protocol: TCP
+            - name: metrics
+              containerPort: 9090
+              protocol: TCP
+          env:
+            - name: KAFKA_BOOTSTRAP
+              value: reactorguard-cluster-kafka-bootstrap.kafka-operator.svc:9093
+            - name: KAFKA_SECURITY_PROTOCOL
+              value: SSL
+            - name: KAFKA_SSL_CAFILE
+              value: /etc/kafka/ca/ca.crt
+            - name: KAFKA_SSL_CERTFILE
+              value: /etc/kafka/user/user.crt
+            - name: KAFKA_SSL_KEYFILE
+              value: /etc/kafka/user/user.key
+            - name: STREAM_MODE
+              value: realtime
+            - name: SPEED_MULTIPLIER
+              value: "1"
+            - name: DATA_SOURCE
+              value: gcs
+            - name: LOG_LEVEL
+              value: INFO
+            # Raiz de solo lectura: sin .pyc y con HOME en el emptyDir.
+            - name: PYTHONDONTWRITEBYTECODE
+              value: "1"
+            - name: PYTHONUNBUFFERED
+              value: "1"
+            - name: HOME
+              value: /tmp
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              cpu: 500m
+              memory: 768Mi
+          readinessProbe:
+            httpGet:
+              path: /ready
+              port: health
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 3
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: health
+            initialDelaySeconds: 30
+            periodSeconds: 30
+            timeoutSeconds: 5
+            failureThreshold: 3
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop:
+                - ALL
+          volumeMounts:
+            - name: params
+              mountPath: /etc/reactorguard
+              readOnly: true
+            - name: kafka-user
+              mountPath: /etc/kafka/user
+              readOnly: true
+            - name: kafka-ca
+              mountPath: /etc/kafka/ca
+              readOnly: true
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: params
+          configMap:
+            name: reactorguard-params
+        # Certificado y clave del KafkaUser. 0440 + fsGroup 1000: legible por el grupo
+        # del proceso y por nadie mas.
+        - name: kafka-user
+          secret:
+            secretName: reactorguard-ingestion
+            defaultMode: 0440
+            items:
+              - key: user.crt
+                path: user.crt
+              - key: user.key
+                path: user.key
+        - name: kafka-ca
+          secret:
+            secretName: reactorguard-cluster-cluster-ca-cert
+            defaultMode: 0440
+            items:
+              - key: ca.crt
+                path: ca.crt
+        - name: tmp
+          emptyDir:
+            sizeLimit: 64Mi

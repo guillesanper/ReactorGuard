@@ -1,0 +1,21 @@
+# kustomization.yaml — recursos de Kafka (namespace kafka-operator)
+# ---------------------------------------------------------------------------
+# ATENCION: los recursos de tipo Kafka, KafkaTopic y KafkaUser son CRDs de Strimzi.
+# `kubectl apply -k k8s/base/` solo funciona si el operador Strimzi YA esta
+# instalado (infra/scripts/Install-Kafka.ps1, que ademas aplica estos ficheros en el
+# orden correcto y espera a que el cluster este Ready). En un cluster sin operador
+# el apply falla con "no matches for kind Kafka".
+#
+# kafka-metrics.yaml debe existir ANTES que kafka-cluster.yaml, o los brokers no
+# arrancan. Con -k lo garantiza el orden por tipo de kustomize (ConfigMap antes que los
+# tipos custom); aplicando los ficheros uno a uno hay que respetarlo a mano, y
+# Install-Kafka.ps1 lo hace.
+# ---------------------------------------------------------------------------
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  - kafka-metrics.yaml
+  - kafka-cluster.yaml
+  - kafka-topics.yaml
+  - kafka-users.yaml

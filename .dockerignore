@@ -1,0 +1,24 @@
+# Contexto de build de api/Dockerfile (se construye desde la raiz del repositorio:
+# `docker build -f api/Dockerfile .`).
+#
+# Lista de permitidos: se excluye todo y se readmite solo lo que el Dockerfile copia.
+# Asi el contexto no arrastra .git, el venv, caches, claves JSON descargadas de GCP ni
+# los datos del TEP (data/processed son cientos de MB de parquet que acabarian dentro
+# de la imagen por el `COPY data/`). Si el Dockerfile copia algo nuevo, hay que
+# readmitirlo aqui; el fallo es ruidoso (COPY no encuentra el fichero).
+*
+
+!pyproject.toml
+!README.md
+!params.yaml
+!api/
+!ml/
+!data/
+!configs/
+
+# Dentro de lo permitido, fuera los artefactos generados y los datos.
+**/__pycache__
+**/*.pyc
+data/raw
+data/processed
+data/reports

@@ -1,0 +1,88 @@
+# =============================================================================
+# k8s/base/ingestion/params-configmap.yaml
+# params.yaml de los servicios de streaming (tep-streamer y sensor-validator).
+#
+# Se monta en /etc/reactorguard/params.yaml y los servicios lo leen con
+# `--params /etc/reactorguard/params.yaml`. Contiene SOLO las secciones que esos
+# servicios cargan (tep, streaming, storage, streamer); el resto de params.yaml es de
+# entrenamiento y simulacion y no tiene nada que hacer en el cluster.
+#
+# NO es una segunda fuente de verdad: tests/unit/test_k8s_manifests.py exige que cada
+# seccion sea IDENTICA a la de params.yaml del repositorio, salvo las diferencias de
+# cluster que enumera (hoy solo streamer.loop). Si cambias un valor en params.yaml, el
+# test falla hasta que lo copies aqui.
+#
+# Diferencias deliberadas con params.yaml:
+#   streamer.loop: true. Con loop=false el proceso termina al agotar los 22 runs y el
+#   Deployment lo relanza desde cero, reemitiendo todo con el mismo run-id inicial. En
+#   el cluster el streamer es un servicio continuo: cada vuelta cambia el run-id
+#   (fault_type + bucle) y el consumidor reinicia el estado de los detectores.
+#
+# Lo que NO esta aqui a proposito: endpoints y credenciales de Kafka (KAFKA_*, solo
+# variables de entorno, ver kafka_settings.py) y mode, speed_multiplier y data_source
+# del streamer, que se sobrescriben con STREAM_MODE, SPEED_MULTIPLIER y DATA_SOURCE
+# en el Deployment.
+# =============================================================================
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: reactorguard-params
+  namespace: reactorguard-ingestion
+  labels:
+    app.kubernetes.io/part-of: reactorguard
+    app.kubernetes.io/component: ingestion
+data:
+  params.yaml: |
+    tep:
+      raw_dir: data/raw/tep
+      processed_dir: data/processed/tep
+      reports_dir: data/reports
+      plant_id: "TEP-PLANT-01"
+      start_time: "2000-01-01T00:00:00+00:00"
+      sample_interval_minutes: 3
+      spans_path: configs/sensor_spans.yaml
+      calibration_date: "2023-06-01"
+      last_maintenance_date: "2023-12-01"
+      drift_coefficient: 0.0001
+
+    streaming:
+      raw_topic: sensor-readings-raw
+      validated_topic: sensor-validated
+      alerts_topic: anomaly-alerts
+      consumer_group: sensor-validator
+      poll_timeout_ms: 1000
+      max_poll_records: 500
+      auto_offset_reset: earliest
+      isolation_level: read_uncommitted
+      commit_retries: 3
+      commit_timeout_ms: 30000
+      close_timeout_ms: 5000
+      max_poll_interval_ms: 300000
+      compression_type: lz4
+      batch_linger_ms: 10
+      producer_batch_bytes: 131072
+      max_in_flight_requests: 5
+      request_timeout_ms: 30000
+      delivery_timeout_ms: 120000
+      flush_timeout_s: 30.0
+      bind_host: "0.0.0.0"
+      health_port: 8000
+      metrics_port: 9090
+      staleness_seconds: 540
+
+    storage:
+      bucket_prefix: reactorguard
+      env: dev
+      local_root: data/processed/local_store
+      read_workers: 4
+      request_timeout_s: 30.0
+
+    streamer:
+      mode: fast
+      speed_multiplier: 1.0
+      loop: true
+      data_source: parquet
+      storage_prefix: tep
+      flush_every_timesteps: 100
+      wait_slice_s: 30.0
+      client_id: tep-streamer

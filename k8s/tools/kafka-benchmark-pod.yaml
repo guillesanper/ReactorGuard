@@ -1,0 +1,119 @@
+# =============================================================================
+# k8s/tools/kafka-benchmark-pod.yaml
+# Pod efimero desde el que tests/integration/Invoke-KafkaTests.ps1 mide el cluster
+# (criterio 1 de la Fase 2: throughput; criterio de la Fase 1: latencia p99).
+#
+# Por que este pod y no kafka-client-pod.yaml: el benchmark importa data.* (adaptadores
+# de Kafka, esquema de lectura) y necesita mTLS contra el listener 9093. Usa la imagen
+# del proyecto, que ya trae esas dependencias con la version fijada en el build, y el
+# script le copia con `kubectl cp` SOLO el codigo de tests/integration y el parquet de
+# d00 en /work (un emptyDir). Asi ni se instala nada en caliente ni se lleva codigo de
+# test a la imagen que se despliega.
+#
+# Identidad: KafkaUser `reactorguard-benchmark` (solo bench-throughput). Sus
+# credenciales y el CA del cluster los copia infra/scripts/Sync-KafkaCredentials.ps1.
+# Corre en reactorguard-ingestion para medir por el mismo camino de red que el streamer.
+#
+# El techo medido incluye el limite de CPU de este pod: un productor Python de un proceso
+# usa un nucleo y medio como mucho. Una cifra por debajo del umbral con el pod al limite
+# de CPU habla del pod, no del broker; el script imprime el limite junto a la cifra.
+#
+# activeDeadlineSeconds: si el script muere sin limpiar, Kubernetes mata el pod solo y no
+# queda un pod olvidado ocupando un nodo.
+#
+# No forma parte de k8s/base: no se despliega con `apply -k`.
+# =============================================================================
+apiVersion: v1
+kind: Pod
+metadata:
+  name: kafka-benchmark
+  namespace: reactorguard-ingestion
+  labels:
+    app.kubernetes.io/name: kafka-benchmark
+    app.kubernetes.io/part-of: reactorguard
+    app.kubernetes.io/component: benchmark
+    role: tool
+  annotations:
+    reactorguard/purpose: "kafka-throughput-and-latency-benchmark"
+spec:
+  restartPolicy: Never
+  activeDeadlineSeconds: 3600
+  terminationGracePeriodSeconds: 5
+  automountServiceAccountToken: false
+  nodeSelector:
+    node-pool: platform
+  securityContext:
+    runAsNonRoot: true
+    runAsUser: 1000
+    runAsGroup: 1000
+    fsGroup: 1000
+    seccompProfile:
+      type: RuntimeDefault
+  containers:
+    - name: benchmark
+      image: gcr.io/sentinel-platform-485714/reactorguard-api:latest
+      imagePullPolicy: Always
+      command: ["sleep", "infinity"]
+      workingDir: /work
+      env:
+        - name: KAFKA_BOOTSTRAP
+          value: reactorguard-cluster-kafka-bootstrap.kafka-operator.svc:9093
+        - name: KAFKA_SECURITY_PROTOCOL
+          value: SSL
+        - name: KAFKA_SSL_CAFILE
+          value: /etc/kafka/ca/ca.crt
+        - name: KAFKA_SSL_CERTFILE
+          value: /etc/kafka/user/user.crt
+        - name: KAFKA_SSL_KEYFILE
+          value: /etc/kafka/user/user.key
+        # data.* viene de la imagen (/app); tests.* se copia en /work (directorio de trabajo).
+        - name: PYTHONPATH
+          value: /app
+        - name: PYTHONDONTWRITEBYTECODE
+          value: "1"
+        - name: PYTHONUNBUFFERED
+          value: "1"
+        - name: HOME
+          value: /work
+      resources:
+        requests:
+          cpu: "1"
+          memory: 512Mi
+        limits:
+          cpu: "2"
+          memory: 1Gi
+      securityContext:
+        allowPrivilegeEscalation: false
+        readOnlyRootFilesystem: true
+        capabilities:
+          drop:
+            - ALL
+      volumeMounts:
+        - name: work
+          mountPath: /work
+        - name: kafka-user
+          mountPath: /etc/kafka/user
+          readOnly: true
+        - name: kafka-ca
+          mountPath: /etc/kafka/ca
+          readOnly: true
+  volumes:
+    - name: work
+      emptyDir:
+        sizeLimit: 256Mi
+    - name: kafka-user
+      secret:
+        secretName: reactorguard-benchmark
+        defaultMode: 0440
+        items:
+          - key: user.crt
+            path: user.crt
+          - key: user.key
+            path: user.key
+    - name: kafka-ca
+      secret:
+        secretName: reactorguard-cluster-cluster-ca-cert
+        defaultMode: 0440
+        items:
+          - key: ca.crt
+            path: ca.crt

@@ -45,7 +45,10 @@ spec:
         host: "*"
 
 ---
-# Validator (sensor_validator): consume raw, produce validated.
+# Validator (validation_service): consume raw, produce validated y anomaly-alerts.
+# El consumidor publica tambien las alertas por fallo de sensor (SensorFault ->
+# AlertEvent) en anomaly-alerts con el MISMO usuario: sin Write/Describe ahi, el
+# primer envio de alerta fallaria en el flush y el lote no se confirmaria nunca.
 apiVersion: kafka.strimzi.io/v1beta2
 kind: KafkaUser
 metadata:
@@ -81,6 +84,15 @@ spec:
       - resource:
           type: topic
           name: sensor-validated
+          patternType: literal
+        operations:
+          - Write
+          - Describe
+        host: "*"
+      # Producir las alertas de fallo de sensor (AlertEvent).
+      - resource:
+          type: topic
+          name: anomaly-alerts
           patternType: literal
         operations:
           - Write
@@ -127,5 +139,35 @@ spec:
           patternType: literal
         operations:
           - Write
+          - Describe
+        host: "*"
+
+---
+# Benchmark (Invoke-KafkaTests.ps1): produce y consume SOLO en bench-throughput.
+# Sin permisos sobre ningun topic del flujo de datos: una medicion de throughput no debe
+# poder escribir en sensor-readings-raw. No lleva ACL de grupo porque el test de latencia
+# asigna la particion a mano (assign) y no usa grupo de consumo.
+apiVersion: kafka.strimzi.io/v1beta2
+kind: KafkaUser
+metadata:
+  name: reactorguard-benchmark
+  namespace: kafka-operator
+  labels:
+    strimzi.io/cluster: reactorguard-cluster
+    app.kubernetes.io/part-of: reactorguard
+    app.kubernetes.io/component: benchmark
+spec:
+  authentication:
+    type: tls
+  authorization:
+    type: simple
+    acls:
+      - resource:
+          type: topic
+          name: bench-throughput
+          patternType: literal
+        operations:
+          - Write
+          - Read
           - Describe
         host: "*"

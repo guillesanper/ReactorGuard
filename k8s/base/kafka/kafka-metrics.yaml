@@ -1,0 +1,150 @@
+# =============================================================================
+# k8s/base/kafka/kafka-metrics.yaml
+# ConfigMap con la configuracion del JMX Prometheus Exporter de los brokers.
+#
+# kafka-cluster.yaml (spec.kafka.metricsConfig) lo referencia por nombre y clave:
+#   name: kafka-metrics   key: kafka-metrics-config.yml
+# Sin este ConfigMap Strimzi no puede generar la configuracion de los brokers y
+# estos no arrancan, de modo que DEBE aplicarse ANTES que kafka-cluster.yaml
+# (Install-Kafka.ps1 lo hace en ese orden; kustomize no ordena entre CRs).
+#
+# El exporter escucha en el puerto 9404 de cada broker (puerto nombrado
+# tcp-prometheus, fijado por Strimzi). La NetworkPolicy de observability ->
+# kafka-operator lo abre solo en ese puerto (network-policies.yaml).
+#
+# Las reglas son el conjunto generico del ejemplo de Strimzi: convierten los MBeans
+# kafka.* a nombres de Prometheus (minusculas, _total para contadores). Cubren lo que
+# necesita el dashboard de Fase 8: particiones sub-replicadas, ISR, mensajes y bytes
+# por segundo por topic, latencias de peticion y estado del controlador. No hay
+# metricas de ZooKeeper aqui: el cluster solo declara metricsConfig para los brokers.
+# =============================================================================
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: kafka-metrics
+  namespace: kafka-operator
+  labels:
+    app: strimzi
+    app.kubernetes.io/part-of: reactorguard
+data:
+  kafka-metrics-config.yml: |
+    lowercaseOutputName: true
+    rules:
+      # Casos especiales y reglas muy especificas, primero.
+      - pattern: kafka.server<type=(.+), name=(.+), clientId=(.+), topic=(.+), partition=(.*)><>Value
+        name: kafka_server_$1_$2
+        type: GAUGE
+        labels:
+          clientId: "$3"
+          topic: "$4"
+          partition: "$5"
+      - pattern: kafka.server<type=(.+), name=(.+), clientId=(.+), brokerHost=(.+), brokerPort=(.+)><>Value
+        name: kafka_server_$1_$2
+        type: GAUGE
+        labels:
+          clientId: "$3"
+          broker: "$4:$5"
+      - pattern: kafka.server<type=(.+), cipher=(.+), protocol=(.+), listener=(.+), networkProcessor=(.+)><>connections
+        name: kafka_server_$1_connections_tls_info
+        type: GAUGE
+        labels:
+          cipher: "$2"
+          protocol: "$3"
+          listener: "$4"
+          networkProcessor: "$5"
+      - pattern: kafka.server<type=(.+), clientSoftwareName=(.+), clientSoftwareVersion=(.+), listener=(.+), networkProcessor=(.+)><>connections
+        name: kafka_server_$1_connections_software
+        type: GAUGE
+        labels:
+          clientSoftwareName: "$2"
+          clientSoftwareVersion: "$3"
+          listener: "$4"
+          networkProcessor: "$5"
+      - pattern: "kafka.server<type=(.+), listener=(.+), networkProcessor=(.+)><>(.+-total)"
+        name: kafka_server_$1_$4
+        type: COUNTER
+        labels:
+          listener: "$2"
+          networkProcessor: "$3"
+      - pattern: "kafka.server<type=(.+), listener=(.+), networkProcessor=(.+)><>(.+)"
+        name: kafka_server_$1_$4
+        type: GAUGE
+        labels:
+          listener: "$2"
+          networkProcessor: "$3"
+      # Algunas metricas de porcentaje usan el atributo MeanRate.
+      - pattern: kafka.(\w+)<type=(.+), name=(.+)Percent\w*><>MeanRate
+        name: kafka_$1_$2_$3_percent
+        type: GAUGE
+      # Gauges genericos de porcentaje.
+      - pattern: kafka.(\w+)<type=(.+), name=(.+)Percent\w*><>Value
+        name: kafka_$1_$2_$3_percent
+        type: GAUGE
+      - pattern: kafka.(\w+)<type=(.+), name=(.+)Percent\w*, (.+)=(.+)><>Value
+        name: kafka_$1_$2_$3_percent
+        type: GAUGE
+        labels:
+          "$4": "$5"
+      # Contadores genericos por segundo con 0 a 2 pares clave/valor.
+      - pattern: kafka.(\w+)<type=(.+), name=(.+)PerSec\w*, (.+)=(.+), (.+)=(.+)><>Count
+        name: kafka_$1_$2_$3_total
+        type: COUNTER
+        labels:
+          "$4": "$5"
+          "$6": "$7"
+      - pattern: kafka.(\w+)<type=(.+), name=(.+)PerSec\w*, (.+)=(.+)><>Count
+        name: kafka_$1_$2_$3_total
+        type: COUNTER
+        labels:
+          "$4": "$5"
+      - pattern: kafka.(\w+)<type=(.+), name=(.+)PerSec\w*><>Count
+        name: kafka_$1_$2_$3_total
+        type: COUNTER
+      # Gauges genericos con 0 a 2 pares clave/valor.
+      - pattern: kafka.(\w+)<type=(.+), name=(.+), (.+)=(.+), (.+)=(.+)><>Value
+        name: kafka_$1_$2_$3
+        type: GAUGE
+        labels:
+          "$4": "$5"
+          "$6": "$7"
+      - pattern: kafka.(\w+)<type=(.+), name=(.+), (.+)=(.+)><>Value
+        name: kafka_$1_$2_$3
+        type: GAUGE
+        labels:
+          "$4": "$5"
+      - pattern: kafka.(\w+)<type=(.+), name=(.+)><>Value
+        name: kafka_$1_$2_$3
+        type: GAUGE
+      # Histogramas de Kafka expuestos como summaries de Prometheus.
+      - pattern: kafka.(\w+)<type=(.+), name=(.+), (.+)=(.+), (.+)=(.+)><>Count
+        name: kafka_$1_$2_$3_count
+        type: COUNTER
+        labels:
+          "$4": "$5"
+          "$6": "$7"
+      - pattern: kafka.(\w+)<type=(.+), name=(.+), (.+)=(.*), (.+)=(.+)><>(\d+)thPercentile
+        name: kafka_$1_$2_$3
+        type: GAUGE
+        labels:
+          "$4": "$5"
+          "$6": "$7"
+          quantile: "0.$8"
+      - pattern: kafka.(\w+)<type=(.+), name=(.+), (.+)=(.+)><>Count
+        name: kafka_$1_$2_$3_count
+        type: COUNTER
+        labels:
+          "$4": "$5"
+      - pattern: kafka.(\w+)<type=(.+), name=(.+), (.+)=(.*)><>(\d+)thPercentile
+        name: kafka_$1_$2_$3
+        type: GAUGE
+        labels:
+          "$4": "$5"
+          quantile: "0.$6"
+      - pattern: kafka.(\w+)<type=(.+), name=(.+)><>Count
+        name: kafka_$1_$2_$3_count
+        type: COUNTER
+      - pattern: kafka.(\w+)<type=(.+), name=(.+)><>(\d+)thPercentile
+        name: kafka_$1_$2_$3
+        type: GAUGE
+        labels:
+          quantile: "0.$4"

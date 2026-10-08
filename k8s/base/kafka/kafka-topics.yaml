@@ -86,3 +86,30 @@ spec:
     cleanup.policy: delete
     max.message.bytes: "1048576"
     min.insync.replicas: "2"
+
+---
+# Topic 4: bench-throughput
+# NO es parte del flujo de datos: es el destino de los benchmarks del cluster
+# (tests/integration/Invoke-KafkaTests.ps1). Medir el throughput en sensor-readings-raw
+# inyectaria cientos de miles de lecturas sinteticas en el topic que consume el
+# validador y las convertiria en lecturas validadas y alertas falsas.
+# Mismas particiones, replicas y min.insync.replicas que raw: la cifra solo es
+# representativa si el topic replica igual que el real. Retencion de 1 hora (3600000 ms)
+# porque los datos del benchmark no valen nada pasada la medicion.
+apiVersion: kafka.strimzi.io/v1beta2
+kind: KafkaTopic
+metadata:
+  name: bench-throughput
+  namespace: kafka-operator
+  labels:
+    strimzi.io/cluster: reactorguard-cluster
+    app.kubernetes.io/part-of: reactorguard
+    app.kubernetes.io/component: benchmark
+spec:
+  partitions: 12
+  replicas: 3
+  config:
+    retention.ms: "3600000"
+    cleanup.policy: delete
+    max.message.bytes: "1048576"
+    min.insync.replicas: "2"

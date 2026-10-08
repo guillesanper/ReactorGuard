@@ -37,7 +37,6 @@ import logging
 import multiprocessing
 import os
 import platform
-import statistics
 import sys
 import time
 from collections.abc import Iterator, Mapping, Sequence
@@ -55,7 +54,12 @@ from data.validation.sensor_validator import SensorValidator
 from ml.features.batch_featurizer import measure_sample_interval
 from ml.features.feature_params import DEFAULT_PARAMS_PATH, FeatureParams, load_feature_params
 from ml.features.pipeline import FeaturePipeline
-from tests.integration.benchmark_report import ENVIRONMENTS, build_report, write_report
+from tests.integration.benchmark_report import (
+    ENVIRONMENTS,
+    build_report,
+    summarize,
+    write_report,
+)
 
 _LOG = logging.getLogger("benchmark_feature_latency")
 
@@ -73,53 +77,6 @@ _LOAD_JOIN_S = 10.0
 
 Window = tuple[pd.DataFrame, pd.Series]
 """(valores anchos, timestamps) de una ventana contigua."""
-
-
-def percentile(sorted_values: Sequence[float], pct: float) -> float:
-    """Return a percentile of an ascending series, linearly interpolated.
-
-    Args:
-        sorted_values: Values in ascending order.
-        pct: Percentile between 0 and 100.
-
-    Returns:
-        The interpolated percentile.
-
-    Raises:
-        ValueError: If the series is empty or pct is outside [0, 100].
-    """
-    if not sorted_values:
-        raise ValueError("Cannot take a percentile of an empty series.")
-    if not 0.0 <= pct <= 100.0:
-        raise ValueError(f"pct must be within [0, 100], got {pct}.")
-    index = pct / 100.0 * (len(sorted_values) - 1)
-    lower = int(index)
-    upper = min(lower + 1, len(sorted_values) - 1)
-    fraction = index - lower
-    return float(sorted_values[lower] * (1.0 - fraction) + sorted_values[upper] * fraction)
-
-
-def summarize(latencies_ms: Sequence[float]) -> dict[str, float]:
-    """Summarize call latencies.
-
-    Args:
-        latencies_ms: One latency per call, in milliseconds.
-
-    Returns:
-        count, mean, p50, p95, p99 and max, all in milliseconds (count excepted).
-
-    Raises:
-        ValueError: If there are no latencies.
-    """
-    ordered = sorted(latencies_ms)
-    return {
-        "count": float(len(ordered)),
-        "mean_ms": statistics.fmean(ordered),
-        "p50_ms": percentile(ordered, 50.0),
-        "p95_ms": percentile(ordered, 95.0),
-        "p99_ms": percentile(ordered, 99.0),
-        "max_ms": float(ordered[-1]),
-    }
 
 
 def sliding_windows(frame: pd.DataFrame, window_samples: int) -> Iterator[Window]:
