@@ -1,0 +1,32 @@
+# Dashboard de Grafana del pipeline de datos (Fase 2, T4.6) como ConfigMap.
+#
+# Se despliega con:  kubectl apply -k observability/grafana/dashboards/
+#
+# El sidecar de Grafana (k8s-sidecar, el que trae el chart oficial y kube-prometheus-stack)
+# vigila los ConfigMap con la etiqueta grafana_dashboard y los carga como dashboards. La
+# etiqueta y su valor son configurables en el chart (sidecar.dashboards.label y
+# labelValue); el defecto del chart es `grafana_dashboard`, y kube-prometheus-stack
+# espera el valor "1". Si el Grafana desplegado usa otra, se cambia aqui.
+#
+# DEUDA DE DESPLIEGUE (T2.6 de Fase 1 nunca se hizo): hoy NO hay Grafana ni Prometheus
+# en el cluster, asi que este ConfigMap no tiene quien lo cargue y /metrics de los
+# servicios de ingestion no lo raspa nadie. El dashboard se ha validado solo en el
+# perfil `observability` de infra/local/docker-compose.yaml (ver provisioning/).
+# Requiere ademas un datasource de Prometheus por defecto y el scrape de los pods
+# tep-streamer y sensor-validator en el puerto 9090.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: reactorguard-observability
+
+generatorOptions:
+  # Sin sufijo hash: el sidecar identifica el dashboard por el nombre del ConfigMap y un
+  # nombre que cambia en cada edicion dejaria copias huerfanas.
+  disableNameSuffixHash: true
+  labels:
+    grafana_dashboard: "1"
+
+configMapGenerator:
+  - name: dashboard-data-pipeline
+    files:
+      - data-pipeline.json

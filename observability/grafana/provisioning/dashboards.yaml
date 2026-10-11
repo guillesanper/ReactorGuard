@@ -1,0 +1,24 @@
+# Provisionado de dashboards por fichero (Grafana sin sidecar).
+#
+# Lo usa el Grafana del perfil `observability` de infra/local/docker-compose.yaml, que
+# monta este fichero en /etc/grafana/provisioning/dashboards/ y el directorio
+# observability/grafana/dashboards/ en `options.path`. En un cluster con el sidecar de
+# Grafana no hace falta: ahi el dashboard llega como ConfigMap (ver
+# dashboards/kustomization.yaml).
+#
+# `options.path` debe coincidir con el punto de montaje del compose; lo comprueba
+# tests/unit/test_grafana_dashboard.py.
+apiVersion: 1
+
+providers:
+  - name: reactorguard
+    orgId: 1
+    folder: ReactorGuard
+    type: file
+    # El JSON del repo es la fuente: lo que se edite en la UI no se persiste ni se
+    # puede borrar desde ella.
+    disableDeletion: true
+    allowUiUpdates: false
+    updateIntervalSeconds: 30
+    options:
+      path: /var/lib/grafana/dashboards/reactorguard

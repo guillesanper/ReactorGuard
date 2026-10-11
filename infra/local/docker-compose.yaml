@@ -115,5 +115,8 @@ services:
       GF_USERS_ALLOW_SIGN_UP: "false"
     volumes:
       - ./grafana/datasources.yaml:/etc/grafana/provisioning/datasources/datasources.yaml:ro
+      # Dashboard del pipeline de datos (T4.6): el proveedor y el directorio con el JSON.
+      - ../../observability/grafana/provisioning/dashboards.yaml:/etc/grafana/provisioning/dashboards/dashboards.yaml:ro
+      - ../../observability/grafana/dashboards:/var/lib/grafana/dashboards/reactorguard:ro
     depends_on:
       - prometheus
