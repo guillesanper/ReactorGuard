@@ -1,0 +1,79 @@
+# ==========================================================================
+# ReactorGuard - Catalogo de sensores de la simulacion (PWR de referencia)
+#
+# Leido por data/simulation/sensor_catalog.py (load_sensor_catalog).
+#
+# El TDD (4.2) fija los enums y da tres tags de ejemplo, pero NO define un
+# catalogo: este es propio (D2) y no se mapea a los 52 canales del TEP.
+#
+# Cada sensor lee una magnitud verdadera del modelo (`source`, uno de
+# OBSERVABLE_NAMES de data/simulation/thermal_model.py) como
+#
+#     valor_verdadero = gain * observable + offset
+#
+# `offset` incluye el desvio espacial fijo de los termopares de nucleo y la
+# calibracion relativa de los canales redundantes. `noise_sigma` es el sigma
+# INICIAL del ruido blanco en unidades de ingenieria; F3-M3 lo calibra para que
+# la operacion normal no viole ninguna regla.
+#
+# Los spans de medida (sim_sensor_spans.yaml) se derivan en F3-M3 de la
+# operacion normal simulada: este fichero NO los contiene.
+# ==========================================================================
+
+sensors:
+  # --- Termopares de nucleo: T_c + desvio espacial fijo (0,3 a 1,5 K) ---
+  TC-CORE-01: {type: thermocouple, location: core, unit: celsius, elevation_m: 1.5, source: t_c, gain: 1.0, offset: -0.9, noise_sigma: 0.3}
+  TC-CORE-02: {type: thermocouple, location: core, unit: celsius, elevation_m: 2.5, source: t_c, gain: 1.0, offset: -0.3, noise_sigma: 0.3}
+  TC-CORE-03: {type: thermocouple, location: core, unit: celsius, elevation_m: 3.5, source: t_c, gain: 1.0, offset: 0.6, noise_sigma: 0.3}
+  TC-CORE-04: {type: thermocouple, location: core, unit: celsius, elevation_m: 4.5, source: t_c, gain: 1.0, offset: 1.5, noise_sigma: 0.3}
+
+  # --- Piernas caliente y fria, y secundario ---
+  TC-HL-1: {type: thermocouple, location: primary_loop, unit: celsius, elevation_m: 5.0, source: t_c, gain: 1.0, offset: 0.0, noise_sigma: 0.3}
+  TC-HL-2: {type: thermocouple, location: primary_loop, unit: celsius, elevation_m: 5.0, source: t_c, gain: 1.0, offset: 0.0, noise_sigma: 0.3}
+  TC-CL-1: {type: thermocouple, location: primary_loop, unit: celsius, elevation_m: 4.5, source: t_s, gain: 1.0, offset: 0.0, noise_sigma: 0.3}
+  TC-CL-2: {type: thermocouple, location: primary_loop, unit: celsius, elevation_m: 4.5, source: t_s, gain: 1.0, offset: 0.0, noise_sigma: 0.3}
+  TC-SG-1: {type: thermocouple, location: secondary_loop, unit: celsius, elevation_m: 14.0, source: t_sec, gain: 1.0, offset: 0.0, noise_sigma: 0.3}
+
+  # --- Presiones ---
+  PT-PRZ-01: {type: pressure, location: primary_loop, unit: bar, elevation_m: 12.0, source: p_primary_bar, gain: 1.0, offset: 0.0, noise_sigma: 0.3}
+  PT-PRZ-02: {type: pressure, location: primary_loop, unit: bar, elevation_m: 13.0, source: p_primary_bar, gain: 1.0, offset: -0.2, noise_sigma: 0.3}
+  PT-SG-1: {type: pressure, location: secondary_loop, unit: bar, elevation_m: 15.0, source: p_secondary_bar, gain: 1.0, offset: 0.0, noise_sigma: 0.2}
+  # Contencion: 1,0 bar (atmosferica) + acople pequeno a la fuga (0,01 bar por bar de fuga).
+  PT-CNT-01: {type: pressure, location: containment, unit: bar, elevation_m: 20.0, source: leak_bar, gain: 0.01, offset: 1.0, noise_sigma: 0.01}
+
+  # --- Caudales: por lazo = total / 4. La pierna caliente incluye el insurge. sigma = 1 % de 4500 kg/s ---
+  FT-HL-1: {type: flow, location: primary_loop, unit: kg_s, elevation_m: 5.0, source: flow_hot_leg_kg_s, gain: 0.25, offset: 0.0, noise_sigma: 45.0}
+  FT-CL-1: {type: flow, location: primary_loop, unit: kg_s, elevation_m: 4.5, source: flow_cold_leg_kg_s, gain: 0.25, offset: 0.0, noise_sigma: 45.0}
+  FT-HL-2: {type: flow, location: primary_loop, unit: kg_s, elevation_m: 5.0, source: flow_hot_leg_kg_s, gain: 0.25, offset: 0.0, noise_sigma: 45.0}
+  FT-CL-2: {type: flow, location: primary_loop, unit: kg_s, elevation_m: 4.5, source: flow_cold_leg_kg_s, gain: 0.25, offset: 0.0, noise_sigma: 45.0}
+  # Agua de alimentacion: Q_sec / (h_vapor - h_alimentacion) ~ 1 / 1,836 MJ/kg = 0,5447 kg/s por MW; sigma = 1 % de ~1634 kg/s.
+  FT-FW-1: {type: flow, location: secondary_loop, unit: kg_s, elevation_m: 10.0, source: q_sec_mw, gain: 0.5447, offset: 0.0, noise_sigma: 16.3}
+
+  # --- Flujo neutronico (100 n); calibracion relativa +-0,5 % entre canales ---
+  NI-FLUX-01: {type: flux_detector, location: core, unit: percent, elevation_m: 2.0, source: power_fraction, gain: 100.0, offset: 0.0, noise_sigma: 0.3}
+  NI-FLUX-02: {type: flux_detector, location: core, unit: percent, elevation_m: 2.5, source: power_fraction, gain: 99.5, offset: 0.0, noise_sigma: 0.3}
+  NI-FLUX-03: {type: flux_detector, location: core, unit: percent, elevation_m: 3.0, source: power_fraction, gain: 100.5, offset: 0.0, noise_sigma: 0.3}
+
+  # --- Posicion del banco de control [% extraido] ---
+  ROD-POS-01: {type: position, location: core, unit: percent, elevation_m: 8.0, source: rod_position_percent, gain: 1.0, offset: 0.0, noise_sigma: 0.2}
+  ROD-POS-02: {type: position, location: core, unit: percent, elevation_m: 8.0, source: rod_position_percent, gain: 1.0, offset: 0.5, noise_sigma: 0.2}
+
+  # --- Niveles y potencia calorimetrica [%] ---
+  # Presurizador: programa de nivel, 50 % a T_avg nominal, ~1,8 % por K.
+  LT-PRZ-01: {type: normalized, location: primary_loop, unit: percent, elevation_m: 12.5, source: t_avg_dev_k, gain: 1.8, offset: 50.0, noise_sigma: 0.3}
+  # Generador de vapor (rango estrecho): 50 % a plena carga, contraccion/hinchamiento con la carga.
+  LT-SG-1: {type: normalized, location: secondary_loop, unit: percent, elevation_m: 13.0, source: q_sec_fraction, gain: 4.0, offset: 46.0, noise_sigma: 0.3}
+  LT-SG-2: {type: normalized, location: secondary_loop, unit: percent, elevation_m: 13.5, source: q_sec_fraction, gain: 4.0, offset: 46.5, noise_sigma: 0.3}
+  # Potencia calorimetrica: calor cedido al secundario con retardo (estado q del modelo).
+  PWR-TH-01: {type: normalized, location: secondary_loop, unit: percent, elevation_m: 6.0, source: q_cal_fraction, gain: 100.0, offset: 0.0, noise_sigma: 0.3}
+
+# Roles que las constraints (F3-M2) leen en vez de cablear tags.
+roles:
+  T_out: [TC-HL-1, TC-HL-2]
+  T_in: [TC-CL-1, TC-CL-2]
+  flow: [FT-HL-1, FT-CL-1, FT-HL-2, FT-CL-2]
+  flow_hot_leg: [FT-HL-1, FT-HL-2]
+  flow_cold_leg: [FT-CL-1, FT-CL-2]
+  P: [PT-PRZ-01, PT-PRZ-02]
+  flux: [NI-FLUX-01, NI-FLUX-02, NI-FLUX-03]
+  P_th: [PWR-TH-01]

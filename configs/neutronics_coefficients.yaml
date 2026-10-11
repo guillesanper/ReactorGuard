@@ -1,0 +1,29 @@
+# ==========================================================================
+# ReactorGuard - Coeficientes neutronicos de la cinetica puntual
+#
+# Leido por data/simulation/plant_params.py (load_neutronics).
+#
+#   provenance: LITERATURE_PLACEHOLDER
+#
+# Valores tipicos de literatura para un PWR de UO2 (U-235 termico), NO
+# calibrados con un modelo de transporte. F3-M8 (opcional) los sustituye por
+# valores ajustados con OpenMC en Docker y cambia la proveniencia a OPENMC con
+# version, digest de imagen, semilla, particulas y batches.
+# ==========================================================================
+
+provenance: LITERATURE_PLACEHOLDER
+
+neutronics:
+  # Fracciones de neutrones retardados (6 grupos, U-235 termico, Keepin). Suma 0,0065.
+  beta: [0.000215, 0.001424, 0.001274, 0.002568, 0.000748, 0.000273]
+  # Constantes de decaimiento de los precursores [1/s].
+  decay_constants_per_s: [0.0124, 0.0305, 0.111, 0.301, 1.14, 3.01]
+  # Tiempo de generacion de neutrones prontos [s], orden de 1e-5 s en un PWR.
+  generation_time_s: 2.0e-5
+
+  # Coeficientes de reactividad (dk/k).
+  alpha_fuel_per_k: -2.5e-5            # Doppler: -2,5 pcm/K (tipico -2 a -4 pcm/K)
+  alpha_moderator_per_k: -2.0e-4       # temperatura del moderador: -20 pcm/K
+  alpha_void_per_fraction: -0.15       # vacio: -150 pcm por 1 % de vacio
+  rod_worth_per_percent: 7.0e-4        # ~7000 pcm de worth total sobre el recorrido
+  rod_position_nominal_percent: 50.0   # posicion del banco en el punto nominal [%]

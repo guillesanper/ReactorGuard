@@ -1,0 +1,55 @@
+# ==========================================================================
+# ReactorGuard - Parametros de planta del modelo termico (PWR de referencia)
+#
+# Leido por data/simulation/plant_params.py (load_plant_params). Es un PWR
+# generico de 4 lazos y ~3000 MWt: NO modela una planta concreta ni se ha
+# contrastado con datos reales (ver F3-M3, limitaciones). Cada valor lleva su
+# origen. "Preflight" = sonda medida en F3-M0 (Docs/ReactorGuard_Fase3_Plan.md).
+#
+# El equilibrio nominal NO se teclea: hA (combustible -> refrigerante) y UA
+# (primario -> secundario) se DERIVAN en ReactorModel para que el punto nominal
+# sea un equilibrio exacto de las ecuaciones.
+# ==========================================================================
+
+plant:
+  # --- Punto nominal ---
+  thermal_power_mw: 3000.0        # PWR de 4 lazos tipo Westinghouse (TDD 5.2 usa ~3,0e9 W)
+  nominal_flow_kg_s: 18000.0      # 4 lazos x 4500 kg/s (preflight)
+  nominal_pressure_bar: 155.0     # 15,5 MPa, presion del primario (preflight)
+  t_in_nominal_c: 291.0           # pierna fria nominal (plan F3-M1)
+  t_fuel_nominal_c: 620.0         # combustible promediado en volumen, orden de magnitud PWR
+  t_secondary_nominal_c: 280.0    # saturacion del GV, ~64 bar (6,4 MPa)
+
+  # --- Capacidades termicas [MJ/K] (nodo = masa x cp) ---
+  capacity_fuel_mj_k: 30.0        # ~100 t de UO2 x ~0,3 kJ/(kg K)
+  capacity_core_mj_k: 120.0       # ~20 t de agua en el nucleo (~5,7 kJ/(kg K)) + vainas
+  capacity_sg_mj_k: 800.0         # resto del agua del primario y estructuras acopladas
+
+  # --- Constantes de tiempo [s] ---
+  tau_pump_s: 10.0                # inercia de la bomba (volante), orden de decenas de s
+  tau_pressurizer_s: 60.0         # control de presion del presurizador
+  tau_void_s: 5.0                 # relajacion del vacio hacia su valor cuasi-estatico
+  tau_calorimetric_s: 30.0        # retardo del canal de potencia calorimetrica
+
+  # --- Presion, vacio y secundario ---
+  pressurizer_gain_bar_per_k: 1.0   # dP/dT_avg del presurizador, orden de 1 bar/K
+  void_onset_offset_k: 2.0          # ebullicion subenfriada: el vacio empieza a T_sat - offset
+  void_ramp_width_k: 20.0           # K de exceso sobre el umbral por unidad de vacio (sin tope)
+  void_max_fraction: 0.5            # tope del vacio en el modelo (fraccion de volumen)
+  t_ref_slope_k_per_load: 5.0       # programa de T_avg: T_ref = T_avg0 + slope * (carga - 1); T_sec lo sigue
+  surge_kg_s_per_k_s: 900.0         # caudal de insurge por dT_avg/dt: V_presurizador (~300 m3) x |d(rho)/dT| (~3 kg/m3/K)
+
+# --- Controlador PI de barras (T_avg -> reactividad) ---
+control:
+  rod_kp_per_k: 2.0e-4              # [dk/k por K de error]
+  rod_ki_per_k_s: 2.0e-6            # [dk/k por K s de error integrado]
+  tau_rod_s: 10.0                   # retardo mecanico de las barras
+
+# --- Limites de constraints (los usa physics_constraints.py en F3-M2) ---
+limits:
+  max_dt_c_per_s: 10.0              # TDD 5.4 y Appendix B (D9)
+  energy_imbalance_fraction: 0.05   # TDD 5.4: |Q_gen - Q_rem| / Q_gen > 5 %
+  pump_max_fraction: 1.10           # tope de bomba como fraccion del caudal nominal
+
+# --- Niveles de magnitud de los fallos de proceso (se rellenan en F3-M4) ---
+fault_tiers: {}

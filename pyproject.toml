@@ -50,6 +50,7 @@ dependencies = [
     "pandas>=2.2.0",
     "scikit-learn>=1.4.0",
     "pyarrow>=15.0.0",         # engine parquet para pandas (data/generators/tep_*.py)
+    "scipy>=1.11",             # LSODA del modelo termico (data/simulation/thermal_model.py)
 
     # HTTP / CLI
     "requests>=2.31.0",        # descarga del dataset TEP
@@ -79,8 +80,13 @@ dev = [
     "types-requests>=2.31.0",
     "types-pyyaml>=6.0",
 
-    # Physics simulation (optional, heavy dep)
-    # "openmc>=0.14.0",         # uncomment if running neutron transport locally
+    # Propiedades del agua: solo para GENERAR configs/water_table.yaml
+    # (data/simulation/build_water_table.py). El runtime lee la tabla versionada.
+    "iapws>=1.5.5",
+
+    # Physics simulation
+    # openmc: no esta en PyPI; corre en Docker (imagen openmc/openmc). Solo calibra
+    # los coeficientes neutronicos y es opcional (F3-M8); no es dependencia del paquete.
 ]
 
 [tool.hatch.build.targets.wheel]

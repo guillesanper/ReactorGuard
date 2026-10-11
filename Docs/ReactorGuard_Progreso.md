@@ -1,6 +1,6 @@
 # ReactorGuard — Registro de Progreso
 **Nuclear Reactor Anomaly Detection Platform**
-*Actualizado: 2026-10-11 — estado verificado contra el codigo en el commit `d7bbf7c` (M8) y el hito M9, sin commitear*
+*Actualizado: 2026-10-11 — Fase 2 verificada contra el commit `d35f802`; Fase 3: F3-M1 hecho, sin commitear*
 
 Este documento distingue tres cosas que antes se confundian: **codigo escrito**, **verificado en local**
 y **criterio medido en el entorno real**. Una tarea puede estar completada como codigo y aun asi no
@@ -14,7 +14,7 @@ tener su criterio de exito medido.
 |------|--------|---------|--------|
 | 1 | Foundation – GKE + Kafka | 1–2 | Codigo completo, **sin desplegar**; criterios sin medir |
 | 2 | Data Pipeline + Sensor Validator | 3–4 | **Codigo completo y verificado en local**; criterios 2 y 4 CUMPLIDOS, 1 y 3 NO MEDIDOS hasta medir en el cluster |
-| 3 | Simulation Layer (OpenMC + PyDy) | 5 | No iniciada |
+| 3 | Simulation Layer (OpenMC + PyDy) | 5 | **En curso**: F3-M1 hecho (modelo termico, tabla de agua, catalogo de sensores); F3-M2 a F3-M7 pendientes. Plan en `ReactorGuard_Fase3_Plan.md` |
 | 4 | ML Core – PINN Training | 6–7 | No iniciada (solo andamiaje) |
 | 5 | Uncertainty – BNN + Conformal Prediction | 8 | No iniciada |
 | 6 | API + K8s Serving | 9–10 | No iniciada (solo andamiaje, 2 de 4 endpoints devuelven 501) |
@@ -43,6 +43,21 @@ Evolucion de la suite: 585 passed al abrir la Fase 2 (M0) -> 1803 al cerrar M8 -
 
 Los 3 tests omitidos son la suite de `tests/safety/test_safety_constraints.py`, marcada `skip`
 a proposito hasta la Fase 3 (depende de `reactor_simulator.py`, roto contra el schema canonico).
+
+### Linea base al cierre de F3-M1 (2026-10-11, sin commitear)
+
+```
+pytest tests/unit tests/safety --cov --cov-fail-under=70
+  2053 passed, 4 skipped       cobertura TOTAL 99,47%   (4507 sentencias, 24 sin cubrir)   525 s
+ruff check .                   All checks passed
+mypy ml/ api/ data/            no issues found in 72 source files
+dvc status                     Data and pipelines are up to date
+```
+
+El omitido nuevo es `test_nodes_match_iapws` (`importorskip("iapws")`): `iapws` es dependencia de
+desarrollo y no esta en el venv. Cobertura por modulo nuevo de `data/simulation`: `thermal_model` 100 %,
+`water_properties` 100 %, `plant_params` 100 %, `sensor_catalog` 100 %, `build_water_table` 98 % (solo el
+guard `__main__`).
 
 ---
 
@@ -203,16 +218,25 @@ positivos en otros sensores.
 ---
 
 ## Fase 3 — Simulation Layer: OpenMC + PyDy
-**Semana 5** · No iniciada
+**Semana 5** · En curso. Plan aprobado por hitos en [ReactorGuard_Fase3_Plan.md](ReactorGuard_Fase3_Plan.md)
+(decisiones D1-D13 y registro de progreso en su seccion 15). F3-M0 (preflight) y F3-M1 hechos.
 
 `data/generators/reactor_simulator.py` existe pero esta **roto contra el schema canonico** y excluido de
-mypy y de la cobertura. Hay que reescribirlo, no repararlo.
+mypy y de la cobertura. Hay que reescribirlo, no repararlo (F3-M3).
+
+**F3-M1 (modelo fisico, tabla de agua y catalogo)** aporta `data/simulation/` (`thermal_model`,
+`water_properties`, `build_water_table`, `plant_params`, `sensor_catalog`) y cuatro YAML en `configs/`.
+Medido: equilibrio nominal exacto (n = 1 tras 24 h, max |dy/dt| relativo 5,9e-17), cierre de energia 2,0e-15
+sobre 2000 pasos de rampa, 4,2 a 6,7 ms por paso de 180 s, LSODA frente a Radau 6,5e-8, tabla frente a
+IAPWS 0,16 % (liquido, rejilla completa) y 0,43 % (region de operacion), misma traza byte a byte entre procesos.
+El motor es scipy/sympy: PyDy se descarto (D4). Los coeficientes neutronicos son
+`LITERATURE_PLACEHOLDER` hasta F3-M8.
 
 | ID | Tarea | Estado |
 |----|-------|--------|
-| T5.1 | OpenMC configurado: modelo PWR simplificado | Pendiente |
-| T5.2 | Modelo termodinamico PyDy: ODEs coolant/core | Pendiente |
-| T5.3 | `reactor_simulator.py`: neutronica + termica integradas | Pendiente (el fichero actual es un esqueleto roto) |
+| T5.1 | OpenMC configurado: modelo PWR simplificado | Pendiente (F3-M8, opcional, corre en Docker; no esta en PyPI ni en conda-forge win-64) |
+| T5.2 | Modelo termodinamico: ODEs coolant/core | **Completado en F3-M1** (scipy LSODA, no PyDy); `data/simulation/thermal_model.py` |
+| T5.3 | `reactor_simulator.py`: neutronica + termica integradas | Pendiente, F3-M3 (el fichero actual es un esqueleto roto) |
 | T5.4 | `fault_injector.py`: drift, stuck, noise spike, bias + 4 tipos adicionales | **Parcial**: `data/validation/fault_injector.py` ya cubre los 4 tipos base sobre TEP (T3.6); faltan los 4 fisicos |
 | T5.5 | DVC stage `simulate` con labels | Pendiente |
 | T5.6 | Validacion de constraints fisicos (Appendix B TDD) | Pendiente (su suite en `tests/safety` esta en `skip`) |
