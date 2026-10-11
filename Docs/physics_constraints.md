@@ -1,4 +1,4 @@
-# Constraints fisicos de ReactorGuard (F3-M2)
+# Constraints fisicos de ReactorGuard (F3-M2, calibrado en F3-M3)
 
 Implementacion: `data/simulation/physics_constraints.py`. Tests:
 `tests/unit/test_physics_constraints.py`. Modelo contra el que se verifican:
@@ -6,7 +6,9 @@ Implementacion: `data/simulation/physics_constraints.py`. Tests:
 `configs/plant_parameters.yaml`. Roles: bloque `roles:` de `configs/sim_sensors.yaml`.
 
 Todas las cifras de este documento son medidas con el codigo del repositorio en
-F3-M2 (2026-10-11) salvo las marcadas como **hipotesis**. El punto de operacion
+F3-M2 y F3-M3 (2026-10-11) salvo las marcadas como **hipotesis**. Las secciones 1 a 10
+son de F3-M2 (con notas de F3-M3 donde una decision se cerro); las mediciones de
+F3-M3 estan en la seccion 11. El punto de operacion
 es el PWR generico de 3000 MWt de `plant_parameters.yaml`: no es una planta real
 ni se ha contrastado con datos reales.
 
@@ -185,9 +187,11 @@ F3-M4, no de las constraints.)
 
 ## 6. Limites y valores
 
-Provisionales hasta F3-M3. Los de F3-M2 se fijaron con una regla explicita:
-**pico del estado verdadero en una rampa normal de 5 %/min + 5 sigma del
-estadistico con el ruido inicial del catalogo**, redondeado hacia arriba.
+Fijados en F3-M2 con una regla explicita (**pico del estado verdadero en una
+rampa normal de 5 %/min + 5 sigma del estadistico con el ruido del catalogo**,
+redondeado hacia arriba) y **recalibrados en F3-M3** con el ruido y el programa
+de carga definitivos (seccion 11.4): ninguno cambio de valor. La rampa de
+5 %/min es `simulation.max_ramp_percent_per_min`.
 
 | Clave (`limits:`) | Valor | Origen |
 |---|---|---|
@@ -245,9 +249,9 @@ muestras sigma 0,00118 K/s (maximo 0,0043).
 Las otras seis reglas: 0 violaciones en todos los niveles. Con sigma de termopar
 0,3 K el residuo de energia tiene sigma ~1,2 % a plena carga y crece
 al bajar la carga (sigma x1,3 a 70 %, x1,8 a 50 %, x4,3 a 20 %): el umbral del TDD (5 %) es 4,2 sigma a 100 %, 3,2 a 70 % y 2,4 a 50 %.
-Decision para F3-M3 (no se toma aqui): bajar el sigma de los termopares,
-restringir el rango de carga de operacion normal, o no evaluar la regla por
-debajo de un suelo de potencia.
+Decision que se dejo para F3-M3 y que se cerro alli: **sigma de los 4 termopares
+de lazo = 0,15 K** y rango de carga 70-100 % (seccion 11.1). Las cifras de esta
+seccion 7.3 son las del sigma inicial de 0,30 K.
 
 ## 8. Inconsistencias del TDD
 
@@ -272,7 +276,8 @@ Se sustituyen por la tasa medida en F3-M4 a F3-M6.
 | Escenario | 1 energia | 2 orden | 3 dT/dt | 4 caudal | 5 pot./flujo | 6 ebullicion | 7 masa |
 |---|---|---|---|---|---|---|---|
 | Normal, estado verdadero | 0* | 0* | 0* | 0* | 0* | 0* | 0* |
-| Normal con ruido inicial | 0* (2/4000 en rampas) | 0* | 0* | 0* | 0* | 0* | 0* |
+| Normal con ruido inicial (F3-M2) | 0* (2/4000 en rampas) | 0* | 0* | 0* | 0* | 0* | 0* |
+| Normal con ruido calibrado (F3-M3, 34 runs, 51.000 instantes) | 0* (peor residuo 3,92 %) | 0* | 0* | 0* | 0* | 0* | 0* (peor 4,41 %) |
 | Proceso: excursion de temperatura del nucleo [M4] | ? | H0 | H0 | H0 | ? | H+ (si `T_out` > `T_sat`) | H0 |
 | Proceso: reduccion de caudal [M4] | ? | H0 | H0 | H0 | ? | ? | H0 (las dos piernas bajan juntas) |
 | Proceso: formacion de vacio [M4] | ? | H0 | H0 | H0 | ? | H+ (con 2 K de retraso respecto al inicio del vacio) | ? |
@@ -286,9 +291,10 @@ Se sustituyen por la tasa medida en F3-M4 a F3-M6.
 
 - **Baja carga**: la regla 1 es relativa a `Delta T` y con sigma de termopar
   0,3 K se vuelve ruidosa por debajo de ~70 % de carga (7.3); la regla 2 solo se
-  degrada cerca de potencia nula (0 violaciones hasta carga 0,20). F3-M3
-  decide sigma, rango de operacion o suelo de potencia; aqui no se inventa ese
-  parametro.
+  degrada cerca de potencia nula (0 violaciones hasta carga 0,20). **Cerrado en
+  F3-M3** (11.1): sigma de lazo 0,15 K dentro de 70-100 %. Por debajo de ~50 % de
+  carga la regla 1 no se ha medido con el sigma nuevo: no es operacion normal
+  del dataset.
 - **Votacion**: la mediana enmascara un unico canal averiado en las reglas de
   relacion. Si M5 necesita que un canal defectuoso viole una regla, habra que
   evaluar por canal; la decision es de M5 con la matriz delante.
@@ -299,4 +305,164 @@ Se sustituyen por la tasa medida en F3-M4 a F3-M6.
   "fuera de tabla, no evaluado" en vez de abortar; M4 debe decidir el rango de
   validez de ese fallo.
 - **Umbrales**: `power_flux_threshold_percent` cubre la rampa normal de 5 %/min
-  pero no la de 10 %/min; M3 define el programa de carga y recalibra.
+  pero no la de 10 %/min. F3-M3 fija la rampa maxima normal en 5 %/min
+  (`simulation.max_ramp_percent_per_min`), de modo que 10 %/min queda fuera de la
+  operacion normal; si F3-M4 o F3-M5 quieren una rampa mas rapida como
+  escenario habra que subir el umbral o tratarla como violacion esperada.
+
+## 11. Mediciones de F3-M3
+
+Semillas: dataset `openmc_seed = 42` (34 runs de 1500 pasos a 180 s = 51.000
+instantes, 1.377.000 lecturas), spans `SPANS_SEED = 20260905`, estudio de cadencia
+`CADENCE_STUDY_SEED = 20261012`. Herramienta: `data/generators/simulation_study.py`
+(`python -m data.generators.simulation_study report --params ... --output ...`); el
+informe JSON de cada cifra sale de ahi.
+
+### 11.1 Decision heredada de F3-M2: regla de energia a baja carga
+
+Regla 1 sobre mediciones normales, 34 runs (51.000 instantes), carga 70-100 %,
+solo cambia el sigma de los 4 termopares de lazo (TC-HL-1/2, TC-CL-1/2: los de
+`T_out` y `T_in`). Los TC-CORE no participan en ninguna regla y quedan a 0,3 K.
+
+| sigma de lazo [K] | Violaciones regla 1 (de 51.000) | Residuo maximo medido | Distancia minima al umbral (5 %) |
+|---|---|---|---|
+| 0,30 (inicial) | **22** | 6,43 % | -1,43 pp |
+| 0,20 | 0 | 4,69 % | 0,31 pp |
+| **0,15 (elegido)** | **0** | **3,92 %** | **1,08 pp** |
+| 0,10 | 0 | 3,47 % | 1,53 pp |
+
+Sondeo previo (100.000 muestras por celda, equilibrio, sigma 0,30 K): violaciones
+a carga 1,00 / 0,90 / 0,80 / 0,70 = 1 / 14 / 38 / 144. **Acotar la carga no basta**:
+incluso a plena carga el sigma inicial viola la regla.
+
+Opciones consideradas:
+
+| Opcion | Resultado | Decision |
+|---|---|---|
+| Bajar el sigma de lazo a 0,15 K | 0 violaciones, residuo maximo 3,92 % | **Elegida** |
+| Acotar la carga (>= 0,90) con 0,30 K | 14 violaciones a 0,90; 1 a 1,00 | Descartada: no llega a 0 |
+| Suelo de potencia para la regla 1 | No hace falta en 70-100 % | Descartada: cambia la semantica de la regla de F3-M2 |
+
+Justificacion fisica de 0,15 K: los termopares de pierna caliente/fria de un PWR
+son de lazo estrecho y alta precision (en planta real, RTD de 0,1-0,2 K); el
+contrato `SensorReading` no tiene tipo RTD y se declaran `thermocouple`. Es un
+**supuesto de ingenieria**, no un dato de una planta concreta.
+
+### 11.2 Reglas sobre mediciones normales: distancia minima al umbral
+
+Catalogo final, 34 runs, 51.000 instantes. `margen` = distancia con signo al umbral
+(`rule_margins`): positiva = dentro de lo admisible.
+
+| Regla | Violaciones | Evaluables | Umbral | Margen minimo | Margen medio | Peor valor medido |
+|---|---|---|---|---|---|---|
+| 1 energia | 0 | 51.000 | 5 % | 0,0108 | 0,0431 | 3,92 % |
+| 2 orden T | 0 | 51.000 | `T_out - T_in = 0` | 20,5 K | 25,3 K | `T_out - T_in` = 20,5 K |
+| 3 dT/dt | 0 | 50.966 | 10 C/s | 9,986 C/s | 9,998 C/s | 0,014 C/s |
+| 4 caudal | 0 | 51.000 | [0; 4950] kg/s por canal | 235 kg/s | 404 kg/s | 4715 kg/s |
+| 5 pot./flujo | 0 | 51.000 | 4,5 pp | 2,18 pp | 4,18 pp | 2,32 pp |
+| 6 ebullicion | 0 | 51.000 | `T_sat(P)` | 23,7 K | 26,6 K | `T_out` a 23,7 K de `T_sat` |
+| 7 masa | 0 | 50.966 | 0,055 | 0,0109 | 0,0470 | 4,41 % |
+
+Sigma de la regla (estimado desde el residuo medio, `media(|x|) = 0,798 sigma`):
+energia 0,87 %, masa 1,00 %. El umbral queda a **5,8 sigma** (energia) y
+**5,5 sigma** (masa) de la media; el peor de 51.000 instantes llega a 4,5 sigma y
+4,4 sigma. Las 34 filas no evaluables de las reglas 3 y 7 son la primera de cada
+run (sin derivada).
+
+### 11.3 Estudio de cadencia (D1)
+
+Escenario normal identico en tiempo fisico a 1, 10, 60 y 180 s: 6 h simuladas,
+calentamiento de 30 min, esperas entre rampas de 20-40 min, rampas de hasta
+5 %/min; 13-19 % de las muestras estan en rampa. Los umbrales de las reglas y
+los spans del validador **no se recalibran** entre cadencias. Un estudio previo
+sin rampas (calentamiento de 15 h) se descarto: no ejercitaba ninguna dinamica.
+
+| dt [s] | Muestras | Lecturas | Muestras con alguna regla violada (valores verdaderos) | max abs(dT/dt) del estado [C/s] | max abs(dT/dt) de `T_out`/`T_in` [C/s] | Salto minimo observable [K] |
+|---|---|---|---|---|---|---|
+| 1 | 21.601 | 583.227 | **0** | 0,217 | 0,0144 | 10 |
+| 10 | 2.161 | 58.347 | **0** | 0,218 | 0,0142 | 100 |
+| 60 | 361 | 9.747 | **0** | 0,211 | 0,0133 | 600 |
+| 180 | 121 | 3.267 | **0** | 0,176 | 0,0097 | 1.800 |
+
+La maxima derivada verdadera (0,22 C/s, en el combustible, que es el nodo rapido)
+es 46 veces menor que el limite de 10 C/s: la regla 3 no se dispara en
+operacion normal a ninguna cadencia, y a 180 s ni siquiera puede (C5: 1.800 K).
+**Observable como detector desde `dt <= 16 s`** (toda la tabla, 160 K, cabe en un
+salto de 10 x dt).
+
+Trampa de la regla de masa (medida): el ruido de `dT_avg/dt` por diferencias
+finitas escala como 1/dt.
+
+| dt [s] | sigma de `dT_avg/dt` medida [K/s] | Umbral `quasi_steady_dt_avg_k_s` [K/s] | Muestras en que la regla de masa es evaluable (medidas) | idem (valores verdaderos) |
+|---|---|---|---|---|
+| 1 | 0,105 | 0,02 | **15,0 %** | 100 % |
+| 10 | 0,0104 | 0,02 | 94,9 % | 99,95 % |
+| 60 | 0,0021 | 0,02 | 99,7 % | 99,7 % |
+| 180 | 0,0012 | 0,02 | 99,2 % | 99,2 % |
+
+(La sigma incluye senal ademas de ruido; a cadencias finas domina el ruido.) Con
+el sigma de lazo inicial de 0,30 K el valor a 1 s seria el doble (0,21 K/s;
+escalado aritmetico, no medido). **Decision**: no se filtra ni se escala el umbral
+con dt. La cadencia es un parametro fijo del dataset (D1) y cambiarla obliga a
+recalibrar mas de un umbral (seccion 11.4); `quasi_steady_dt_avg_k_s` queda
+**calibrado a 180 s** y esta tabla cuantifica el coste de ir mas fino (a 1 s la
+regla de masa se pierde casi entera, a menos que se promedie `dT_avg` sobre >= 10 s).
+
+Validador de Fase 2 (`SensorValidator(load_sensor_spans("configs/sim_sensor_spans.yaml"))`,
+alimentado con `readings_from_frame`, **sin recalibrar nada**):
+
+| dt [s] | Alertas / 1000 lecturas | En carga constante | En rampa | `kalman_anomaly` | `noise_spike` | `sensor_drift` |
+|---|---|---|---|---|---|---|
+| 1 | 1085,8 | 1085,4 | 1088,8 | 52.256 | 509.723 | 71.312 |
+| 10 | 510,9 | 510,1 | 516,6 | 5.070 | 19.619 | 5.121 |
+| 60 | 111,1 | 110,0 | 117,3 | 853 | 51 | 179 |
+| 180 | 90,3 | 89,9 | 91,8 | 295 | 0 | 0 |
+
+Lectura:
+
+- **El detector de tasa (`noise_spike`) escala con dt**: su umbral es una fraccion
+  del sobre por segundo, y a 1-10 s el ruido de un sensor excede ese umbral en
+  casi toda lectura. A 180 s no alerta (0 de 3.267): la cadencia de D1 es la
+  unica de las cuatro compatible con ese umbral.
+- **A 180 s todas las alertas son `kalman_anomaly` y de los 5 canales de caudal**
+  (FT-HL-1/2, FT-CL-1/2, FT-FW-1: 54-62 de 121 lecturas cada uno, ~49 %). Los otros
+  22 sensores dan **0** alertas a 180 s (rango, bloqueo, tasa y Kalman). Causa
+  probable (por leer el codigo, no medida con un experimento de control): el
+  `KalmanResidualDetector` usa `observation_noise = 1.0` fija **en unidades de
+  ingenieria**, y un caudal en kg/s con sigma 45 kg/s excede esa escala. Es una
+  limitacion del validador de Fase 2, que F3 no toca; queda como deuda.
+- Las alertas no dependen de la rampa (89,9 en carga constante frente a 91,8 en
+  rampa a 180 s): el Kalman no ve la dinamica de carga como anomalia.
+
+### 11.4 Recalibracion de los limites (`limits:`)
+
+Regla de F3-M2: pico del estado verdadero en rampa de 5 %/min + 5 sigma del
+estadistico con el ruido definitivo.
+
+| Clave | Valor F3-M2 | Cota con el ruido definitivo | Valor F3-M3 | Evidencia |
+|---|---|---|---|---|
+| `mass_balance_tolerance` | 0,055 | 0,0020 + 5 x 0,0100 = 0,052 | 0,055 (sin cambio) | sigma de caudal no cambia; peor medido 4,41 % |
+| `quasi_steady_dt_avg_k_s` | 0,02 K/s | 0,0055 + 5 x 0,00058 = 0,0084 (cota inferior) | 0,02 (sin cambio) | evaluable en 99,9 % de 51.000 instantes |
+| `power_flux_threshold_percent` | 4,5 pp | 2,26 + 5 x 0,40 = 4,26 | 4,5 (sin cambio) | peor medido 2,32 pp (programa de 5 %/min) |
+| `pump_max_fraction` | 1,10 | - | 1,10 (sin cambio) | peor canal 4715 kg/s de 4950 |
+| `power_flux_k`, `n_loops`, `conservation_tolerance`, `max_dt_c_per_s`, `energy_imbalance_fraction` | - | - | sin cambio | - |
+
+La bajada del sigma de lazo hace **mas holgada** la cota inferior de
+`quasi_steady_dt_avg_k_s` (de 0,0114 a 0,0084) pero no obliga a moverlo.
+
+### 11.5 Determinismo y rendimiento
+
+| Medida | Resultado |
+|---|---|
+| Mismo run en el mismo proceso: `DataFrame.equals` | **cierto** (40.500 filas) |
+| Mismo run en el mismo proceso: bytes de parquet | **identicos** |
+| Mismo run en un proceso nuevo (sha256 del parquet) | **identico** (`28d8799d...`) |
+| Integracion por paso (modelo + observables + diagnostico) | 2,1 ms (1500 pasos en 3,12 s) |
+| Ensamblado (ruido, cuentas ADC, frame largo) por run de 1500 pasos | 0,37 s |
+| Escritura de parquet por run | 0,13 s |
+| **Pasos/s extremo a extremo** (1 run, mismo proceso) | **414 pasos/s** (11.178 lecturas/s) |
+| Dataset completo (34 runs, `main`) | **146 s**, 1.377.000 lecturas, **75,2 MB** (54,6 B/lectura) |
+
+Los bytes de parquet son reproducibles con `pyarrow 24.0.0` y `pandas 2.3.3`; no
+se ha verificado entre versiones de `pyarrow`. Maquina: i5-1135G7 sin otra carga;
+no se detecto suspension de Windows durante las ejecuciones.

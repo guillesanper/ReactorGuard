@@ -117,13 +117,6 @@ python_version = "3.11"
 strict = true
 ignore_missing_imports = true
 
-# reactor_simulator.py construye el schema plano anterior al commit f130d27 y
-# lanza ValidationError contra el canonico. Se reescribe en Fase 3 (T5.3); hasta
-# entonces queda fuera de mypy para no bloquear CI con deuda ya identificada.
-[[tool.mypy.overrides]]
-module = "data.generators.reactor_simulator"
-ignore_errors = true
-
 # ---------------------------------------------------------------------------
 # Pytest
 # ---------------------------------------------------------------------------
@@ -151,10 +144,9 @@ markers = [
 # tests propios, no andamiaje: dejarlo fuera del alcance seria medir el gate
 # contra menos codigo del que la fase realmente entrega.
 source = ["data", "ml/features"]
-omit = [
-    # ROTO contra el schema canonico: se reescribe con sus tests en Fase 3 (T5.3).
-    "data/generators/reactor_simulator.py",
-]
+# data/generators/reactor_simulator.py salio de este omit (y del override de mypy)
+# al REESCRIBIRSE en F3-M3 (T5.3): ya construye SensorReading canonicos y tiene
+# tests propios. Ya no queda ninguna exclusion de cobertura.
 # ml/features/extractor.py salio de este omit al RETIRARSE en T4.2: lo sustituye
 # ml/features/pipeline.py, que si lee params.yaml y no depende del schema plano.
 # Recuperable en git en 3801d0b si hiciera falta consultarlo.

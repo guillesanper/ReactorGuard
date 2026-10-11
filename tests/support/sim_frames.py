@@ -1,8 +1,12 @@
-"""Builders compartidos de trazas y frames anchos del modelo termico de F3-M1.
+"""Builders compartidos de trazas, frames anchos y simuladores de F3-M1 a F3-M3.
 
 Patron de tests/support/tep_frames.py: los tests de las constraints (F3-M2) y los
 del simulador (F3-M3 en adelante) construyen aqui sus datos en vez de repetirlos.
 Todo es determinista; el ruido solo entra si se pasa un Generator.
+
+F3-M3 anade el builder de la configuracion `simulation:` y del simulador sobre una
+configuracion pequena (runs de unas decenas de pasos): `write_sim_params` y
+`build_simulator`.
 """
 
 from __future__ import annotations
@@ -13,10 +17,13 @@ from typing import Any
 
 import numpy as np
 import pandas as pd
+import yaml
 from numpy.typing import NDArray
 
+from data.generators.reactor_simulator import ReactorSimulator
 from data.simulation.plant_params import load_neutronics, load_plant_params
 from data.simulation.sensor_catalog import SensorCatalog, load_sensor_catalog
+from data.simulation.simulation_params import load_simulation_params
 from data.simulation.thermal_model import Diagnostics, ModelInputs, ReactorModel, StepResult
 from data.simulation.water_properties import WaterTable, load_water_table
 
@@ -24,6 +31,7 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 CONFIGS = REPO_ROOT / "configs"
 DEFAULT_DT_S = 180.0
 DEFAULT_START = "2026-01-01 00:00:00"
+SIM_SPANS_PATH = CONFIGS / "sim_sensor_spans.yaml"
 
 
 @dataclass(frozen=True)
@@ -147,3 +155,85 @@ def wide_frame(
         frame = frame + rng.normal(0.0, 1.0, size=frame.shape) * sigma
     frame.index = pd.Timestamp(start) + pd.to_timedelta(trace.times_s, unit="s")
     return frame
+
+
+# ----------------------------------------------------------------------
+# F3-M3: configuracion `simulation:` y simulador sobre runs cortos
+# ----------------------------------------------------------------------
+
+
+def sim_section(work_dir: Path, **overrides: Any) -> dict[str, Any]:
+    """Return a small, valid `simulation:` section.
+
+    Runs de 30 pasos (90 min a 180 s) y esperas entre rampas de 6 a 20 min, de modo
+    que cada run contiene rampas. Las rutas de configuracion son absolutas (los
+    ficheros versionados) y las de salida cuelgan de `work_dir`.
+
+    Args:
+        work_dir: Directorio de trabajo para la salida (normalmente `tmp_path`).
+        **overrides: Claves de la seccion a sustituir.
+
+    Returns:
+        The section as a plain mapping, ready for `yaml.safe_dump`.
+    """
+    section: dict[str, Any] = {
+        "n_samples": 90,
+        "fault_injection_rate": 0.40,
+        "critical_min_fraction": 0.05,
+        "openmc_seed": 7,
+        "dt_seconds": 180,
+        "run_length_steps": 30,
+        "warmup_fraction": 0.20,
+        "start_time": "2026-01-01T00:00:00+00:00",
+        "plant_id": "SIM-TEST-01",
+        "severity_weights": {"critical": 0.30, "high": 0.30, "medium": 0.25, "low": 0.15},
+        "load_min_fraction": 0.70,
+        "load_max_fraction": 1.00,
+        "max_ramp_percent_per_min": 5.0,
+        "load_hold_minutes_min": 6,
+        "load_hold_minutes_max": 20,
+        "output_dir": str(work_dir / "out"),
+        "metrics_path": str(work_dir / "metrics.json"),
+        "plant_parameters_path": str(CONFIGS / "plant_parameters.yaml"),
+        "neutronics_path": str(CONFIGS / "neutronics_coefficients.yaml"),
+        "sensors_path": str(CONFIGS / "sim_sensors.yaml"),
+        "spans_path": str(SIM_SPANS_PATH),
+        "water_table_path": str(CONFIGS / "water_table.yaml"),
+        "calibration_date": "2025-06-01",
+        "last_maintenance_date": "2025-12-01",
+        "drift_coefficient": 0.0001,
+    }
+    section.update(overrides)
+    return section
+
+
+def write_sim_params(work_dir: Path, **overrides: Any) -> Path:
+    """Write a params file holding a small `simulation:` section.
+
+    Args:
+        work_dir: Directorio donde escribir `params.yaml`.
+        **overrides: Claves de la seccion a sustituir (ver `sim_section`).
+
+    Returns:
+        The path of the params file.
+    """
+    work_dir.mkdir(parents=True, exist_ok=True)
+    path = work_dir / "params.yaml"
+    path.write_text(
+        yaml.safe_dump({"simulation": sim_section(work_dir, **overrides)}), encoding="utf-8"
+    )
+    return path
+
+
+def build_simulator(work_dir: Path, **overrides: Any) -> ReactorSimulator:
+    """Return a ReactorSimulator over the small configuration.
+
+    Args:
+        work_dir: Directorio de trabajo.
+        **overrides: Claves de la seccion `simulation:` a sustituir.
+
+    Returns:
+        The simulator, built from the versioned configs.
+    """
+    params_path = write_sim_params(work_dir, **overrides)
+    return ReactorSimulator.from_params(load_simulation_params(params_path))

@@ -1,0 +1,185 @@
+# ==========================================================================
+# ReactorGuard - Spans calibrados de los sensores de la simulacion
+#
+# GENERADO por data/generators/derive_sim_spans.py. Se revisa a mano y se
+# commitea; no es un artefacto de `dvc repro`.
+#
+#   Derivado de  : 5 runs de operacion normal simulada x 1500 pasos
+#   Semilla      : 20260905 (SPANS_SEED; distinta de simulation.openmc_seed)
+#   Margen span  : 200% a cada lado del rango observado
+#   Margen alarma: 20% a cada lado del rango observado
+#
+# Dos rangos por sensor (misma semantica que configs/sensor_spans.yaml):
+#
+#   [min, max]              span calibrado del transmisor. Escalado a cuentas
+#                           ADC en data/simulation/dataset_builder.py.
+#   [alarm_min, alarm_max]  sobre de operacion normal. Umbral del detector de
+#                           fuera-de-rango en data/validation/sensor_validator.py.
+#
+# Si cambia el catalogo, el sigma de ruido o el programa de carga hay que
+# regenerarlo: un span derivado de otro ruido deja de ser el de esta planta.
+# ==========================================================================
+
+sensors:
+  TC-CORE-01:
+    min: 298.181566
+    max: 335.616841
+    alarm_min: 311.658265
+    alarm_max: 322.140142
+    unit: celsius
+  TC-CORE-02:
+    min: 298.744429
+    max: 336.118411
+    alarm_min: 312.199062
+    alarm_max: 322.663777
+    unit: celsius
+  TC-CORE-03:
+    min: 300.490139
+    max: 336.384846
+    alarm_min: 313.412234
+    alarm_max: 323.462751
+    unit: celsius
+  TC-CORE-04:
+    min: 301.455634
+    max: 337.093126
+    alarm_min: 314.285131
+    alarm_max: 324.263629
+    unit: celsius
+  TC-HL-1:
+    min: 301.688642
+    max: 333.872446
+    alarm_min: 313.274812
+    alarm_max: 322.286277
+    unit: celsius
+  TC-HL-2:
+    min: 300.928044
+    max: 334.801458
+    alarm_min: 313.122473
+    alarm_max: 322.607029
+    unit: celsius
+  TC-CL-1:
+    min: 280.043769
+    max: 305.15822
+    alarm_min: 289.084971
+    alarm_max: 296.117017
+    unit: celsius
+  TC-CL-2:
+    min: 280.004744
+    max: 305.274694
+    alarm_min: 289.101926
+    alarm_max: 296.177512
+    unit: celsius
+  TC-SG-1:
+    min: 271.068901
+    max: 287.598893
+    alarm_min: 277.019698
+    alarm_max: 281.648096
+    unit: celsius
+  PT-PRZ-01:
+    min: 144.868247
+    max: 163.531374
+    alarm_min: 151.586973
+    alarm_max: 156.812648
+    unit: bar
+  PT-PRZ-02:
+    min: 144.631809
+    max: 163.41495
+    alarm_min: 151.39374
+    alarm_max: 156.653019
+    unit: bar
+  PT-SG-1:
+    min: 57.125471
+    max: 69.850188
+    alarm_min: 61.706369
+    alarm_max: 65.26929
+    unit: bar
+  PT-CNT-01:
+    min: 0.809907
+    max: 1.188883
+    alarm_min: 0.946339
+    alarm_max: 1.052452
+    unit: bar
+  FT-HL-1:
+    min: 3702.15384
+    max: 5318.494824
+    alarm_min: 4284.036594
+    alarm_max: 4736.61207
+    unit: kg_s
+  FT-CL-1:
+    min: 3743.332452
+    max: 5262.6009
+    alarm_min: 4290.269093
+    alarm_max: 4715.664259
+    unit: kg_s
+  FT-HL-2:
+    min: 3639.817784
+    max: 5381.43189
+    alarm_min: 4266.798862
+    alarm_max: 4754.450812
+    unit: kg_s
+  FT-CL-2:
+    min: 3630.293882
+    max: 5414.224883
+    alarm_min: 4272.509042
+    alarm_max: 4772.009723
+    unit: kg_s
+  FT-FW-1:
+    min: 23.400769
+    max: 2754.333269
+    alarm_min: 1006.536469
+    alarm_max: 1771.197569
+    unit: kg_s
+  NI-FLUX-01:
+    min: 7.428508
+    max: 162.612911
+    alarm_min: 63.294893
+    alarm_max: 106.746526
+    unit: percent
+  NI-FLUX-02:
+    min: 7.325216
+    max: 161.821591
+    alarm_min: 62.943911
+    alarm_max: 106.202896
+    unit: percent
+  NI-FLUX-03:
+    min: 7.618732
+    max: 163.206146
+    alarm_min: 63.630201
+    alarm_max: 107.194677
+    unit: percent
+  ROD-POS-01:
+    min: 35.898279
+    max: 60.320035
+    alarm_min: 44.690111
+    alarm_max: 51.528203
+    unit: percent
+  ROD-POS-02:
+    min: 36.223647
+    max: 60.951215
+    alarm_min: 45.125571
+    alarm_max: 52.04929
+    unit: percent
+  LT-PRZ-01:
+    min: 34.25381
+    max: 63.668726
+    alarm_min: 44.84318
+    alarm_max: 53.079356
+    unit: percent
+  LT-SG-1:
+    min: 41.466966
+    max: 57.516204
+    alarm_min: 47.244692
+    alarm_max: 51.738478
+    unit: percent
+  LT-SG-2:
+    min: 42.698671
+    max: 57.226224
+    alarm_min: 47.92859
+    alarm_max: 51.996305
+    unit: percent
+  PWR-TH-01:
+    min: 6.80777
+    max: 162.976396
+    alarm_min: 63.028475
+    alarm_max: 106.75569
+    unit: percent

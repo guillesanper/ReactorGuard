@@ -1,171 +1,230 @@
-"""Synthetic reactor data generator.
+"""Simulador de reactor: orquesta runs de operacion normal sobre el modelo ODE.
 
-Produces time-series sensor data with configurable fault injection.
-Used for training, integration tests, and local development without a
-real reactor connection.
+Reescritura de F3-M3 (T5.3). Sustituye al esqueleto anterior, que construia el
+esquema plano previo al commit f130d27 y lanzaba ValidationError contra el
+contrato canonico. Ahora:
 
-ESTADO: ROTO. Este modulo construye el schema plano (reactor_id, core_power,
-is_anomaly, fault_type) anterior al commit f130d27 y lanza ValidationError
-contra el schema canonico de data/schemas/sensor_reading.py en cada llamada.
-Queda excluido de mypy en pyproject.toml ([[tool.mypy.overrides]]) mientras
-tanto. Se reescribe en Fase 3 (T5.3); su suite de tests
-(tests/safety/test_safety_constraints.py) esta en skip por el mismo motivo.
+    - el motor es `data/simulation/thermal_model.ReactorModel` (scipy LSODA), no
+      OpenMC (D4); `openmc_seed` se conserva como semilla maestra (D12);
+    - la salida es el frame largo del dataset, con las 11 columnas de
+      `readings_from_frame` mas la verdad-terreno (`dataset_builder`);
+    - todo lo configurable llega por `SimulationParams` (seccion simulation: de
+      params.yaml), nada vive como constante de modulo.
 
-Usage:
-    python -m data.generators.reactor_simulator --config params.yaml
+En F3-M3 todos los runs son de operacion normal; los fallos de proceso y de
+instrumento llegan con F3-M4 y F3-M5.
+
+Este modulo NO importa nada de `data/validation` (la validacion offline vive en
+los tests). El punto de entrada del stage `simulate` (F3-M6) es `main`.
+
+Uso:
+    python data/generators/reactor_simulator.py
+    python data/generators/reactor_simulator.py --params params.yaml
 """
 
 from __future__ import annotations
 
 import argparse
 import logging
-import random
-from datetime import UTC, datetime, timedelta
+from collections.abc import Iterator
 from pathlib import Path
 
-import numpy as np
-import yaml  # type: ignore[import-untyped]
+import pandas as pd
 
-from data.schemas.sensor_reading import SensorReading
+from data.schemas.sensor_spans import SensorSpan, load_sensor_spans
+from data.simulation.dataset_builder import (
+    RunSimulation,
+    build_run_frame,
+    run_parquet_path,
+    simulate_run,
+    write_run_parquet,
+)
+from data.simulation.plant_params import load_neutronics, load_plant_params
+from data.simulation.scenario import LoadProfile, RunPlan, normal_run_plans
+from data.simulation.sensor_catalog import SensorCatalog, load_sensor_catalog
+from data.simulation.simulation_params import (
+    DEFAULT_PARAMS_PATH,
+    SimulationParams,
+    load_simulation_params,
+)
+from data.simulation.thermal_model import ModelInputs, ReactorModel
+from data.simulation.water_properties import load_water_table
 
-logger = logging.getLogger(__name__)
-
-# Nominal operating point (matches params.yaml defaults)
-NOMINAL = {
-    "core_power": 3000.0,
-    "coolant_temp_in": 564.0,
-    "coolant_temp_out": 594.0,
-    "primary_pressure": 15.5,
-    "coolant_flow_rate": 18000.0,
-    "fuel_temp": 900.0,
-    "neutron_flux_ex_core": 3.2e13,
-    "steam_generator_level": 4.5,
-}
-
-# Noise standard deviations (1σ operational variability)
-SIGMA = {
-    "core_power": 15.0,
-    "coolant_temp_in": 0.5,
-    "coolant_temp_out": 0.8,
-    "primary_pressure": 0.05,
-    "coolant_flow_rate": 100.0,
-    "fuel_temp": 5.0,
-    "neutron_flux_ex_core": 1e11,
-    "steam_generator_level": 0.05,
-}
+_LOG = logging.getLogger(__name__)
 
 
 class ReactorSimulator:
-    """Generates synthetic reactor sensor streams with fault injection.
+    """Generates labelled sensor streams from the thermal model, run by run.
 
     Args:
-        n_samples: Total number of timesteps to generate.
-        fault_injection_rate: Fraction of samples with faults.
-        openmc_seed: Random seed for reproducibility.
-        dt_seconds: Sampling interval.
+        params: Resolved simulation parameters.
+        model: Thermal model.
+        catalog: Sensor catalog.
+        spans: Calibrated span per sensor tag (scales readings to ADC counts).
+
+    Raises:
+        KeyError: If a catalog sensor has no span.
     """
 
     def __init__(
         self,
-        n_samples: int = 50000,
-        fault_injection_rate: float = 0.05,
-        openmc_seed: int = 42,
-        dt_seconds: float = 1.0,
-        reactor_id: str = "R-001",
+        params: SimulationParams,
+        model: ReactorModel,
+        catalog: SensorCatalog,
+        spans: dict[str, SensorSpan],
     ) -> None:
-        self.n_samples = n_samples
-        self.fault_injection_rate = fault_injection_rate
-        self.dt_seconds = dt_seconds
-        self.reactor_id = reactor_id
-        np.random.seed(openmc_seed)
-        random.seed(openmc_seed)
+        missing = [tag for tag in catalog.tags if tag not in spans]
+        if missing:
+            raise KeyError(
+                f"Sensor span table is missing {len(missing)} simulation tags: "
+                f"{', '.join(missing[:5])}{'...' if len(missing) > 5 else ''}. "
+                "Regenerate it with data/generators/derive_sim_spans.py."
+            )
+        self.params = params
+        self.model = model
+        self.catalog = catalog
+        self.spans = spans
+        self.profile = LoadProfile.from_params(params)
 
-    def generate(self) -> list[SensorReading]:
-        """Generate the full dataset."""
-        readings: list[SensorReading] = []
-        t0 = datetime(2024, 1, 1, tzinfo=UTC)
+    @classmethod
+    def from_params(cls, params: SimulationParams) -> ReactorSimulator:
+        """Build the simulator from the files the simulation: section points to.
 
-        for i in range(self.n_samples):
-            ts = t0 + timedelta(seconds=i * self.dt_seconds)
-            inject_fault = random.random() < self.fault_injection_rate  # noqa: S311
+        Args:
+            params: Resolved simulation parameters.
 
-            if inject_fault:
-                reading = self._inject_fault(ts)
-            else:
-                reading = self._nominal(ts)
+        Returns:
+            A ReactorSimulator with model, catalog and spans loaded.
 
-            readings.append(reading)
-
-        logger.info("Generated %d samples (%d faults).", self.n_samples,
-                    sum(r.is_anomaly for r in readings))
-        return readings
-
-    def _nominal(self, ts: datetime) -> SensorReading:
-        values = {k: float(np.random.normal(NOMINAL[k], SIGMA[k])) for k in NOMINAL}
-        # Ensure outlet > inlet after noise
-        values["coolant_temp_out"] = max(
-            values["coolant_temp_out"], values["coolant_temp_in"] + 0.1
+        Raises:
+            FileNotFoundError: If a configuration file does not exist.
+            KeyError: If a required key or a sensor span is missing.
+            ValueError: If a configuration file is not valid.
+        """
+        plant = load_plant_params(params.plant_parameters_path)
+        neutronics = load_neutronics(params.neutronics_path)
+        table = load_water_table(params.water_table_path)
+        model = ReactorModel(plant, neutronics, table)
+        catalog = load_sensor_catalog(params.sensors_path)
+        spans = load_sensor_spans(params.spans_path)
+        _LOG.info(
+            "Simulator ready: %d sensors, %d runs of %d steps at %.0f s.",
+            len(catalog.sensors),
+            params.n_runs,
+            params.run_length_steps,
+            params.dt_seconds,
         )
-        return SensorReading.model_validate(
-            {"timestamp": ts, "reactor_id": self.reactor_id, **values}
-        )
+        return cls(params, model, catalog, spans)
 
-    def _inject_fault(self, ts: datetime) -> SensorReading:
-        fault_type = random.choice([  # noqa: S311
-            "loss_of_coolant",
-            "reactivity_insertion",
-            "steam_generator_tube_rupture",
-            "loss_of_feedwater",
-        ])
-        values = {k: float(np.random.normal(NOMINAL[k], SIGMA[k])) for k in NOMINAL}
+    @property
+    def plans(self) -> list[RunPlan]:
+        """Return the plan of every run."""
+        return normal_run_plans(self.params)
 
-        if fault_type == "loss_of_coolant":
-            values["primary_pressure"] *= 0.7
-            values["coolant_flow_rate"] *= 0.4
-        elif fault_type == "reactivity_insertion":
-            values["core_power"] *= 1.15
-            values["neutron_flux_ex_core"] *= 1.2
-            values["fuel_temp"] *= 1.1
-        elif fault_type == "steam_generator_tube_rupture":
-            values["steam_generator_level"] *= 0.3
-            values["primary_pressure"] *= 0.92
-        elif fault_type == "loss_of_feedwater":
-            values["steam_generator_level"] *= 0.1
-            values["coolant_temp_out"] *= 1.05
+    def simulate(self, plan: RunPlan) -> RunSimulation:
+        """Integrate one run (load profile from the run's own generator).
 
-        values["coolant_temp_out"] = max(
-            values["coolant_temp_out"], values["coolant_temp_in"] + 0.1
-        )
-        return SensorReading.model_validate(
-            {"timestamp": ts, "reactor_id": self.reactor_id,
-             "fault_type": fault_type, "is_anomaly": True, **values}
-        )
+        Args:
+            plan: Plan del run.
+
+        Returns:
+            The RunSimulation.
+        """
+        load_rng, _, _ = plan.rngs()
+        loads = self.profile.sample(load_rng, plan.n_steps, self.params.dt_seconds)
+        inputs = [ModelInputs(load=float(load)) for load in loads]
+        return simulate_run(self.model, self.catalog, plan, inputs, self.params.dt_seconds)
+
+    def generate_run(self, plan: RunPlan) -> pd.DataFrame:
+        """Return the long frame of one run.
+
+        Args:
+            plan: Plan del run.
+
+        Returns:
+            The frame with the columns of `dataset_builder.LONG_COLUMNS`.
+        """
+        sim = self.simulate(plan)
+        _, noise_rng, _ = plan.rngs()
+        return build_run_frame(sim, self.catalog, self.spans, self.params.plant_id, noise_rng)
+
+    def iter_runs(self) -> Iterator[tuple[RunPlan, pd.DataFrame]]:
+        """Yield every run with its frame, in run order.
+
+        Yields:
+            (plan, long frame) per run.
+        """
+        for plan in self.plans:
+            yield plan, self.generate_run(plan)
+
+    def generate(self) -> pd.DataFrame:
+        """Return the long frame of the whole dataset.
+
+        Returns:
+            All runs concatenated in run order, with a fresh RangeIndex.
+        """
+        frames = [frame for _, frame in self.iter_runs()]
+        return pd.concat(frames, ignore_index=True)
+
+    def write(self, output_dir: str | Path | None = None) -> list[Path]:
+        """Write every run as Parquet under the TDD 4.4 layout.
+
+        Args:
+            output_dir: Destination root; defaults to `params.output_dir`.
+
+        Returns:
+            The paths written, in run order.
+        """
+        root = Path(output_dir) if output_dir is not None else self.params.output_dir
+        written: list[Path] = []
+        for plan, frame in self.iter_runs():
+            path = run_parquet_path(root, plan.scenario, self.params.openmc_seed, plan.run_id)
+            written.append(write_run_parquet(frame, path))
+        return written
 
 
-def main(config_path: str = "params.yaml") -> None:
-    with open(config_path) as f:
-        params = yaml.safe_load(f)
-    s = params["simulation"]
+def main(params_path: str | Path = DEFAULT_PARAMS_PATH) -> list[Path]:
+    """Run the simulator end to end and write the dataset.
 
-    sim = ReactorSimulator(
-        n_samples=s["n_samples"],
-        fault_injection_rate=s["fault_injection_rate"],
-        openmc_seed=s["openmc_seed"],
-        dt_seconds=s["dt_seconds"],
+    Args:
+        params_path: Path to the params file holding the simulation: section.
+
+    Returns:
+        The Parquet files written.
+
+    Raises:
+        FileNotFoundError: If params_path or a referenced file does not exist.
+        KeyError: If a required key or a sensor span is missing.
+        ValueError: If a value is out of range.
+    """
+    params = load_simulation_params(params_path)
+    simulator = ReactorSimulator.from_params(params)
+    paths = simulator.write()
+    _LOG.info(
+        "Wrote %d runs (%d steps x %d sensors) under %s",
+        len(paths),
+        params.total_steps,
+        len(simulator.catalog.sensors),
+        params.output_dir,
     )
-    readings = sim.generate()
+    return paths
 
-    out = Path("data/raw/simulation.jsonl")
-    out.parent.mkdir(parents=True, exist_ok=True)
-    with open(out, "w") as f:
-        for r in readings:
-            f.write(r.model_dump_json() + "\n")
-    logger.info("Wrote %d records to %s", len(readings), out)
+
+def cli(argv: list[str] | None = None) -> list[Path]:
+    """Parse the command line and run `main`.
+
+    Args:
+        argv: Command-line arguments. Defaults to sys.argv[1:].
+
+    Returns:
+        The Parquet files written.
+    """
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--params", default=str(DEFAULT_PARAMS_PATH))
+    args = parser.parse_args(argv)
+    logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
+    return main(args.params)
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--config", default="params.yaml")
-    args = parser.parse_args()
-    logging.basicConfig(level=logging.INFO)
-    main(args.config)
+    cli()

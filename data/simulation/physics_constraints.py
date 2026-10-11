@@ -719,6 +719,93 @@ def evaluate_rules(
     return evaluate_rules_detailed(wide_frame, catalog_roles, table, limits).violations
 
 
+def rule_margins(
+    wide_frame: pd.DataFrame,
+    catalog_roles: Mapping[str, Sequence[str]],
+    table: WaterTable,
+    limits: ConstraintLimits,
+) -> pd.DataFrame:
+    """Return, per rule and row, how far the readings are from violating it.
+
+    Es la distancia con signo al umbral que `evaluate_rules` compara: positiva
+    dentro de lo admisible, negativa al violar y NaN donde la regla no pudo
+    evaluarse. Por construccion `margin < 0` coincide con la violacion de
+    `evaluate_rules_detailed`, y es lo que permite calibrar el ruido midiendo la
+    distancia minima al umbral en lugar de contar solo violaciones.
+
+    Unidades por regla:
+
+        energy_balance        fraccion (limite - residuo relativo)
+        temperature_ordering  K (T_out - T_in)
+        max_dt_dt             C/s (limite - maxima derivada de los canales)
+        flow_range            kg/s (min sobre canales de min(caudal, tope - caudal))
+        power_flux            puntos porcentuales (umbral - |P_th - k flux|)
+        boiling               K (T_sat(P) - T_out)
+        mass_balance          fraccion (tolerancia - desajuste), solo cuasi-estacionario
+
+    Args:
+        wide_frame: Una fila por instante, una columna por tag, DatetimeIndex.
+        catalog_roles: Rol -> tags (SensorCatalog.roles).
+        table: Tabla de propiedades del agua.
+        limits: Umbrales y escalas.
+
+    Returns:
+        Float frame (same index as wide_frame), one column per rule in RULE_NAMES.
+
+    Raises:
+        TypeError: If the frame index is not a DatetimeIndex.
+        KeyError: If a required role is missing or names a column absent from
+            the frame.
+    """
+    if not isinstance(wide_frame.index, pd.DatetimeIndex):
+        raise TypeError("physics constraints: the wide frame needs a DatetimeIndex.")
+    channels = {role: _role_channels(wide_frame, catalog_roles, role) for role in REQUIRED_ROLES}
+    value = {role: _role_value(frame) for role, frame in channels.items()}
+    elapsed_s = np.asarray(
+        wide_frame.index.to_series().diff().dt.total_seconds(), dtype=np.float64
+    )
+    t_out, t_in, pressure = value["T_out"], value["T_in"], value["P"]
+    flux, p_th = value["flux"], value["P_th"]
+
+    q_gen = limits.thermal_power_mw * flux / _PERCENT
+    q_removed = removed_heat_mw(limits.n_loops * value["flow"], t_out, t_in, pressure, table)
+    residual = energy_balance_residual(q_gen, q_removed)
+
+    temperatures = pd.concat([channels["T_out"], channels["T_in"]], axis=1).to_numpy()
+    rates = np.abs(finite_difference_rate(temperatures, elapsed_s))
+    finite_rates = np.where(np.isfinite(rates), rates, -np.inf)
+    worst_rate = np.where(np.isfinite(rates).any(axis=1), finite_rates.max(axis=1), np.nan)
+
+    flows = channels["flow"].to_numpy()
+    flow_margin = np.minimum(flows, limits.pump_max_per_loop_kg_s - flows)
+    finite_flow = np.where(np.isfinite(flow_margin), flow_margin, np.inf)
+    worst_flow = np.where(np.isfinite(flow_margin).any(axis=1), finite_flow.min(axis=1), np.nan)
+
+    p_lo, p_hi = table.p_range_bar
+    in_pressure = np.isfinite(pressure) & (pressure >= p_lo) & (pressure <= p_hi)
+    t_sat = np.asarray(table.t_sat_c(np.where(in_pressure, pressure, p_lo)), dtype=np.float64)
+
+    rate_avg = finite_difference_rate(0.5 * (t_out + t_in), elapsed_s)
+    steady = quasi_steady_mask(rate_avg, limits.quasi_steady_dt_avg_k_s)
+    mass_residual = mass_balance_residual(value["flow_hot_leg"], value["flow_cold_leg"])
+
+    margins = {
+        "energy_balance": limits.energy_imbalance_fraction - residual,
+        "temperature_ordering": t_out - t_in,
+        "max_dt_dt": limits.max_dt_c_per_s - worst_rate,
+        "flow_range": worst_flow,
+        "power_flux": limits.power_flux_threshold_percent
+        - np.abs(p_th - limits.power_flux_k * flux),
+        "boiling": np.where(in_pressure, t_sat - t_out, np.nan),
+        "mass_balance": np.where(
+            steady, limits.mass_balance_tolerance - mass_residual, np.nan
+        ),
+    }
+    return pd.DataFrame(margins, index=wide_frame.index, columns=list(RULE_NAMES)).astype(
+        np.float64
+    )
+
+
 # ----------------------------------------------------------------------
 # Conservacion sobre el estado completo
 # ----------------------------------------------------------------------

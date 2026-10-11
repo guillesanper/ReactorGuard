@@ -1,6 +1,6 @@
 # ReactorGuard — Registro de Progreso
 **Nuclear Reactor Anomaly Detection Platform**
-*Actualizado: 2026-10-11 — Fase 2 verificada contra el commit `d35f802`; Fase 3: F3-M1 commiteado (`b343fb7`), F3-M2 hecho sin commitear*
+*Actualizado: 2026-10-11 — Fase 2 verificada contra el commit `d35f802`; Fase 3: F3-M1 (`b343fb7`) y F3-M2 (`36c9d3a`) commiteados, F3-M3 hecho sin commitear*
 
 Este documento distingue tres cosas que antes se confundian: **codigo escrito**, **verificado en local**
 y **criterio medido en el entorno real**. Una tarea puede estar completada como codigo y aun asi no
@@ -14,7 +14,7 @@ tener su criterio de exito medido.
 |------|--------|---------|--------|
 | 1 | Foundation – GKE + Kafka | 1–2 | Codigo completo, **sin desplegar**; criterios sin medir |
 | 2 | Data Pipeline + Sensor Validator | 3–4 | **Codigo completo y verificado en local**; criterios 2 y 4 CUMPLIDOS, 1 y 3 NO MEDIDOS hasta medir en el cluster |
-| 3 | Simulation Layer (OpenMC + PyDy) | 5 | **En curso**: F3-M1 (modelo termico, tabla de agua, catalogo) y F3-M2 (constraints fisicos) hechos; F3-M3 a F3-M7 pendientes. Plan en `ReactorGuard_Fase3_Plan.md` |
+| 3 | Simulation Layer (OpenMC + PyDy) | 5 | **En curso**: F3-M1 (modelo termico, tabla de agua, catalogo), F3-M2 (constraints fisicos) y F3-M3 (simulador en operacion normal, spans y estudio de cadencia) hechos; F3-M4 a F3-M7 pendientes. Plan en `ReactorGuard_Fase3_Plan.md` |
 | 4 | ML Core – PINN Training | 6–7 | No iniciada (solo andamiaje) |
 | 5 | Uncertainty – BNN + Conformal Prediction | 8 | No iniciada |
 | 6 | API + K8s Serving | 9–10 | No iniciada (solo andamiaje, 2 de 4 endpoints devuelven 501) |
@@ -72,6 +72,38 @@ dvc status                     Data and pipelines are up to date
 Cobertura del modulo nuevo: `physics_constraints` 100 %; `plant_params` sigue en 100 % con sus 6 claves
 nuevas. Los 24 sin cubrir son los mismos que al cierre de F3-M1 (el guard `__main__` de
 `build_water_table` y codigo de Fase 2).
+
+### Linea base al cierre de F3-M3 (2026-10-11, sin commitear)
+
+```
+pytest tests/unit tests/safety --cov --cov-fail-under=70
+  2399 passed, 3 failed, 4 skipped   cobertura TOTAL 99,48%   (5625 sentencias, 29 sin cubrir)
+ruff check .                   All checks passed
+mypy ml/ api/ data/            no issues found in 78 source files
+dvc status                     Data and pipelines are up to date
+```
+
+**Los 3 fallos son `TestRepositoryParams` de `tests/unit/test_simulation_params.py`**: leen la seccion
+`simulation:` del `params.yaml` del repo, que **todavia es la antigua**. La edicion fue denegada por el
+clasificador de permisos de la sesion y queda para el usuario (el diff esta en el informe del hito). Con la
+seccion nueva aplicada son 2402 passed. El tiempo de la suite (2043 s) NO es comparable con los 457-477 s de
+las lineas base anteriores: Kernel-Power registro suspensiones (eventos 506/507 a las 20:04, 20:06 y 20:32)
+dentro de ese intervalo; la misma suite tardo 477 s en la corrida anterior. Las mediciones del informe de
+F3-M3 (19:35-19:41) no tienen eventos de suspension en su intervalo.
+
+Cobertura de los modulos nuevos: `simulation_params` 100 %, `scenario` 100 %, `dataset_builder` 100 %,
+`physics_constraints` 100 % (con `rule_margins`), `reactor_simulator` 99 %, `simulation_study` 99 %,
+`derive_sim_spans` 97 % (los tres con el guard `__main__` sin cubrir). `reactor_simulator.py` salio del `omit`
+de cobertura y del override de mypy. Omitidos: los mismos 4 (3 de `tests/safety` hasta F3-M6 y el contraste
+con `iapws`).
+
+Mediciones de F3-M3 (detalle en `Docs/physics_constraints.md`, seccion 11): sigma de lazo 0,15 K (con 0,30 K
+la regla de energia daba 22 violaciones en 51.000 instantes normales; con 0,15 K, 0), peor residuo de energia
+3,92 % y de masa 4,41 %; cadencia 1/10/60/180 s: 0 violaciones sobre valores verdaderos, max abs(dT/dt) del
+estado 0,22 C/s; regla de masa evaluable en 15,0 / 94,9 / 99,7 / 99,2 % de las muestras medidas; validador
+de Fase 2 a 180 s: 90 alertas por 1000 lecturas, todas `kalman_anomaly` en los 5 canales de caudal;
+determinismo identico entre dos construcciones y entre procesos; 414 pasos/s extremo a extremo, dataset
+completo (1.377.000 lecturas) en 146 s y 75,2 MB.
 
 ---
 
@@ -233,10 +265,9 @@ positivos en otros sensores.
 
 ## Fase 3 — Simulation Layer: OpenMC + PyDy
 **Semana 5** · En curso. Plan aprobado por hitos en [ReactorGuard_Fase3_Plan.md](ReactorGuard_Fase3_Plan.md)
-(decisiones D1-D13 y registro de progreso en su seccion 15). F3-M0 (preflight), F3-M1 y F3-M2 hechos.
+(decisiones D1-D13 y registro de progreso en su seccion 15). F3-M0 (preflight), F3-M1, F3-M2 y F3-M3 hechos.
 
-`data/generators/reactor_simulator.py` existe pero esta **roto contra el schema canonico** y excluido de
-mypy y de la cobertura. Hay que reescribirlo, no repararlo (F3-M3).
+`data/generators/reactor_simulator.py` estaba roto contra el schema canonico; **F3-M3 lo reescribio** y ya cuenta en mypy y en la cobertura.
 
 **F3-M1 (modelo fisico, tabla de agua y catalogo)** aporta `data/simulation/` (`thermal_model`,
 `water_properties`, `build_water_table`, `plant_params`, `sensor_catalog`) y cuatro YAML en `configs/`.
@@ -255,13 +286,15 @@ rampas de 0,5 a 10 %/min) viola 0 de las 7 reglas y conserva la energia (instant
 frente al 5 % del TDD, y 0,11 % de falsos positivos a 70 % de carga (decision para F3-M3). A 180 s la regla
 dT/dt exige un salto de 1800 K entre muestras (C5): no es un detector a esa cadencia.
 
+**F3-M3 (simulador en operacion normal, spans y estudio de cadencia)** aporta `data/simulation/{simulation_params,scenario,dataset_builder}.py`, la reescritura de `data/generators/reactor_simulator.py`, `data/generators/derive_sim_spans.py` + `configs/sim_sensor_spans.yaml` (27 sensores, 5 runs normales, semilla propia) y `data/generators/simulation_study.py` (cadencia, ruido, determinismo y rendimiento, repetible en F3-M8). Genera 34 runs normales como frame largo con las 11 columnas de `readings_from_frame` mas la verdad-terreno del TDD 2.2, validables offline con el mismo codigo del TEP. **Decision cerrada con datos**: sigma de los termopares de lazo 0,15 K (la regla de energia a baja carga). **Hallazgo para Fase 2**: el detector Kalman del validador usa `observation_noise = 1,0` fija en unidades de ingenieria y alerta en ~49 % de las lecturas normales de los canales de caudal (deuda, no se toca). Pendiente del usuario: aplicar el diff de la seccion `simulation:` de `params.yaml`.
+
 | ID | Tarea | Estado |
 |----|-------|--------|
 | T5.1 | OpenMC configurado: modelo PWR simplificado | Pendiente (F3-M8, opcional, corre en Docker; no esta en PyPI ni en conda-forge win-64) |
 | T5.2 | Modelo termodinamico: ODEs coolant/core | **Completado en F3-M1** (scipy LSODA, no PyDy); `data/simulation/thermal_model.py` |
-| T5.3 | `reactor_simulator.py`: neutronica + termica integradas | Pendiente, F3-M3 (el fichero actual es un esqueleto roto) |
+| T5.3 | `reactor_simulator.py`: neutronica + termica integradas | **Completado en F3-M3** en operacion normal (modelo ODE, 34 runs, 1.377.000 lecturas, determinista entre procesos, 414 pasos/s); los fallos llegan en F3-M4/M5 |
 | T5.4 | `fault_injector.py`: drift, stuck, noise spike, bias + 4 tipos adicionales | **Parcial**: `data/validation/fault_injector.py` ya cubre los 4 tipos base sobre TEP (T3.6); faltan los 4 fisicos |
-| T5.5 | DVC stage `simulate` con labels | Pendiente |
+| T5.5 | DVC stage `simulate` con labels | Pendiente (F3-M6); `ReactorSimulator.write` y `main` ya escriben el layout del TDD 4.4 |
 | T5.6 | Validacion de constraints fisicos (Appendix B TDD) | **Parcial, F3-M2**: reglas y conservacion implementadas y verificadas contra el modelo (`physics_constraints.py`, `Docs/physics_constraints.md`). Pendiente: la matriz de violaciones esperadas (M4-M6) y la suite de `tests/safety`, que sigue en `skip` hasta F3-M6 |
 
 ---

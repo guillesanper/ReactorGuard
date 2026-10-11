@@ -12,9 +12,12 @@
 #     valor_verdadero = gain * observable + offset
 #
 # `offset` incluye el desvio espacial fijo de los termopares de nucleo y la
-# calibracion relativa de los canales redundantes. `noise_sigma` es el sigma
-# INICIAL del ruido blanco en unidades de ingenieria; F3-M3 lo calibra para que
-# la operacion normal no viole ninguna regla.
+# calibracion relativa de los canales redundantes. `noise_sigma` es el sigma del
+# ruido blanco en unidades de ingenieria, CALIBRADO en F3-M3 (Docs/
+# physics_constraints.md, seccion 11): con 0,3 K en los sensores de lazo la regla
+# de energia daba 22 violaciones en 51.000 instantes normales (34 runs); con 0,15 K
+# da 0, con residuo maximo 3,9 % frente al 5 % del umbral. El resto de sigma da 0
+# violaciones con el umbral a >= 5,5 sigma de la media (peor caso: masa, 4,4 %).
 #
 # Los spans de medida (sim_sensor_spans.yaml) se derivan en F3-M3 de la
 # operacion normal simulada: este fichero NO los contiene.
@@ -28,10 +31,13 @@ sensors:
   TC-CORE-04: {type: thermocouple, location: core, unit: celsius, elevation_m: 4.5, source: t_c, gain: 1.0, offset: 1.5, noise_sigma: 0.3}
 
   # --- Piernas caliente y fria, y secundario ---
-  TC-HL-1: {type: thermocouple, location: primary_loop, unit: celsius, elevation_m: 5.0, source: t_c, gain: 1.0, offset: 0.0, noise_sigma: 0.3}
-  TC-HL-2: {type: thermocouple, location: primary_loop, unit: celsius, elevation_m: 5.0, source: t_c, gain: 1.0, offset: 0.0, noise_sigma: 0.3}
-  TC-CL-1: {type: thermocouple, location: primary_loop, unit: celsius, elevation_m: 4.5, source: t_s, gain: 1.0, offset: 0.0, noise_sigma: 0.3}
-  TC-CL-2: {type: thermocouple, location: primary_loop, unit: celsius, elevation_m: 4.5, source: t_s, gain: 1.0, offset: 0.0, noise_sigma: 0.3}
+  # Los 4 sensores de lazo (HL/CL) son los de T_out y T_in de las constraints: son de
+  # lazo estrecho y alta precision (en planta real, RTD de 0,1-0,2 K; el contrato no
+  # tiene tipo RTD, asi que se declaran como thermocouple). sigma 0,15 K, F3-M3.
+  TC-HL-1: {type: thermocouple, location: primary_loop, unit: celsius, elevation_m: 5.0, source: t_c, gain: 1.0, offset: 0.0, noise_sigma: 0.15}
+  TC-HL-2: {type: thermocouple, location: primary_loop, unit: celsius, elevation_m: 5.0, source: t_c, gain: 1.0, offset: 0.0, noise_sigma: 0.15}
+  TC-CL-1: {type: thermocouple, location: primary_loop, unit: celsius, elevation_m: 4.5, source: t_s, gain: 1.0, offset: 0.0, noise_sigma: 0.15}
+  TC-CL-2: {type: thermocouple, location: primary_loop, unit: celsius, elevation_m: 4.5, source: t_s, gain: 1.0, offset: 0.0, noise_sigma: 0.15}
   TC-SG-1: {type: thermocouple, location: secondary_loop, unit: celsius, elevation_m: 14.0, source: t_sec, gain: 1.0, offset: 0.0, noise_sigma: 0.3}
 
   # --- Presiones ---

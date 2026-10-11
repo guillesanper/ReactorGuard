@@ -43,6 +43,7 @@ from data.simulation.physics_constraints import (
     power_flux_violated,
     quasi_steady_mask,
     removed_heat_mw,
+    rule_margins,
     temperature_ordering_violated,
 )
 from data.simulation.plant_params import load_plant_params
@@ -869,3 +870,116 @@ class TestConservation:
         """P0 normalises the residual."""
         with pytest.raises(ValueError, match="thermal_power_mw"):
             conservation_residuals(ramp_trace.diagnostics, 0.0)
+
+
+class TestRuleMargins:
+    """rule_margins is the signed distance to the threshold each rule compares (F3-M3)."""
+
+    def _faulty(self, equilibrium: pd.DataFrame, catalog: SensorCatalog) -> pd.DataFrame:
+        """Return a frame whose rows 1-5 each break a different rule."""
+        bad = equilibrium.copy()
+        roles = {k: list(v) for k, v in catalog.roles.items()}
+        bad.loc[bad.index[1], roles["T_out"]] = 400.0  # boiling (and a huge energy residual)
+        bad.loc[bad.index[2], roles["flow"]] = -5.0  # negative flow
+        bad.loc[bad.index[3], roles["flow"][0]] = 6000.0  # above the per-channel ceiling
+        bad.loc[bad.index[4], roles["T_in"]] = 340.0  # T_out < T_in
+        bad.loc[bad.index[5], roles["P_th"]] = 50.0  # power/flux gap
+        return bad
+
+    def test_equilibrium_is_inside_every_rule(
+        self,
+        equilibrium: pd.DataFrame,
+        catalog: SensorCatalog,
+        table: WaterTable,
+        limits: ConstraintLimits,
+    ) -> None:
+        """The true state has positive margins; the first row has no rate (NaN)."""
+        margins = rule_margins(equilibrium, catalog.roles, table, limits)
+        assert list(margins.columns) == list(RULE_NAMES)
+        assert margins.index.equals(equilibrium.index)
+        assert np.isnan(margins["max_dt_dt"].iloc[0])
+        assert np.isnan(margins["mass_balance"].iloc[0])
+        assert (margins.iloc[1:] > 0.0).all().all()
+
+    def test_negative_margin_is_exactly_a_violation(
+        self,
+        equilibrium: pd.DataFrame,
+        catalog: SensorCatalog,
+        table: WaterTable,
+        limits: ConstraintLimits,
+    ) -> None:
+        """Where a rule is evaluable, margin < 0 coincides with its violation."""
+        frame = self._faulty(equilibrium, catalog)
+        evaluation = evaluate_rules_detailed(frame, catalog.roles, table, limits)
+        margins = rule_margins(frame, catalog.roles, table, limits)
+        for rule in RULE_NAMES:
+            evaluable = evaluation.evaluable[rule].to_numpy()
+            negative = (margins[rule].to_numpy() < 0.0) & evaluable
+            assert np.array_equal(negative, evaluation.violations[rule].to_numpy()), rule
+        assert evaluation.violations.to_numpy().any(axis=0).sum() >= 4
+
+    def test_units_per_rule(
+        self,
+        equilibrium: pd.DataFrame,
+        catalog: SensorCatalog,
+        table: WaterTable,
+        limits: ConstraintLimits,
+    ) -> None:
+        """Margins are in the unit of each rule (K, kg/s, pp, fraction)."""
+        roles = {k: list(v) for k, v in catalog.roles.items()}
+        row = equilibrium.iloc[[2]]
+        margins = rule_margins(equilibrium, roles, table, limits).iloc[2]
+        t_out = float(row[roles["T_out"]].median(axis=1).iloc[0])
+        t_in = float(row[roles["T_in"]].median(axis=1).iloc[0])
+        pressure = float(row[roles["P"]].median(axis=1).iloc[0])
+        flow = row[roles["flow"]].to_numpy()
+        assert margins["temperature_ordering"] == pytest.approx(t_out - t_in)
+        assert margins["boiling"] == pytest.approx(float(table.t_sat_c(pressure)) - t_out)
+        expected_flow = np.minimum(flow, limits.pump_max_per_loop_kg_s - flow).min()
+        assert margins["flow_range"] == pytest.approx(expected_flow)
+        gap = abs(
+            float(row[roles["P_th"]].iloc[0, 0])
+            - limits.power_flux_k * float(row[roles["flux"]].median(axis=1).iloc[0])
+        )
+        assert margins["power_flux"] == pytest.approx(limits.power_flux_threshold_percent - gap)
+        energy = limits.energy_imbalance_fraction
+        assert margins["energy_balance"] == pytest.approx(energy, abs=1e-3)
+
+    def test_not_evaluable_rows_are_nan(
+        self,
+        equilibrium: pd.DataFrame,
+        catalog: SensorCatalog,
+        table: WaterTable,
+        limits: ConstraintLimits,
+    ) -> None:
+        """NaN readings and a pressure outside the table leave the margin undefined."""
+        frame = equilibrium.copy()
+        frame.loc[frame.index[2], list(catalog.roles["flow"])] = np.nan
+        frame.loc[frame.index[3], list(catalog.roles["P"])] = 10.0  # below the table (60 bar)
+        margins = rule_margins(frame, catalog.roles, table, limits)
+        assert np.isnan(margins["flow_range"].iloc[2])
+        assert np.isnan(margins["energy_balance"].iloc[2])
+        assert np.isnan(margins["boiling"].iloc[3])
+
+    def test_requires_a_datetime_index(
+        self,
+        equilibrium: pd.DataFrame,
+        catalog: SensorCatalog,
+        table: WaterTable,
+        limits: ConstraintLimits,
+    ) -> None:
+        """Like evaluate_rules, margins need a DatetimeIndex."""
+        with pytest.raises(TypeError, match="DatetimeIndex"):
+            rule_margins(equilibrium.reset_index(drop=True), catalog.roles, table, limits)
+
+    def test_requires_the_roles(
+        self,
+        equilibrium: pd.DataFrame,
+        catalog: SensorCatalog,
+        table: WaterTable,
+        limits: ConstraintLimits,
+    ) -> None:
+        """A missing role is a KeyError, as in evaluate_rules."""
+        roles = {k: v for k, v in catalog.roles.items() if k != "flux"}
+        with pytest.raises(KeyError, match="flux"):
+            rule_margins(equilibrium, roles, table, limits)
