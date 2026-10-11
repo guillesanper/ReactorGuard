@@ -84,6 +84,33 @@ stages:
     outs:
       - data/processed/features
 
+  feast_source:
+    cmd: python ml/features/store/source_builder.py
+    deps:
+      - ml/features/store/source_builder.py
+      - ml/features/store/feature_store_params.py
+      - ml/features/batch_featurizer.py
+      - ml/features/feature_params.py
+      - ml/features/pipeline.py
+      - data/generators/tep_params.py
+      - data/processed/features
+    params:
+      # Origen y cadencia de la linea de tiempo sintetica.
+      - tep.start_time
+      - tep.sample_interval_minutes
+      # De donde LEE (el out de featurize) y la politica de sensores que contrasta.
+      - features.features_dir
+      - features.window_samples
+      - features.n_lags
+      - features.correlation_pairs
+      - features.sensor_selection
+      # Donde ESCRIBE y como separa los runs. ttl_intervals no se declara: solo
+      # lo usa el FeatureView en tiempo de ejecucion, no altera este artefacto.
+      - feature_store.source_path
+      - feature_store.run_gap_intervals
+    outs:
+      - data/processed/feast_source/sensor_features.parquet
+
   split:
     cmd: python data/generators/train_val_test_split.py
     deps:

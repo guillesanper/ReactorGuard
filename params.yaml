@@ -259,6 +259,54 @@ streamer:
   client_id: tep-streamer
 
 # -----------------------------------------------------------------------------
+# Feature store parameters  (ml/features/store/, Feast)
+#
+# Leidos via ml/features/store/feature_store_params.py. Solo feast_source declara
+# estos parametros en dvc.yaml (source_path y run_gap_intervals); el resto es
+# configuracion de servicio. La cadencia NO se repite aqui: se deriva de
+# tep.sample_interval_minutes (180 s) al cargar.
+# -----------------------------------------------------------------------------
+feature_store:
+  project: reactorguard
+
+  # TTL del FeatureView = ttl_intervals x tep.sample_interval_minutes x 60 = 540 s.
+  #
+  # Por que 3 y no el TTL de 30 s del prompt original: ese valor asumia muestras
+  # cada 1 s. Con una muestra nueva cada 180 s, un TTL de 30 s deja la feature
+  # vigente 30 de cada 180 s (17 %) y nula el 83 % restante (150 s muertos por
+  # intervalo; calculo en Docs/Handoff_Paso4.md:463-475). El minimo logico es un
+  # intervalo; con exactamente uno, un retraso de un solo segundo en el productor
+  # ya cuenta como caducado. 2 intervalos tolera una lectura perdida y 3 tolera
+  # dos, el mismo factor que streaming.staleness_seconds. El loader exige >= 2.
+  #
+  # IMPORTANTE (medido en Feast 0.64): el TTL del FeatureView NO caduca nada en
+  # lectura online. Solo acota la ventana de materialize y los joins historicos.
+  # La caducidad online la aplica FeastClient con los timestamps del evento, y en
+  # Redis ademas key_ttl_seconds (feature_store.cluster.yaml, mismo valor: lo
+  # contrasta un test).
+  ttl_intervals: 3
+
+  # Hueco entre el final de un run del TEP y el inicio del siguiente en la linea
+  # de tiempo sintetica de feast_source, en intervalos de muestreo. Los 22 ficheros
+  # del TEP reinician el reloj, de modo que sin desplazarlos (sensor_id,
+  # event_timestamp) se repetiria 22 veces y Feast no sabria cual servir. Debe ser
+  # MAYOR que ttl_intervals: asi la cola de un run queda fuera del TTL de la cabeza
+  # del siguiente y un join historico no mezcla clases. 10 intervalos = 30 min.
+  run_gap_intervals: 10
+
+  # sqlite (local, sin infraestructura) | redis (cluster y pruebas de integracion).
+  online_backend: sqlite
+
+  # Out de la stage feast_source: fuente offline derivada y SINTETICA (el TEP no
+  # tiene reloj real; los timestamps parten de tep.start_time).
+  source_path: data/processed/feast_source/sensor_features.parquet
+
+  # Configuracion de Feast por backend. Las rutas relativas que contienen se
+  # resuelven contra la raiz del repo (FeatureStore(repo_path=raiz)).
+  local_config_path: ml/features/store/feature_store.local.yaml
+  cluster_config_path: ml/features/store/feature_store.cluster.yaml
+
+# -----------------------------------------------------------------------------
 # Training parameters  (ml/training/train.py)
 # -----------------------------------------------------------------------------
 training:

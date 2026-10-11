@@ -1,0 +1,24 @@
+# =============================================================================
+# Feast - configuracion LOCAL (registro y almacen online en disco, sin servicios)
+#
+# Se carga con FeatureStore(repo_path=<raiz del repo>, fs_yaml_file=<este fichero>)
+# desde ml/features/store/feast_client.py. Las rutas son RELATIVAS a repo_path:
+# Feast interpreta una ruta absoluta de Windows (C:\...) como una URL con esquema
+# "c" y rechaza el registro.
+#
+# data/processed/feast/ cuelga de data/processed/, que ya esta en .gitignore, y no
+# es un out de DVC: es estado de ejecucion reconstruible (feast apply + materialize).
+# `project` debe coincidir con feature_store.project de params.yaml (lo contrasta
+# tests/unit/test_feature_store_params.py).
+#
+# SQLite NO caduca claves: la frescura la aplica FeastClient con el event_timestamp.
+# =============================================================================
+project: reactorguard
+provider: local
+registry: data/processed/feast/registry.db
+online_store:
+  type: sqlite
+  path: data/processed/feast/online_store.db
+offline_store:
+  type: file
+entity_key_serialization_version: 3

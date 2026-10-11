@@ -1,0 +1,53 @@
+# =============================================================================
+# Feast - configuracion de CLUSTER (almacen online en Redis, registro en GCS)
+#
+# Almacen online: Redis de reactorguard-ingestion (k8s/base/ingestion/redis.yaml),
+# alcanzable por redis-service.reactorguard-ingestion:6379. allow-ml ya tiene
+# egress a ese puerto y allow-ingestion acepta 6379 desde ml.
+#
+# CONTRASENA. Viene de la variable de entorno REDIS_PASSWORD, que Feast expande con
+# os.path.expandvars al cargar este fichero. Nunca se escribe aqui. El Secret
+# redis-credentials (clave `password`) vive en reactorguard-ingestion y un pod NO
+# puede montar Secrets de otro namespace, asi que reactorguard-ml necesita SU PROPIA
+# COPIA con el mismo valor, creada fuera de banda (nunca en el repo):
+#
+#   kubectl create secret generic redis-credentials -n reactorguard-ml `
+#       --from-literal=password=<el mismo valor que en ingestion>
+#
+# y se inyecta en el pod con env.valueFrom.secretKeyRef (name: redis-credentials,
+# key: password). Si se rota la contrasena en ingestion, hay que rotar tambien esta
+# copia (paso manual, como el de los Secrets de Kafka). La contrasena no puede
+# contener comas: la cadena de conexion de
+# Feast las usa como separador. Si REDIS_PASSWORD no esta definida,
+# FeastClient.from_params falla con un ValueError que la nombra, en lugar de dejar
+# que Feast envie la cadena literal y que Redis rechace el AUTH.
+#
+# REGISTRO. En el bucket data-processed, bajo feast/. Lo ESCRIBE el SA de CI/CD
+# (reactorguard-cicd-sa), el unico con objectAdmin sobre ese bucket; el SA de ml solo
+# tiene objectViewer y lo LEE; ingestion-sa solo tiene objectCreator y no puede
+# sobrescribir el registro. Nota: no se cambia Terraform en esta fase, de modo que
+# `feast apply` debe ejecutarlo CI/CD (o una identidad con objectAdmin).
+# El nombre del bucket es reactorguard-data-processed-dev (storage.bucket_prefix y
+# storage.env); lo contrasta tests/unit/test_feature_store_params.py.
+#
+# key_ttl_seconds = feature_store.ttl_intervals x tep.sample_interval_minutes x 60
+# = 540 s. Hace que Redis expire la clave de un sensor que lleva ese tiempo sin
+# escribirse; FeastClient lo informa entonces como `missing`. Es la segunda barrera:
+# la primera es la comprobacion de edad de FeastClient, necesaria porque el TTL del
+# FeatureView no caduca nada en lectura online (medido en Feast 0.64). Un test exige
+# que este valor coincida con el de params.yaml.
+#
+# Redis esta con maxmemory 256mb y noeviction, y es reconstruible con
+# `feast materialize`: no es fuente de verdad.
+# =============================================================================
+project: reactorguard
+provider: local
+registry: gs://reactorguard-data-processed-dev/feast/registry.pb
+online_store:
+  type: redis
+  redis_type: redis
+  connection_string: "redis-service.reactorguard-ingestion:6379,password=${REDIS_PASSWORD}"
+  key_ttl_seconds: 540
+offline_store:
+  type: file
+entity_key_serialization_version: 3
