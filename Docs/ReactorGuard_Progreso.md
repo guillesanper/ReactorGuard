@@ -1,6 +1,6 @@
 # ReactorGuard — Registro de Progreso
 **Nuclear Reactor Anomaly Detection Platform**
-*Actualizado: 2026-10-05 — estado verificado contra el codigo en el commit `98cd321` (2026-07-26)*
+*Actualizado: 2026-10-11 — estado verificado contra el codigo en el commit `d7bbf7c` (M8) y el hito M9, sin commitear*
 
 Este documento distingue tres cosas que antes se confundian: **codigo escrito**, **verificado en local**
 y **criterio medido en el entorno real**. Una tarea puede estar completada como codigo y aun asi no
@@ -13,28 +13,33 @@ tener su criterio de exito medido.
 | Fase | Nombre | Semanas | Estado |
 |------|--------|---------|--------|
 | 1 | Foundation – GKE + Kafka | 1–2 | Codigo completo, **sin desplegar**; criterios sin medir |
-| 2 | Data Pipeline + Sensor Validator | 3–4 | **Parcial**: camino local completo; faltan las piezas que requieren Kafka/GCP |
+| 2 | Data Pipeline + Sensor Validator | 3–4 | **Codigo completo y verificado en local**; criterios 2 y 4 CUMPLIDOS, 1 y 3 NO MEDIDOS hasta medir en el cluster |
 | 3 | Simulation Layer (OpenMC + PyDy) | 5 | No iniciada |
 | 4 | ML Core – PINN Training | 6–7 | No iniciada (solo andamiaje) |
 | 5 | Uncertainty – BNN + Conformal Prediction | 8 | No iniciada |
 | 6 | API + K8s Serving | 9–10 | No iniciada (solo andamiaje, 2 de 4 endpoints devuelven 501) |
 | 7 | CI/CD + Security Gates | 11 | Solo esqueleto (`ci.yaml`, `terraform.yaml`, `dependabot.yml`) |
-| 8 | Observability Stack | 12 | No iniciada (`observability/` vacio) |
+| 8 | Observability Stack | 12 | No iniciada; `observability/` solo contiene el dashboard `data-pipeline` (T4.6, adelantado desde Fase 2) |
 
-### Linea base medida (2026-10-05)
+### Linea base medida (2026-10-11, cierre de M9)
 
 ```
 pytest tests/unit tests/safety --cov --cov-fail-under=70
-  585 passed, 3 skipped        cobertura TOTAL 98,79%   (1568 sentencias, 19 sin cubrir)
+  1836 passed, 3 skipped       cobertura TOTAL 99,41%   (3747 sentencias, 22 sin cubrir)   458 s
 ruff check .                   All checks passed
-mypy ml/ api/ data/            no issues found in 37 source files
+mypy ml/ api/ data/            no issues found in 66 source files
+dvc status                     Data and pipelines are up to date
 
-dvc.yaml                       download_tep -> explore_tep -> adapt_tep -> featurize -> split
+dvc.yaml                       download_tep -> explore_tep -> adapt_tep -> featurize -> {feast_source, split}
 
 data/processed/tep             22 particiones   550.160 lecturas
 data/processed/features        22 particiones   550.160 filas x 31 columnas
+data/processed/feast_source    22 runs          550.160 filas (linea temporal sintetica)
 data/processed/splits          train 385.112 / val 82.524 / test 82.524
 ```
+
+Evolucion de la suite: 585 passed al abrir la Fase 2 (M0) -> 1803 al cerrar M8 -> 1836 con los 32 tests de
+`Verify-Phase2.ps1` y el contraste de `$ProjectId`. Los 3 omitidos de abajo no han cambiado.
 
 Los 3 tests omitidos son la suite de `tests/safety/test_safety_constraints.py`, marcada `skip`
 a proposito hasta la Fase 3 (depende de `reactor_simulator.py`, roto contra el schema canonico).
@@ -89,9 +94,9 @@ Kafka (nuevo `k8s/base/kafka/kafka-users.yaml` con usuarios y ACLs), NetworkPoli
 
 ### Deuda conocida de Fase 1
 
-- **`k8s/base/kustomization.yaml` no incluye `kafka/`** (ni `kafka-cluster.yaml`, ni `kafka-topics.yaml`, ni
-  el nuevo `kafka-users.yaml`). Hoy `kubectl apply -k k8s/base/` no crearia el clúster ni los topics.
-  El handoff del Paso 4 asume que si. Hay que anadir los recursos o aplicar los ficheros a mano.
+- ~~`k8s/base/kustomization.yaml` no incluye `kafka/`~~ **Resuelto en M6**: ahora incluye el cluster, los topics,
+  los usuarios y el ConfigMap `kafka-metrics` que `kafka-cluster.yaml` referenciaba y no existia. Un test
+  (`test_k8s_manifests.py`) lo mantiene. Sigue sin desplegarse.
 - **Region**: Terraform y `bootstrap.ps1` usan `europe-southwest1`. Este documento decia `europe-west1`
   hasta hoy; el valor correcto es `europe-southwest1`.
 - **Project ID**: el ID real es `sentinel-platform-485714`. `reactorguard-platform` es solo el nombre del
@@ -100,7 +105,7 @@ Kafka (nuevo `k8s/base/kafka/kafka-users.yaml` con usuarios y ACLs), NetworkPoli
 ---
 
 ## Fase 2 — Data Pipeline + Sensor Validator
-**Semanas 3–4** · Parcial: todo lo que corre en local esta hecho; faltan las piezas que necesitan Kafka y GCP
+**Semanas 3–4** · Codigo completo y verificado en local; sin desplegar. Criterios 1 y 3 pendientes del cluster
 
 ### SEMANA 3 — TEP Dataset + Sensor Validator
 
@@ -108,9 +113,9 @@ Kafka (nuevo `k8s/base/kafka/kafka-users.yaml` con usuarios y ACLs), NetworkPoli
 |----|-------|--------|-------|
 | T3.1 | Schema Pydantic de sensor reading | Completado | `data/schemas/sensor_reading.py`, cobertura 100%. Serializacion `to_kafka_bytes` / `from_kafka_bytes` |
 | T3.2 | Descarga y exploracion del TEP | Completado | `tep_downloader`, `tep_explorer`, `tep_loader`, `tep_adapter`, `adapt_tep`. 22 ficheros, 550.160 lecturas. `reading_id` determinista (uuid5) |
-| T3.3 | `tep_streamer.py`: CSV -> productor Kafka | **Pendiente** | Clave de particion = `sensor_id` (condicion de correccion, ver Handoff_Paso4 seccion 7) |
+| T3.3 | `tep_streamer.py`: parquet/GCS -> productor Kafka | Completado (local) | `data/generators/tep_streamer.py` + `tep_streamer_service.py`. Clave `sensor_id`, cabecera `run-id`, modos `fast` y `realtime` (plazos absolutos, sin deriva). Local, modo fast: 550.160 mensajes en 70 s (~7,9 mil msg/s, 0 errores, un proceso; informativo). Sin desplegar |
 | T3.4 | `sensor_validator.py`: 5 detectores | Completado | stuck, rate-of-change, range, cross-correlation, Kalman. Cobertura 99%. Spans por sensor con dos rangos (`configs/sensor_spans.yaml`) |
-| T3.5 | Consumidor Kafka: validacion -> `sensor-validated` | **Pendiente** | Aqui `get_metrics()` pasa a metricas Prometheus y se expone `/metrics` |
+| T3.5 | Consumidor Kafka: validacion -> `sensor-validated` | Completado (local) | `validation_consumer.py`, `validation_service.py`, `alert_event.py`. At-least-once (flush y despues commit), veneno saltado con commit, reset de estado por `run-id`, retroceso de reloj y rebalanceo. 15 metricas `reactorguard_*` en `:9090`. Local: ~2,2 mil lecturas/s. Con los 22 runs emite **100.934 alertas (18,3 %)**, no las ~19.700 estimadas (ver hallazgo 9). Sin desplegar |
 | T3.6 | Tests del validador con datos TEP reales | Completado | `test_validator_on_tep.py` (15 tests). Inyeccion sintetica con semilla fija sobre d00 y validacion cruzada con el unico positivo real (XMV-04 en d21) |
 
 ### SEMANA 4 — Feature Engineering + Feast + DVC
@@ -119,20 +124,28 @@ Kafka (nuevo `k8s/base/kafka/kafka-users.yaml` con usuarios y ACLs), NetworkPoli
 |----|-------|--------|-------|
 | T4.1 | `kalman.py`: filtro Kalman online por sensor | Completado | `OnlineKalmanFilter`, `KalmanFilterBank`, cobertura 100% |
 | T4.2 | `features/pipeline.py` + `batch_featurizer.py` | Completado | 7 grupos de features del TDD 5.5, ventanas en muestras (`[10, 20, 60]`), salida larga con `sensor_id` |
-| T4.3 | Feast feature store | **Pendiente** | TTL del prompt original estan pensados para 1 s: recalibrar a la cadencia de 180 s |
-| T4.4 | DVC: `download_tep -> explore_tep -> adapt_tep -> featurize -> split` | Completado | Reproducible, la segunda ejecucion salta las 5 stages. No incluye `simulate` (Fase 3). Usar siempre `Invoke-Pipeline.ps1`, no `dvc repro` a pelo |
-| T4.5 | Particionamiento GCS (`GCSStorageClient` + `LocalCache`) | **Pendiente** | |
-| T4.6 | Dashboard Grafana del pipeline de datos | **Pendiente** | Depende de las metricas de T3.5. La excepcion `!observability/**/*.json` de `.gitignore` ya existe |
-| T4.7 | `Verify-Phase2.ps1` | **Pendiente** | Debe reportar tres estados: CUMPLIDO / FALLADO / NO MEDIDO (los tests de T3.6 se saltan, no fallan, si falta `data/processed/tep`) |
+| T4.3 | Feast feature store | Completado (local) | `ml/features/store/`: vista `sensor_features` con campos generados desde `FeaturePipeline.feature_names()`, stage DVC `feast_source`, offline parquet, online SQLite en local y Redis en cluster (sin BigQuery). TTL = 3 intervalos = **540 s**. El TTL de Feast **no caduca** nada en lectura online (medido en 0.64): la frescura la aplica `FeastClient` y Redis lleva `key_ttl_seconds` (hallazgo 7). Sin desplegar |
+| T4.4 | DVC: `download_tep -> explore_tep -> adapt_tep -> featurize -> {feast_source, split}` | Completado | 6 stages, reproducible desde cero (bit a bit, ver criterio 4); la segunda ejecucion las salta todas. No incluye `simulate` (Fase 3). Usar siempre `Invoke-Pipeline.ps1`, no `dvc repro` a pelo |
+| T4.5 | Particionamiento GCS (`GCSStorageClient` + `LocalCache`) | Completado (local) | `data/storage/`: layout hive `plant=/year=/month=/day=/hour=`, parquet con esquema Arrow, partes con nombre determinista y escritura `if_generation_match=0` (412 = ya escrito: `ingestion-sa` solo tiene `objectCreator`). Nada del pipeline lo llama todavia: desbloquea la fuente del streamer en el cluster y el archivo futuro. Sin desplegar |
+| T4.6 | Dashboard Grafana del pipeline de datos | Completado (local) | `observability/grafana/dashboards/data-pipeline.json`: 18 paneles, variable `rate_window` (defecto 15m), 158 tests que contrastan cada metrica y etiqueta con `StreamMetrics`. Validado **sin inspeccion visual** (sin renderizador). Sin paneles de latencia de features ni de GCS (no hay metrica que los alimente). **No desplegado: no hay Grafana ni Prometheus en el cluster** |
+| T4.7 | `Verify-Phase2.ps1` | Completado | `infra/scripts/Verify-Phase2.ps1`: cuatro capas, tres estados (CUMPLIDO / FALLADO / NO MEDIDO), salidas 0/1/2 (3 = error interno), informe `tests/results/phase2_verification.json`. 32 tests ejecutan PowerShell sobre artefactos sinteticos. Distingue `passed` de `skipped` con JUnit y exige `environment: cluster` en los criterios 1 y 3 |
 
 ### Criterios de Exito Fase 2
 
-| Metrica | Umbral | Estado |
-|---------|--------|--------|
-| Throughput Kafka pipeline | > 50.000 readings/s sostenidos | **Pendiente**: requiere clúster y T3.3 |
-| Stuck sensor precision | > 95% | **Cumplido: 1,0000** (`tests/results/validator_metrics_tep.json`, puerta en el propio test) |
-| Feature pipeline latency | < 100 ms por ventana bajo carga | **Pendiente**: sin medir bajo carga |
-| `dvc repro` reproducible desde cero | Sin errores | **Cumplido y demostrado** |
+Estado dado por `.\infra\scripts\Verify-Phase2.ps1` (informe en `tests/results/phase2_verification.json`).
+Un criterio solo es CUMPLIDO con evidencia del entorno que exige; una medicion local es informativa.
+
+| Metrica | Umbral | Estado | Evidencia |
+|---------|--------|--------|-----------|
+| 1. Throughput Kafka pipeline | > 50.000 readings/s sostenidos | **NO MEDIDO** (exige cluster) | Local, informativo: **13.993 msg/s** (280.800 mensajes en 20,07 s, un proceso Python, un broker de un nodo, ventanas de 9.270 a 17.465 msg/s). Medido en `a428e71-dirty` |
+| 2. Stuck sensor precision | > 95% | **CUMPLIDO** | **1,0000**; 27 tests ejecutados y 0 saltados (T3.6 + invariantes de streaming), 473 de 480 pares de XMV-04/d21 detectados tambien por el camino de streaming con 1, 2 y 3 consumidores |
+| 3. Feature pipeline latency | < 100 ms por ventana bajo carga | **NO MEDIDO** (exige cluster) | Local, informativo: **p99 82,1 ms** (p50 48,0, p95 69,9, max 89,9; 441 llamadas, 60 muestras x 52 sensores, con 4 procesos de validacion en paralelo). La cifra anterior de 98,8 ms era previa a la vectorizacion de `transform` |
+| 4. `dvc repro` reproducible desde cero | Sin errores | **CUMPLIDO** | `dvc status` limpio, `dvc.lock` registra las 6 etapas y la reproduccion desde cero en una copia temporal (con descarga) dio las **8 salidas con el mismo hash** (`-FromScratch`, 80 s) |
+
+Los criterios 1 y 3 **no se pueden cerrar sin el cluster**. Para el 1 hay ademas una limitacion conocida: el
+techo medido de un proceso de kafka-python (12.000 a 17.000 msg/s) esta por debajo de 50.000, de modo que
+la medicion en el cluster podria exigir fragmentar sensores entre procesos productores (cada sensor siempre
+en uno solo). No se ha anticipado: se decide con esa medicion.
 
 ### Metricas del validador sobre TEP (medidas, d00 con inyeccion sintetica)
 
@@ -156,9 +169,9 @@ positivos en otros sensores.
 2. **Deriva lenta de instrumento: no detectable** con este mecanismo a esta cadencia. Banda util de solo
    10–18 anchos de sobre/hora. Documentado en `DRIFT_DETECTION_FLOOR_NOTE`. Haria falta un estimador de linea
    base larga.
-3. **Falsos positivos del residual de Kalman: 3,59%** sobre sensores intactos (colas pesadas). Por eso
-   `kalman_anomaly` es senal de apoyo, sin gate. Sobre 550.160 lecturas son unas 19.700 alertas: dimensionar
-   `anomaly-alerts` con este numero.
+3. **Falsos positivos del residual de Kalman: 3,59%** sobre sensores intactos de d00 (colas pesadas). Por eso
+   `kalman_anomaly` es senal de apoyo, sin gate. **El dimensionado de `anomaly-alerts` con ~19.700 alertas
+   quedo superado por la medicion con los 22 runs: 100.934 (ver hallazgo 9).**
 4. **Positivos reales de fallo de instrumento en el TEP: casi inexistentes** (solo XMV-04 en d21, 0,087%).
    El plan original que daba d14/d15 como positivos de stuck era incorrecto.
 5. **Estado en memoria por sensor.** Los detectores acumulan estado: sin particionar por `sensor_id`, el
@@ -166,6 +179,26 @@ positivos en otros sensores.
    cadencia TEP para volver a detectar). Persistirlo seria un rediseno: decision pendiente.
 6. **El split es temporal dentro de cada `fault_type`.** `temporal_order_holds` es true por clase; en
    agregado no se cumple ni puede (d00 tiene 500 timesteps y el resto 480).
+7. **El TTL de Feast no caduca nada en lectura online** (medido en Feast 0.64). El calculo del 83 % de
+   `Handoff_Paso4.md` sigue siendo el motivo de que el TTL sea de 3 intervalos (540 s) y no de 30 s, pero la
+   caducidad la aplica `FeastClient` con el `event_timestamp` y, en el cluster, Redis con
+   `key_ttl_seconds` = 540 s. El 83 % es aritmetico (150 s de 180 s sin valor vigente con un TTL de 30 s),
+   no una medicion.
+8. **`rate(...[1m])` con cadencia de 180 s y scrape de 15 s no devuelve vacio: devuelve un valor
+   enganoso.** Medido en M8: da 0 en el 80 % de las evaluaciones y picos de 1,16 msg/s frente a una media
+   real de 0,29; con `[5m]` da 0 en el 44 %. Solo queda vacio con scrape >= 60 s. Por eso el dashboard usa
+   `rate_window` (defecto 15m) y `increase()`. Corrige la redaccion previa ("a 180 s una consulta
+   `rate(...[1m])` devuelve vacio").
+9. **El validador emite 100.934 alertas (18,3 %) sobre los 22 runs**, no ~19.700 (3,59 %, medido solo en
+   operacion normal sobre sensores intactos). Por tipo: `bias_out_of_range` 70.225, `stuck` 15.765,
+   `kalman_anomaly` 11.518, `sensor_drift` 1.920, `noise_spike` 1.506. Por `quality`: good 462.478,
+   suspect 55.905, bad 31.777. **Causa no investigada**: probable excursion de proceso en los 21 runs con
+   fallo; `stuck` merece revision, porque d21 solo tiene 480 positivos reales. Es una cifra medida, no un
+   defecto diagnosticado.
+10. **Con 52 claves el particionador deja vacias 2 de las 12 particiones** (la 5 y la 9; la mas cargada
+    recibe 8 sensores): el paralelismo util del validador son 10 consumidores, no 12.
+11. **El camino en linea de features no existe**: `FeaturePipeline.transform()` es por lotes sobre una
+    ventana contigua. El criterio 3 se mide sobre `transform()` de una ventana y T3.5 no calcula features.
 
 ---
 
@@ -264,12 +297,13 @@ devuelven HTTP 501 ([predict.py:27](../api/routers/predict.py#L27), [explain.py:
 ---
 
 ## Fase 8 — Observability Stack
-**Semana 12** · No iniciada (`observability/` sin contenido salvo `.gitkeep`)
+**Semana 12** · No iniciada. `observability/` solo contiene el dashboard `data-pipeline` (T4.6) y su
+`kustomization.yaml`; no hay Prometheus, reglas de alerta ni Alertmanager.
 
 | ID | Tarea | Estado |
 |----|-------|--------|
 | T12.1 | Prometheus: 8 metricas custom + reglas de alerting | Pendiente |
-| T12.2 | Grafana: 4 dashboards | Pendiente |
+| T12.2 | Grafana: 4 dashboards | Parcial: 1 de 4 (`data-pipeline`, hecho como T4.6) |
 | T12.3 | Alertmanager: CRITICAL -> PagerDuty, WARNING -> Slack | Pendiente |
 | T12.4 | Jaeger + OpenTelemetry Collector | Pendiente |
 | T12.5 | Runbooks en `docs/runbooks/` | Pendiente |
@@ -277,16 +311,32 @@ devuelven HTTP 501 ([predict.py:27](../api/routers/predict.py#L27), [explain.py:
 
 ---
 
+## Deuda de despliegue de la Fase 2
+
+Lo que impide dar por cerrada la Fase 2 en el cluster y que **no** se resuelve en local:
+
+| Deuda | Detalle | Donde se resuelve |
+|-------|---------|-------------------|
+| Criterios 1 y 3 sin medir en cluster | Solo una medicion con `environment: cluster` los cierra | Despliegue + `Invoke-KafkaTests.ps1` y `benchmark_feature_latency.py --environment cluster` |
+| **No hay Grafana ni Prometheus en el cluster** | T2.6 de la Fase 1 nunca se hizo. El dashboard `data-pipeline` (ConfigMap con etiqueta `grafana_dashboard: "1"` en `reactorguard-observability`) no tiene donde cargarse, y no hay scrape de los pods en `:9090` | Fase 8 (T12.1, T12.2) o antes si se quiere observar el despliegue |
+| Fuente del streamer en el cluster | No hay remoto DVC; hay que subir el parquet con `gsutil rsync data/processed/tep gs://reactorguard-data-raw-dev/tep/` | Paso manual del despliegue |
+| Secretos copiados entre namespaces | Un pod no monta Secrets de otro namespace: `Sync-KafkaCredentials.ps1` copia usuario y CA; la rotacion es manual | Paso manual |
+| Contrasena de Redis y copia en `reactorguard-ml` | Se crea fuera de banda, nunca en el repo | Paso manual |
+| `feast apply` en el cluster | El registro vive en `data-processed`; solo `cicd-sa` tiene `objectAdmin` | CI/CD (sin cambio de Terraform en esta fase) |
+| Imagen unica y grande | `api/Dockerfile` arrastra torch para streamer y validador | Fase 6 |
+| Sin DLQ ni persistencia del estado | Mensajes venenosos solo en el log; cada rebalanceo cuesta 24 min de recalentamiento de stuck | Decision pendiente |
+
 ## Siguiente paso recomendado
 
-1. **Trabajo local, sin coste GCP:** T3.3 (streamer), T3.5 (consumidor + metricas Prometheus), T4.5
-   (`LocalCache`), T4.3 (Feast con TTL recalibrados), T4.6 (dashboard), T4.7 (`Verify-Phase2.ps1`).
-2. **Despliegue en GCP con intervencion humana** (autenticacion, bucket de estado, revisar `terraform plan`
+1. **Despliegue en GCP con intervencion humana** (autenticacion, bucket de estado, revisar `terraform plan`
    y coste antes de `apply`): cierra los criterios pendientes de Fase 1 y los criterios 1 y 3 de Fase 2.
-   Corregir antes el hueco de `kustomization.yaml` (ver deuda de Fase 1). Destruir la infraestructura al terminar.
+   Destruir la infraestructura al terminar. Guia en [Handoff_Paso4.md](Handoff_Paso4.md) (secciones 6 y 7).
+2. Antes del despliegue, decidir: persistencia del estado de los detectores, DLQ, y que hacer con las
+   100.934 alertas (hallazgo 9).
 3. Fases 3 y 4 solo cuando se indique explicitamente.
 
-Detalle de las tareas pendientes de Fase 2 en [Handoff_Paso4.md](Handoff_Paso4.md) (secciones 6 y 7).
+Referencia tecnica del camino de streaming (invariantes, contrato de mensajes, commit, rebalanceo, metricas y
+runbook): [ReactorGuard_Fase2_Streaming.md](ReactorGuard_Fase2_Streaming.md).
 
 ---
 
@@ -307,6 +357,15 @@ Detalle de las tareas pendientes de Fase 2 en [Handoff_Paso4.md](Handoff_Paso4.m
 - **Python**: venv en 3.12 (`requires-python >= 3.11`)
 - **Pipeline de datos**: ejecutar siempre `.\infra\scripts\Invoke-Pipeline.ps1`. `dvc repro` a pelo usa el
   Python del sistema y, peor, DVC borra los `outs` antes de ejecutar la stage
+- **Stack local** (Kafka KRaft de un nodo y Redis en Docker): `.\infra\local\Invoke-LocalStack.ps1 -Up` /
+  `-Down`; con `-Observability` anade Prometheus y Grafana
+- **Verificacion de la Fase 2**: `.\infra\scripts\Verify-Phase2.ps1` (salida 0 todos cumplidos, 1 algun
+  fallado, 2 alguno sin medir, 3 error del verificador). `-SkipCluster` evita kubectl; `-FromScratch` rehace
+  el pipeline en una copia temporal (minutos, necesita red)
+- **Puerto 8000 del host**: puede estar ocupado por otro proyecto; los servicios en el host fallan con
+  `EXIT_RUNTIME`. Usar una copia de `params.yaml` con otro `health_port` y `--params`
+- **Suspension de Windows**: la suspension moderna (Kernel-Power 506/507) falsea las mediciones largas;
+  contrastarlas con esos eventos antes de darlas por buenas
 - **`.gitignore` y JSON**: la regla `*.json` es deliberada (claves GCP). Todo directorio con JSON fuente
   necesita su excepcion explicita (`observability/**`, `metrics/*.json`)
 - **Terraform**: los errores del LSP en VSCode son falsos positivos; recargar ventana

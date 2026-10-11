@@ -15,6 +15,24 @@ Este Paso 4 es el que despliega infraestructura, y por eso **requiere intervenci
 real**: hay que autenticarse en GCP, aplicar Terraform con coste economico asociado, y
 operar un cluster. Las secciones 6 y 7 son la guia paso a paso.
 
+> **ACTUALIZACION M9 (2026-10-11): el trabajo local de este Paso 4 esta HECHO.** Las tareas de la
+> seccion 7 (T3.3, T3.5, T4.3, T4.5, T4.6, T4.7) estan implementadas y verificadas en local; lo que
+> queda es el despliegue (secciones 6 y 10) y medir los criterios 1 y 3 en el cluster. Este documento
+> se conserva como guia de despliegue; **el estado vivo esta en
+> [ReactorGuard_Progreso.md](ReactorGuard_Progreso.md)** y el diseno, el contrato de mensajes y el
+> runbook en [ReactorGuard_Fase2_Streaming.md](ReactorGuard_Fase2_Streaming.md). Las correcciones
+> que se hicieron al leer el codigo real estan marcadas con `[M9]` mas abajo.
+>
+> | Tarea | Donde esta |
+> |---|---|
+> | T3.3 streamer | `data/generators/tep_streamer.py`, `tep_streamer_service.py` |
+> | T3.5 consumidor | `data/validation/validation_consumer.py`, `validation_service.py`, `alert_event.py` |
+> | T4.3 Feast | `ml/features/store/` y stage DVC `feast_source` |
+> | T4.5 almacenamiento | `data/storage/` |
+> | T4.6 dashboard | `observability/grafana/dashboards/data-pipeline.json` |
+> | T4.7 verificacion | `infra/scripts/Verify-Phase2.ps1` |
+> | Stack local | `infra/local/Invoke-LocalStack.ps1` |
+
 ---
 
 ## 1. Linea base medida al terminar el Paso 3 — punto de partida
@@ -38,10 +56,10 @@ Criterios de Fase 2, estado real:
 
 | # | Criterio | Estado |
 |---|----------|--------|
-| 1 | Throughput Kafka > 50.000 msg/s sostenidos | **PENDIENTE — es este Paso 4** |
+| 1 | Throughput Kafka > 50.000 msg/s sostenidos | **PENDIENTE — es este Paso 4** `[M9]` NO MEDIDO: local 13.993 msg/s, informativo; exige el cluster |
 | 2 | Stuck sensor precision > 95% | **CUMPLIDO: 1,0000** (`tests/results/validator_metrics_tep.json`) |
-| 3 | Feature pipeline latency < 100 ms por ventana bajo carga | **PENDIENTE — sin medir bajo carga** |
-| 4 | `dvc repro` reproducible desde cero | **CUMPLIDO y demostrado** (ver seccion 3.C) |
+| 3 | Feature pipeline latency < 100 ms por ventana bajo carga | **PENDIENTE — sin medir bajo carga** `[M9]` NO MEDIDO: local p99 82,1 ms, informativo; exige el cluster |
+| 4 | `dvc repro` reproducible desde cero | **CUMPLIDO y demostrado** (ver seccion 3.C) `[M9]` reverificado desde cero con `Verify-Phase2.ps1 -FromScratch` |
 
 **NADA ESTA COMMITEADO.** El arbol acumula tres sesiones de trabajo. Ver seccion 8.
 
@@ -146,6 +164,14 @@ forzar una re-adaptacion desde cero.
 residuales del proceso real tienen colas mas pesadas que el modelo cinematico. Por eso
 `kalman_anomaly` es senal de apoyo y **no lleva gate**. Tenlo en cuenta al dimensionar las
 alertas de `anomaly-alerts` en T3.5: a 550.160 lecturas, un 3,59% son ~19.700 alertas.
+
+> `[M9]` **Ese dimensionado se quedo corto.** Medido con el validador sobre los 22 runs: **100.934
+> alertas (18,3 % de 550.160)**, no ~19.700. El 3,59 % se midio solo en operacion normal sobre sensores
+> intactos de d00. Por tipo: `bias_out_of_range` 70.225, `stuck` 15.765, `kalman_anomaly` 11.518,
+> `sensor_drift` 1.920, `noise_spike` 1.506; por calidad: good 462.478, suspect 55.905, bad 31.777.
+> La causa no esta investigada (probable excursion de proceso en los 21 runs con fallo); `stuck`
+> merece revision porque d21 solo tiene 480 positivos reales. Dimensiona `anomaly-alerts` con ~100.000
+> eventos por pasada del dataset.
 
 ---
 
@@ -369,9 +395,16 @@ criterios pendientes de la Fase 1**, que llevan sin medir desde el principio.
 ```powershell
 .\infra\scripts\Install-Kafka.ps1          # pideme que lo lea antes
 kubectl apply -k k8s/base/
+.\infra\scripts\Sync-KafkaCredentials.ps1  # [M9] copia usuarios y CA a reactorguard-ingestion
 kubectl get kafka -n kafka-operator
 kubectl get kafkatopic -n kafka-operator
 ```
+
+`[M9]` `kubectl apply -k k8s/base/` ya incluye `kafka/` (cluster, topics, usuarios y el ConfigMap
+`kafka-metrics`), los Deployments del streamer y del validador y Redis. Antes de que arranquen los
+pods hay que crear **fuera de banda** el Secret `redis-credentials` en `reactorguard-ingestion` (y su
+copia en `reactorguard-ml`) y subir el parquet con
+`gsutil rsync data/processed/tep gs://reactorguard-data-raw-dev/tep/` (no hay remoto DVC).
 
 Los 3 topics ya estan declarados en `k8s/base/kafka/kafka-topics.yaml`:
 
@@ -420,7 +453,9 @@ Ver seccion 7.
   cada 12 lecturas, el `run_length` NUNCA llega a 8, y **el unico sensor realmente congelado
   del dataset deja de detectarse**. Sin error, sin log, sin excepcion: el criterio de Fase 2
   que hoy vale 1,0000 se desploma y nada te dice donde mirar. Ademas el orden se rompe, el
-  `elapsed` sale negativo (lo descarta `sensor_validator.py:356`) y el `dt` del Kalman queda mal.
+  `elapsed` sale negativo (lo descarta `sensor_validator.py:389`) y el `dt` del Kalman queda mal.
+  `[M9]` La referencia decia `:356`; el codigo ha cambiado desde entonces y hoy esa comprobacion
+  (`elapsed <= 0.0`) esta en `:389`.
 
   **Dos consecuencias operativas que se derivan de esto:**
 
@@ -448,6 +483,7 @@ Ver seccion 7.
 - **Commit del offset SOLO despues de publicar** todos los mensajes del batch. Al reves se
   pierden mensajes en un reinicio.
 - **Dimensiona las alertas con el 3,59% del hallazgo 3.E**, no con una estimacion optimista.
+  `[M9]` Superado: ver la medicion de 100.934 alertas en 3.E.
 - Ojo con las replicas y el estado por sensor: ver la nota de particionado en T3.3.
 
 ### T4.3 — Feast + Redis
@@ -474,6 +510,22 @@ Ver seccion 7.
   Regla: **TTL > intervalo de muestreo, con margen** (a 180 s, del orden de 360-540 s). Pero
   el numero se mide contra la cadencia real del stream, no se hereda. Recalibralos y dimelo.
 
+  > `[M9]` **Correccion de la premisa.** El razonamiento de arriba da por hecho que "un TTL en Feast es
+  > cuanto tiempo un valor sigue sirviendose online". **En Feast 0.64 eso no es asi** (medido): el TTL
+  > del `FeatureView` solo acota la ventana de `materialize` y los joins historicos y **no caduca nada
+  > en la lectura online**; `get_online_features` sirve el ultimo valor escrito aunque tenga dias. El
+  > calculo del 83 % es correcto como aritmetica y sigue justificando el margen (150 s de 180 s sin
+  > valor vigente con un TTL de 30 s), pero la caducidad la aplican otras dos barreras:
+  >
+  > 1. `FeastClient` compara el `event_timestamp` de cada valor con el reloj y, si supera
+  >    `ttl_intervals x sample_interval` = **540 s** (3 intervalos), entrega nulos y lo lista en
+  >    `stale_sensors`.
+  > 2. En el cluster, Redis lleva `key_ttl_seconds` = 540 s en `feature_store.cluster.yaml`, de modo que
+  >    expira la clave de un sensor que deja de escribirse; entonces aparece en `missing_sensors`.
+  >
+  > Un test exige que ese valor coincida con el de `params.yaml`. SQLite (local) no caduca claves: ahi
+  > solo actua la primera barrera.
+
 ### T4.5 — Particionamiento GCS
 
 - `data/storage/gcs_client.py` con `GCSStorageClient` y **`LocalCache` con la misma interfaz**
@@ -486,6 +538,14 @@ Ver seccion 7.
 - `observability/grafana/dashboards/data-pipeline.json`. **La excepcion de `.gitignore` ya
   esta puesta** (`!observability/**/*.json`), asi que se versionara bien.
 - Los paneles de latencia asumen metricas que T3.5 debe exponer antes.
+- `[M9]` **Ventana de `rate()`.** Con la cadencia de 180 s (un lote de 52 lecturas cada 3 min), una
+  consulta `rate(...[1m])` **no** devuelve vacio, como se pensaba al planificar: medido en M8 con scrape
+  de 15 s da 0 en el 80 % de las evaluaciones y picos de 1,16 msg/s frente a una media real de 0,29
+  (con `[5m]`: 0 en el 44 %). Solo queda vacio con scrape >= 60 s. Es un valor enganoso, no una
+  ausencia visible. El dashboard expone `rate_window` (defecto 15m) y usa `increase()`.
+- `[M9]` **Deuda de despliegue**: no hay Grafana ni Prometheus en el cluster (T2.6 de la Fase 1 nunca
+  se hizo) ni scrape de los pods en `:9090`; el dashboard esta validado por tests, sin inspeccion
+  visual y sin cargarlo en un Grafana real del cluster.
 
 ### T4.7 — `Verify-Phase2.ps1`
 

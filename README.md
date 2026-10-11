@@ -11,14 +11,18 @@ auditability and operates on Google Kubernetes Engine.
 
 ## Project status
 
-Phase 2 (data pipeline) is partially complete and runs entirely locally; no cloud
-infrastructure has been deployed yet. See [Docs/ReactorGuard_Progreso.md](Docs/ReactorGuard_Progreso.md)
-for the verified per-task status and [Docs/Handoff_Paso4.md](Docs/Handoff_Paso4.md) for the next steps.
+Phase 2 (data pipeline) is code-complete and verified locally; no cloud infrastructure
+has been deployed yet. Of its four success criteria, two are met (stuck-sensor precision,
+DVC reproducibility) and two are **not measured** until they run on the cluster
+(Kafka throughput, feature latency under load). See
+[Docs/ReactorGuard_Progreso.md](Docs/ReactorGuard_Progreso.md) for the verified per-task status,
+[Docs/ReactorGuard_Fase2_Streaming.md](Docs/ReactorGuard_Fase2_Streaming.md) for the streaming
+design and runbook, and [Docs/Handoff_Paso4.md](Docs/Handoff_Paso4.md) for the deployment steps.
 
 | Phase | Status |
 |-------|--------|
 | 1. GKE + Kafka | Code complete, not deployed |
-| 2. Data pipeline + sensor validator | Partial: TEP ingestion, validator, features and DVC pipeline done; Kafka streamer/consumer, Feast, GCS client pending |
+| 2. Data pipeline + sensor validator | Code complete and verified locally: TEP streamer, validation consumer, features, Feast, storage client, DVC pipeline and dashboard. Criteria 1 and 3 need the cluster |
 | 3-8. Simulation, PINN, uncertainty, API, CI/CD, observability | Not started (scaffolding only) |
 
 ---
@@ -30,7 +34,7 @@ for the verified per-task status and [Docs/Handoff_Paso4.md](Docs/Handoff_Paso4.
 | Stream ingestion | Apache Kafka (Strimzi on GKE) |
 | ML model | Physics-Informed Neural Network (PyTorch) |
 | Uncertainty quantification | MAPIE (conformal prediction) |
-| Feature store | Feast (GCS offline, BigQuery online) |
+| Feature store | Feast (parquet offline; Redis online in the cluster, SQLite locally) |
 | Experiment tracking | MLflow |
 | API | FastAPI + OpenTelemetry |
 | Infrastructure | GKE + Terraform |
@@ -102,11 +106,13 @@ pip install -e ".[dev]"
 ```powershell
 .\infra\scripts\Install-Kafka.ps1
 kubectl apply -k k8s/base/
+.\infra\scripts\Sync-KafkaCredentials.ps1
 ```
 
-Note: `k8s/base/kustomization.yaml` does not yet include the `kafka/` manifests (see
-the Phase 1 debt in `Docs/ReactorGuard_Progreso.md`); apply `k8s/base/kafka/` explicitly
-until that is fixed. Not yet deployed or verified against a real cluster.
+`k8s/base/` includes the Kafka cluster, topics, users, the streamer and validator
+Deployments and Redis. `Sync-KafkaCredentials.ps1` copies each KafkaUser secret and the
+cluster CA into the workload namespace (a pod cannot mount secrets of another namespace).
+Not yet deployed or verified against a real cluster.
 
 ### 6. Run the data pipeline (local, no GCP needed)
 
@@ -114,9 +120,34 @@ until that is fixed. Not yet deployed or verified against a real cluster.
 .\infra\scripts\Invoke-Pipeline.ps1
 ```
 
-Runs `download_tep -> explore_tep -> adapt_tep -> featurize -> split`. Use this script
-rather than a bare `dvc repro`: DVC does not activate the venv and deletes stage outputs
-before running.
+Runs `download_tep -> explore_tep -> adapt_tep -> featurize -> {feast_source, split}`. Use this
+script rather than a bare `dvc repro`: DVC does not activate the venv and deletes stage
+outputs before running.
+
+### 6b. Local streaming stack (Docker, no GCP needed)
+
+```powershell
+.\infra\local\Invoke-LocalStack.ps1 -Up              # single-node Kafka (127.0.0.1:9092) + Redis (127.0.0.1:6380)
+$env:KAFKA_BOOTSTRAP = "127.0.0.1:9092"
+.\.venv\Scripts\python.exe -m pytest tests/integration -m integration
+.\.venv\Scripts\python.exe -m tests.integration.benchmark_kafka
+.\infra\local\Invoke-LocalStack.ps1 -Down
+```
+
+`-Up -Observability` also starts Prometheus (`:9091`) and Grafana (`:3000`) with the
+`data-pipeline` dashboard. A figure measured here is informative only: the throughput and
+latency criteria are closed by a measurement taken in the cluster.
+
+### 6c. Verify the Phase 2 criteria
+
+```powershell
+.\infra\scripts\Verify-Phase2.ps1 -SkipCluster
+```
+
+Reports each of the four criteria as `CUMPLIDO`, `FALLADO` or `NO MEDIDO` (not measured) and
+writes `tests/results/phase2_verification.json`. Exit code: `0` all met, `1` some failed,
+`2` none failed but some not measured, `3` internal error. A skipped test or a local
+measurement is never reported as met.
 
 ### 7. Simulation and model training
 
@@ -134,9 +165,8 @@ uvicorn api.main:app --reload --host 0.0.0.0 --port 8080
 ### 9. Run tests
 
 ```bash
-pytest tests/unit/
-pytest tests/integration/
-pytest tests/safety/
+pytest tests/unit/ tests/safety/ --cov --cov-fail-under=70
+pytest tests/integration/ -m integration   # needs the local stack and KAFKA_BOOTSTRAP
 ```
 
 ---
@@ -174,8 +204,8 @@ pytest tests/safety/
 │  └─────────────────────────────────────────────────────────────┘   │
 └─────────────────────────────────────────────────────────────────┘
 
-GCS: Terraform state · DVC data · MLflow artifacts · Feast offline store
-BigQuery: Feast online store · audit logs
+GCS: Terraform state · DVC data · MLflow artifacts · Feast registry
+Redis (cluster) / SQLite (local): Feast online store
 Secret Manager: credentials · API keys
 ```
 
@@ -190,14 +220,15 @@ Secret Manager: credentials · API keys
 │   ├── terraform/
 │   │   ├── modules/        # vpc, gke, kafka, storage, iam, security
 │   │   └── environments/   # dev, staging, prod
-│   └── scripts/            # bootstrap, helpers
+│   ├── local/              # Docker Compose stack (Kafka, Redis, Prometheus, Grafana)
+│   └── scripts/            # bootstrap, Verify-Phase2, Invoke-Pipeline, helpers
 ├── k8s/
-│   ├── base/               # ingestion, ml, observability, rbac
+│   ├── base/               # ingestion, kafka, ml, observability, rbac
 │   └── overlays/           # dev, staging, prod (kustomize)
 ├── api/                    # FastAPI application
-├── ml/                     # ML pipeline: features, models, training, serving
-├── data/                   # Schemas, simulation generators, validators
-├── observability/          # Prometheus rules, Grafana dashboards, Alertmanager
+├── ml/                     # ML pipeline: features (+ Feast store), models, training, serving
+├── data/                   # Schemas, generators, validators, streaming, storage
+├── observability/          # Grafana dashboards (Prometheus rules, Alertmanager: Phase 8)
 ├── tests/                  # unit, integration, safety
 └── docs/runbooks/          # Operational runbooks
 ```

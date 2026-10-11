@@ -65,6 +65,7 @@ _PROJECT_PATTERNS: dict[str, str] = {
     "infra/scripts/Verify-Infra.ps1": r"\$ProjectId\s*=\s*\"([^\"]+)\"",
     "infra/scripts/Load-Secrets.ps1": r"\$ProjectId\s*=\s*\"([^\"]+)\"",
     "infra/scripts/Test-WorkloadIdentity.ps1": r"\$ProjectId\s*=\s*\"([^\"]+)\"",
+    "infra/scripts/Verify-Phase2.ps1": r"\$ProjectId\s*=\s*\"([^\"]+)\"",
     "infra/scripts/bootstrap.ps1": r"\$PROJECT_ID\s*=\s*\"([^\"]+)\"",
     "infra/scripts/bootstrap.sh": r"^PROJECT_ID=\"([^\"]+)\"",
 }
