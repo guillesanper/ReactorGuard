@@ -67,6 +67,17 @@ class TestRealPlantParameters:
         assert limits.max_dt_c_per_s == 10.0
         assert limits.energy_imbalance_fraction == 0.05
 
+    def test_constraint_scales_added_in_f3_m2(self) -> None:
+        """The six keys F3-M2 added to limits: resolve with their documented units."""
+        limits = load_plant_params(_REPO_ROOT / DEFAULT_PLANT_PARAMS_PATH).limits
+        assert limits.n_loops == 4
+        assert isinstance(limits.n_loops, int)
+        assert limits.mass_balance_tolerance == 0.055
+        assert limits.quasi_steady_dt_avg_k_s == 0.02
+        assert limits.power_flux_k == 1.0
+        assert limits.power_flux_threshold_percent == 4.5
+        assert limits.conservation_tolerance == 1.0e-6
+
     def test_pump_max_is_derived_from_the_fraction(self) -> None:
         """pump_max_kg_s = fraction x nominal flow."""
         params = load_plant_params(_REPO_ROOT / DEFAULT_PLANT_PARAMS_PATH)
@@ -148,6 +159,11 @@ class TestPlantParameterErrors:
             ("plant", "void_ramp_width_k", 0.0),
             ("control", "rod_ki_per_k_s", 0.0),
             ("limits", "pump_max_fraction", -1.0),
+            ("limits", "mass_balance_tolerance", 0.0),
+            ("limits", "quasi_steady_dt_avg_k_s", -0.01),
+            ("limits", "power_flux_k", 0.0),
+            ("limits", "power_flux_threshold_percent", 0.0),
+            ("limits", "conservation_tolerance", -1.0e-6),
         ],
     )
     def test_non_positive_values_are_rejected(
@@ -157,6 +173,14 @@ class TestPlantParameterErrors:
         document = _plant_document()
         document[section][key] = value
         with pytest.raises(ValueError, match="must be > 0"):
+            load_plant_params(_dump(tmp_path / "p.yaml", document))
+
+    @pytest.mark.parametrize("value", [0.0, 2.5, -1.0, float("nan"), float("inf")])
+    def test_n_loops_must_be_a_whole_number(self, tmp_path: Path, value: float) -> None:
+        """The loop count divides the flow: fractions, zero and non-finite are rejected."""
+        document = _plant_document()
+        document["limits"]["n_loops"] = value
+        with pytest.raises(ValueError, match="n_loops"):
             load_plant_params(_dump(tmp_path / "p.yaml", document))
 
     @pytest.mark.parametrize(

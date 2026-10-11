@@ -8,6 +8,7 @@ un valor invalida la reproduccion.
 
 from __future__ import annotations
 
+import math
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
@@ -30,11 +31,23 @@ class PlantLimits:
         max_dt_c_per_s: Maxima derivada de temperatura admisible [C/s] (D9).
         energy_imbalance_fraction: Desbalance de energia que dispara la regla.
         pump_max_fraction: Tope de caudal de bomba como fraccion del nominal.
+        n_loops: Lazos del primario; cada canal de caudal mide total / n_loops.
+        mass_balance_tolerance: |m_hl - m_cl| / m que dispara la regla de masa.
+        quasi_steady_dt_avg_k_s: |dT_avg/dt| bajo el cual rige la regla de masa [K/s].
+        power_flux_k: Constante k de |P_th - k flux| (ambos en % del nominal).
+        power_flux_threshold_percent: Umbral de |P_th - k flux| [puntos porcentuales].
+        conservation_tolerance: Residuo relativo de conservacion de energia admitido.
     """
 
     max_dt_c_per_s: float
     energy_imbalance_fraction: float
     pump_max_fraction: float
+    n_loops: int
+    mass_balance_tolerance: float
+    quasi_steady_dt_avg_k_s: float
+    power_flux_k: float
+    power_flux_threshold_percent: float
+    conservation_tolerance: float
 
 
 @dataclass(frozen=True)
@@ -201,6 +214,17 @@ def _positive(label: str, value: float) -> float:
     return value
 
 
+def _positive_int(label: str, value: float) -> int:
+    """Return value as an int if it is a whole number >= 1.
+
+    Raises:
+        ValueError: If value is not a whole number or is below 1.
+    """
+    if not (math.isfinite(value) and value >= 1.0 and value == int(value)):
+        raise ValueError(f"{label} must be a whole number >= 1, got {value}.")
+    return int(value)
+
+
 def load_plant_params(path: str | Path = DEFAULT_PLANT_PARAMS_PATH) -> PlantParams:
     """Load and validate configs/plant_parameters.yaml.
 
@@ -263,6 +287,20 @@ def load_plant_params(path: str | Path = DEFAULT_PLANT_PARAMS_PATH) -> PlantPara
                 "limits.energy_imbalance_fraction", lim("energy_imbalance_fraction")
             ),
             pump_max_fraction=_positive("limits.pump_max_fraction", lim("pump_max_fraction")),
+            n_loops=_positive_int("limits.n_loops", lim("n_loops")),
+            mass_balance_tolerance=_positive(
+                "limits.mass_balance_tolerance", lim("mass_balance_tolerance")
+            ),
+            quasi_steady_dt_avg_k_s=_positive(
+                "limits.quasi_steady_dt_avg_k_s", lim("quasi_steady_dt_avg_k_s")
+            ),
+            power_flux_k=_positive("limits.power_flux_k", lim("power_flux_k")),
+            power_flux_threshold_percent=_positive(
+                "limits.power_flux_threshold_percent", lim("power_flux_threshold_percent")
+            ),
+            conservation_tolerance=_positive(
+                "limits.conservation_tolerance", lim("conservation_tolerance")
+            ),
         ),
         fault_tiers=dict(fault_tiers),
     )

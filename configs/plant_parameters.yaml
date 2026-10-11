@@ -51,5 +51,16 @@ limits:
   energy_imbalance_fraction: 0.05   # TDD 5.4: |Q_gen - Q_rem| / Q_gen > 5 %
   pump_max_fraction: 1.10           # tope de bomba como fraccion del caudal nominal
 
+  # --- Anadidos en F3-M2 (Docs/physics_constraints.md, seccion 6). PROVISIONALES: ---
+  # --- F3-M3 los recalibra con la operacion normal y el ruido definitivos. ---
+  # Regla de los umbrales medidos: pico del estado VERDADERO en una rampa normal de
+  # 5 %/min + 5 sigma del estadistico con el ruido inicial del catalogo.
+  n_loops: 4                        # lazos del primario: cada canal de caudal mide total / n_loops
+  mass_balance_tolerance: 0.055     # |m_hl - m_cl| / m en cuasi-estacionario: 0,0020 + 5 x 0,0100
+  quasi_steady_dt_avg_k_s: 0.02     # |dT_avg/dt| [K/s]: >= 0,0114 (rampa 5 %/min + 5 sigma) y <= tol/0,05
+  power_flux_k: 1.0                 # P_th [%] frente a k x flujo [%]: ambos normalizados al nominal
+  power_flux_threshold_percent: 4.5 # |P_th - k flux| [pp]: 2,26 (retardo 30 s en 5 %/min) + 5 x 0,40
+  conservation_tolerance: 1.0e-6    # residuo relativo de conservacion de energia (D7); medido 2e-15
+
 # --- Niveles de magnitud de los fallos de proceso (se rellenan en F3-M4) ---
 fault_tiers: {}

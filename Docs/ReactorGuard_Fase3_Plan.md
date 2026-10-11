@@ -280,7 +280,7 @@ vectorizada; residuo de conservacion sobre una traza sintetica de M1; `min_obser
 | `data/simulation/dataset_builder.py` (parte 1) | ensambla el frame largo de un run: observables -> ruido por sensor -> `SensorSpan.to_raw_counts` -> filas; `sim_reading_uuid(plant_id, run_id, tag, timestamp)` con `READING_ID_NAMESPACE` importado de `tep_adapter`; columnas = las 11 de `readings_from_frame` + `timestep`, `is_usable`, `run_id`, `scenario`, `true_value`, `corrupted`, `process_fault`, `process_severity`, `instrument_fault`, `instrument_severity`, `injected_at`, `episode_id` |
 | `data/generators/derive_sim_spans.py` | patron de `derive_sensor_spans.py`: importa `DEFAULT_ALARM_MARGIN`, `DEFAULT_SPAN_MARGIN`, `MIN_ABSOLUTE_WIDTH`; observa 5 runs normales con semillas fijas propias (`SPANS_SEED`, **distinta** de `openmc_seed`) y escribe `configs/sim_sensor_spans.yaml` con cabecera propia |
 | `configs/sim_sensor_spans.yaml` | generado, revisado a mano y commiteado (`deps` de `simulate`) |
-| `tests/support/sim_frames.py` | builder minimo de frames de simulacion para otros tests |
+| `tests/support/sim_frames.py` | YA EXISTE desde F3-M2 (`Trace`, `run_load_profile`, `wide_frame` del modelo termico): EXTENDER con el builder de frames de salida de simulacion, no recrear |
 | tests | `test_simulation_params.py`, `test_scenario.py`, `test_dataset_builder.py`, `test_reactor_simulator.py`, `test_derive_sim_spans.py` |
 
 **Como**
@@ -589,8 +589,8 @@ cambio; no se adapta en silencio.
 | Hito | Estado | Fecha | Cifras medidas | Commit (lo pone el usuario) |
 |---|---|---|---|---|
 | F3-M0 | Hecho (plan aprobado) | 2026-10-11 | puertas: 1836 passed / 3 skipped / 99,41 %; preflight en la seccion 2 | - (sin cambios en el repo) |
-| F3-M1 | Hecho (a la espera de tu commit) | 2026-10-11 | 2053 passed / 4 skipped / 99,47 %; equilibrio 24 h n = 1,0 y max \|dy/dt\| relativo 5,9e-17; cierre de energia 2,0e-15; 4,2 a 6,7 ms/paso (media), p99 10,3 a 10,9; LSODA frente a Radau 6,5e-8; tabla frente a IAPWS 0,16 % (liquido) y 0,43 % (region de operacion); misma traza entre procesos | - |
-| F3-M2 | Pendiente | | | |
+| F3-M1 | Hecho | 2026-10-11 | 2053 passed / 4 skipped / 99,47 %; equilibrio 24 h n = 1,0 y max \|dy/dt\| relativo 5,9e-17; cierre de energia 2,0e-15; 4,2 a 6,7 ms/paso (media), p99 10,3 a 10,9; LSODA frente a Radau 6,5e-8; tabla frente a IAPWS 0,16 % (liquido) y 0,43 % (region de operacion); misma traza entre procesos | `b343fb7` |
+| F3-M2 | Hecho (a la espera de tu commit) | 2026-10-11 | 2184 passed / 4 skipped / 99,50 %; `physics_constraints` 100 %; estado verdadero: 0 violaciones en 5 trazas (equilibrio y rampas de 0,5 a 10 %/min), conservacion instantanea 1,9e-20 y por intervalo 1,8e-15; con ruido inicial 0/4000 (equilibrio) y 2/4000 en energia (rampas); regla 1 a 70 % de carga 0,11 % y a 50 % 1,7 %; C5: 1800 K a 180 s, observable solo a <= 16 s | - |
 | F3-M3 | Pendiente | | | |
 | F3-M4 | Pendiente | | | |
 | F3-M5 | Pendiente | | | |
@@ -614,6 +614,23 @@ cambio; no se adapta en silencio.
 | M1-10 | `sympy` llega transitivamente con `torch`; el test simbolico usa `importorskip`. No se anadio como dependencia explicita | Decision tuya si quieres declararla en `dev` |
 | M1-11 | `iapws` NO esta en el venv: se instalo con `--target --no-deps` en el scratchpad solo para generar la tabla. `pip install -e .[dev]` lo traera; un test de contraste con IAPWS real queda en `skip` hasta entonces | `test_nodes_match_iapws` |
 | M1-12 | `fault_tiers: {}` y los limites se cargan en `PlantParams`; `ConstraintLimits` (M2) se derivara de `PlantParams.limits` | M2 puede anadir claves a `limits:` |
+
+### Desviaciones y hallazgos de F3-M2 (medidos, no estaban en el plan)
+
+| # | Hallazgo | Consecuencia |
+|---|---|---|
+| M2-1 | `limits:` recibe **6 claves nuevas** (autorizado): `n_loops`, `mass_balance_tolerance`, `quasi_steady_dt_avg_k_s`, `power_flux_k`, `power_flux_threshold_percent`, `conservation_tolerance`. Se fijaron con la regla "pico del estado verdadero en rampa normal de 5 %/min + 5 sigma del ruido inicial" | `PlantLimits` y su loader crecen; M3 las recalibra con el ruido y el programa de carga definitivos |
+| M2-2 | Son **7 reglas**: las 6 de TDD 5.4 mas `mass_balance` (App. B). `RULE_NAMES` fija el orden de columnas; `TDD_RULE_NAMES` son las 6 primeras | La matriz de violaciones tiene 7 columnas |
+| M2-3 | Las reglas de relacion usan la **mediana** de los canales del rol (votacion); las de cota (dT/dt, rango de caudal) van canal a canal | Un unico canal averiado queda enmascarado en las de relacion. M5 decide con la matriz delante si hace falta evaluar por canal |
+| M2-4 | Con umbral 2,0 pp la regla potencia/flujo violaba en el **estado verdadero** (retardo calorimetrico de 30 s: 2,26 pp a 5 %/min, 3,70 a 10 %/min) | Umbral 4,5 pp; la rampa de 10 %/min sigue sin cubrirse |
+| M2-5 | La regla de energia con ruido: sigma ~1,2 % a 100 % (4,2 sigma frente al 5 % del TDD), 0,02 % de violaciones a 85 %, 0,11 % a 70 %, 1,7 % a 50 %, 14,7 % a 30 % | **Decision de M3**: bajar sigma de termopares, acotar la carga o fijar un suelo de potencia. No se invento un parametro en M2 |
+| M2-6 | C5 cuantificado: salto minimo 1800 K a 180 s; la tabla cubre 160 K, asi que la regla solo puede saltar a <= 16 s. En los 3 transitorios mas severos del modelo la derivada verdadera maxima es 3,75 C/s | La regla dT/dt queda implementada pero inactiva a 180 s |
+| M2-7 | Un `(T, P)` fuera de la rejilla de la tabla no aborta: la fila queda **no evaluada** (la tabla sigue sin extrapolar) | `RuleStats.n_not_evaluated` separa NaN, fuera de tabla y transitorio (regla de masa) |
+| M2-8 | `Q_gen` sale del **flujo**; `P_th` (calorimetrica, retardo 30 s) se reserva para la regla 5, para que 1 y 5 no sean la misma comparacion | Documentado en `Docs/physics_constraints.md` 3.1 |
+| M2-9 | `min_observable_rate(dt_s)` conserva el nombre del plan pero devuelve un **salto en K por muestra**, no una tasa | Docstring lo aclara; `max_observable_cadence_s` da la cadencia maxima |
+| M2-10 | `tests/support/sim_frames.py` (que el plan situaba en M3) se creo en M2 con `Trace`, `run_load_profile` y `wide_frame` del modelo de M1 | **M3 lo extiende**, no lo recrea |
+| M2-11 | En el modelo de M1 la demanda de bomba 0 apaga el reactor por realimentacion de vacio y lleva `T_s` a ~185 C (bajo la rejilla de 200 C) | Material de M4 (rango de validez de ese fallo); no se toco `thermal_model.py` |
+| M2-12 | `Diagnostics.conservation_residual_mw` es cero por construccion (1,9e-20): la verificacion con contenido es `StepResult.energy_residual_rel` (1,8e-15) | `ConservationReport` informa los dos y, aparte, la regla 1 sobre el estado verdadero |
 
 ---
 
