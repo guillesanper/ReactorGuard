@@ -15,6 +15,9 @@ Cuatro estudios:
     determinism_check   mismo frame y mismos bytes de parquet entre dos
                         ejecuciones y entre procesos.
     measure_throughput  pasos/s extremo a extremo.
+    fault_matrix        (F3-M4) por tipo de fallo de proceso y nivel: que reglas se
+                        violan, con que tasa y con que retardo en muestras, sobre
+                        valores verdaderos y sobre mediciones con ruido.
 
 El validador de Fase 2 (`data/validation`) se importa de forma perezosa y solo
 aqui: el simulador de produccion no depende de el.
@@ -23,6 +26,8 @@ Uso:
     python -m data.generators.simulation_study report --params params.yaml \
         --output metrics/m3_study.json
     python -m data.generators.simulation_study digest --params params.yaml
+    python -m data.generators.simulation_study faults --params params.yaml \
+        --output metrics/m4_fault_matrix.json --repeats 3
 """
 
 from __future__ import annotations
@@ -62,19 +67,21 @@ from data.simulation.physics_constraints import (
     RULE_NAMES,
     ConstraintLimits,
     RuleEvaluation,
+    conservation_report,
     evaluate_rules_detailed,
     finite_difference_rate,
     min_observable_rate,
     rule_margins,
 )
-from data.simulation.scenario import RunPlan, ScenarioKind
+from data.simulation.process_faults import PROCESS_KINDS, LevelResponse, response_from_run
+from data.simulation.scenario import FaultLevel, RunPlan, ScenarioKind
 from data.simulation.sensor_catalog import SensorCatalog, SensorDef
 from data.simulation.simulation_params import (
     DEFAULT_PARAMS_PATH,
     SimulationParams,
     load_simulation_params,
 )
-from data.simulation.thermal_model import ModelInputs
+from data.simulation.thermal_model import ModelInputs, StateIndex
 from data.simulation.water_properties import WaterTable
 
 _LOG = logging.getLogger(__name__)
@@ -570,6 +577,336 @@ def cadence_study(
 
 
 # ----------------------------------------------------------------------
+# Matriz de violaciones de los fallos de proceso (F3-M4)
+# ----------------------------------------------------------------------
+
+
+DEFAULT_FAULT_TAIL_STEPS = 30
+"""Muestras de operacion normal que siguen a la ventana del fallo en la matriz."""
+
+_LIMIT_TOLERANCE_BAR = 0.05
+"""Distancia a un limite de presion bajo la cual una muestra cuenta como limitada."""
+
+
+@dataclass(frozen=True)
+class FaultRuleCell:
+    """Cuanto dispara una regla dentro de la ventana de un fallo.
+
+    Attributes:
+        n_window_steps: Muestras de la ventana etiquetada.
+        n_evaluable: Muestras de la ventana en que la regla pudo evaluarse.
+        n_violations: Muestras de la ventana en que se violo.
+        first_delay_steps: Muestras entre el inicio del fallo y la primera
+            violacion; None si la regla no se violo.
+    """
+
+    n_window_steps: int
+    n_evaluable: int
+    n_violations: int
+    first_delay_steps: int | None
+
+    @property
+    def rate(self) -> float | None:
+        """Return n_violations / n_evaluable, or None when nothing was evaluable."""
+        return None if self.n_evaluable == 0 else self.n_violations / self.n_evaluable
+
+
+@dataclass(frozen=True)
+class FaultRunResult:
+    """Medida de un run con fallo de proceso.
+
+    Attributes:
+        scenario: Escenario (`core_temp_excursion`, ...).
+        level: Nivel (`low`, `medium`, `high`).
+        run_index: Posicion del run (da la carga y el ruido).
+        run_steps: Muestras del run (ventana mas cola de operacion normal).
+        injected_step: Primera muestra del fallo.
+        last_active_step: Ultima muestra etiquetada.
+        response: Respuesta verdadera desde la inyeccion hasta el final del run.
+        max_fd_rate_c_s: Maxima |dT/dt| por diferencia finita de T_out y T_in
+            verdaderas entre muestras (lo que ve la regla 3 a esta cadencia).
+        state_rate_violation_steps: Muestras de la ventana en que la derivada
+            INSTANTANEA del estado supera el limite de la regla 3 (D9).
+        state_imbalance_violation_steps: Muestras de la ventana en que el
+            desbalance instantaneo del nucleo supera el de la regla 1.
+        max_energy_residual: Peor cierre de energia por intervalo.
+        pressure_limited_steps: Muestras de la ventana en que la presion esta a
+            menos de `_LIMIT_TOLERANCE_BAR` de un limite del limitador del modelo
+            (el transitorio llego al borde de la tabla de agua).
+        conservation_compliant: Conservacion sobre el estado completo (D7).
+        true_rules: Regla -> celda sobre valores verdaderos, dentro de la ventana.
+        measured_rules: Idem sobre mediciones con ruido.
+        outside_true: Regla -> violaciones verdaderas FUERA de la ventana.
+        outside_measured: Idem sobre mediciones.
+        seconds: Tiempo de integracion y evaluacion del run.
+    """
+
+    scenario: str
+    level: str
+    run_index: int
+    run_steps: int
+    injected_step: int
+    last_active_step: int
+    response: LevelResponse
+    max_fd_rate_c_s: float
+    state_rate_violation_steps: int
+    state_imbalance_violation_steps: int
+    max_energy_residual: float
+    pressure_limited_steps: int
+    conservation_compliant: bool
+    true_rules: dict[str, FaultRuleCell]
+    measured_rules: dict[str, FaultRuleCell]
+    outside_true: dict[str, int]
+    outside_measured: dict[str, int]
+    seconds: float
+
+
+def _window_cells(
+    evaluation: RuleEvaluation, injected_step: int, last_step: int
+) -> tuple[dict[str, FaultRuleCell], dict[str, int]]:
+    """Split an evaluation into the fault window and the rest.
+
+    Args:
+        evaluation: Violaciones y evaluabilidad de un run.
+        injected_step: Primera muestra de la ventana.
+        last_step: Ultima muestra de la ventana (incluida).
+
+    Returns:
+        (rule -> window cell, rule -> violations outside the window).
+    """
+    n_rows = len(evaluation.violations)
+    inside = np.zeros(n_rows, dtype=np.bool_)
+    inside[injected_step : last_step + 1] = True
+    cells: dict[str, FaultRuleCell] = {}
+    outside: dict[str, int] = {}
+    for rule in RULE_NAMES:
+        violated = evaluation.violations[rule].to_numpy()
+        evaluable = evaluation.evaluable[rule].to_numpy()
+        hits = np.flatnonzero(violated & inside)
+        cells[rule] = FaultRuleCell(
+            n_window_steps=int(inside.sum()),
+            n_evaluable=int((evaluable & inside).sum()),
+            n_violations=int(hits.size),
+            first_delay_steps=int(hits[0]) - injected_step if hits.size else None,
+        )
+        outside[rule] = int((violated & ~inside).sum())
+    return cells, outside
+
+
+def fault_run(
+    simulator: ReactorSimulator,
+    scenario: ScenarioKind,
+    level: FaultLevel,
+    *,
+    run_index: int = 0,
+    seed: int | None = None,
+    hold_steps: int | None = None,
+    recovery_steps: int | None = None,
+    tail_steps: int = DEFAULT_FAULT_TAIL_STEPS,
+) -> FaultRunResult:
+    """Run one process fault and measure which rules it violates and when.
+
+    El run acaba `tail_steps` muestras despues de la ventana, de modo que la
+    recuperacion y la vuelta a la operacion normal quedan medidas. El ruido es el
+    del catalogo (los umbrales de las reglas no se tocan).
+
+    Args:
+        simulator: Simulador.
+        scenario: Uno de los tres escenarios de proceso.
+        level: Nivel de magnitud.
+        run_index: Posicion del run (carga y ruido).
+        seed: Semilla maestra; por defecto la de `params`.
+        hold_steps: Pasos a magnitud plena; por defecto los de `fault_tiers`.
+        recovery_steps: Pasos de recuperacion; por defecto los de `fault_tiers`.
+        tail_steps: Muestras de operacion normal tras la ventana.
+
+    Returns:
+        The FaultRunResult.
+
+    Raises:
+        KeyError: If the scenario is not a process fault.
+        ValueError: If the window does not fit in the run.
+    """
+    started = time.perf_counter()
+    plan = simulator.process_plan(
+        scenario,
+        level,
+        run_index=run_index,
+        seed=seed,
+        hold_steps=hold_steps,
+        recovery_steps=recovery_steps,
+    )
+    spec = plan.process_fault
+    assert spec is not None and spec.last_active_step is not None
+    last = spec.last_active_step
+    plan = dataclasses.replace(plan, n_steps=min(plan.n_steps, last + 1 + tail_steps))
+
+    model, catalog = simulator.model, simulator.catalog
+    limits = ConstraintLimits.from_plant(model.plant)
+    sim = simulator.simulate(plan)
+    measured = measure(sim, catalog, plan.rngs()[1])
+    true_wide = wide_frame_from_matrix(sim.true_values, catalog, sim.timestamps)
+    measured_wide = wide_frame_from_matrix(measured, catalog, sim.timestamps)
+    true_eval, _ = _evaluate(true_wide, catalog, model.table, limits)
+    measured_eval, _ = _evaluate(measured_wide, catalog, model.table, limits)
+    true_rules, outside_true = _window_cells(true_eval, spec.injected_step, last)
+    measured_rules, outside_measured = _window_cells(measured_eval, spec.injected_step, last)
+
+    elapsed = np.full(plan.n_steps, simulator.params.dt_seconds, dtype=np.float64)
+    elapsed[0] = np.nan
+    tags = list(catalog.roles["T_out"]) + list(catalog.roles["T_in"])
+    fd_rate = np.abs(finite_difference_rate(true_wide[tags].to_numpy(), elapsed))
+    window = sim.diagnostics[spec.injected_step : last + 1]
+    report = conservation_report(sim.diagnostics, sim.steps, limits)
+    p_floor, p_ceiling = model.pressure_limits_bar
+    pressure = sim.states[spec.injected_step : last + 1, StateIndex.PRESSURE]
+    limited = int(
+        np.sum(
+            (pressure <= p_floor + _LIMIT_TOLERANCE_BAR)
+            | (pressure >= p_ceiling - _LIMIT_TOLERANCE_BAR)
+        )
+    )
+    return FaultRunResult(
+        scenario=scenario.value,
+        level=level.value,
+        run_index=run_index,
+        run_steps=plan.n_steps,
+        injected_step=spec.injected_step,
+        last_active_step=last,
+        response=response_from_run(sim, model, spec.injected_step),
+        max_fd_rate_c_s=float(np.nanmax(fd_rate)) if np.isfinite(fd_rate).any() else 0.0,
+        state_rate_violation_steps=sum(
+            d.max_temperature_rate_c_s > limits.max_dt_c_per_s for d in window
+        ),
+        state_imbalance_violation_steps=sum(
+            d.energy_imbalance_fraction > limits.energy_imbalance_fraction for d in window
+        ),
+        max_energy_residual=sim.max_energy_residual,
+        pressure_limited_steps=limited,
+        conservation_compliant=report.compliant,
+        true_rules=true_rules,
+        measured_rules=measured_rules,
+        outside_true=outside_true,
+        outside_measured=outside_measured,
+        seconds=time.perf_counter() - started,
+    )
+
+
+def fault_matrix(
+    simulator: ReactorSimulator,
+    scenarios: Sequence[ScenarioKind] = PROCESS_KINDS,
+    levels: Sequence[FaultLevel] = tuple(FaultLevel),
+    n_repeats: int = 3,
+    hold_steps: int | None = None,
+    recovery_steps: int | None = None,
+) -> list[FaultRunResult]:
+    """Run every (scenario, level) cell `n_repeats` times with different loads.
+
+    Cada repeticion usa un `run_index` distinto: otra traza de carga y otro
+    ruido, de modo que la celda no depende de una unica carga inicial.
+
+    Args:
+        simulator: Simulador.
+        scenarios: Escenarios de proceso a medir.
+        levels: Niveles a medir.
+        n_repeats: Runs por celda (>= 1).
+        hold_steps: Pasos a magnitud plena; por defecto los de `fault_tiers`.
+        recovery_steps: Pasos de recuperacion; por defecto los de `fault_tiers`.
+
+    Returns:
+        One FaultRunResult per run, grouped by scenario, level and repetition.
+
+    Raises:
+        ValueError: If n_repeats < 1.
+    """
+    if n_repeats < 1:
+        raise ValueError(f"n_repeats must be >= 1, got {n_repeats}.")
+    results: list[FaultRunResult] = []
+    for scenario in scenarios:
+        for level in levels:
+            for repeat in range(n_repeats):
+                _LOG.info("Fault run %s/%s #%d", scenario.value, level.value, repeat)
+                results.append(
+                    fault_run(
+                        simulator,
+                        scenario,
+                        level,
+                        run_index=repeat,
+                        hold_steps=hold_steps,
+                        recovery_steps=recovery_steps,
+                    )
+                )
+    return results
+
+
+def _rule_summary(cells: Sequence[Mapping[str, FaultRuleCell]]) -> dict[str, dict[str, Any]]:
+    """Aggregate the window cells of several runs, rule by rule."""
+    out: dict[str, dict[str, Any]] = {}
+    for rule in RULE_NAMES:
+        parts = [cell[rule] for cell in cells]
+        evaluable = sum(p.n_evaluable for p in parts)
+        violations = sum(p.n_violations for p in parts)
+        delays = [p.first_delay_steps for p in parts if p.first_delay_steps is not None]
+        out[rule] = {
+            "n_window_steps": sum(p.n_window_steps for p in parts),
+            "n_evaluable": evaluable,
+            "n_violations": violations,
+            "rate": violations / evaluable if evaluable else None,
+            "runs_violating": len(delays),
+            "first_delay_steps_min": min(delays) if delays else None,
+            "first_delay_steps_max": max(delays) if delays else None,
+        }
+    return out
+
+
+def summarize_fault_matrix(results: Sequence[FaultRunResult]) -> dict[str, Any]:
+    """Aggregate the runs into one entry per (scenario, level) cell.
+
+    Args:
+        results: Runs de `fault_matrix`.
+
+    Returns:
+        Mapping `"<scenario>/<level>"` -> counts, rates, delays and the extremes
+        of the true response across the cell's runs.
+    """
+    groups: dict[str, list[FaultRunResult]] = {}
+    for result in results:
+        groups.setdefault(f"{result.scenario}/{result.level}", []).append(result)
+    summary: dict[str, Any] = {}
+    for key, runs in groups.items():
+        peak = {
+            f.name: [
+                min(getattr(r.response, f.name) for r in runs),
+                max(getattr(r.response, f.name) for r in runs),
+            ]
+            for f in dataclasses.fields(LevelResponse)
+        }
+        summary[key] = {
+            "n_runs": len(runs),
+            "window_steps": sum(r.last_active_step - r.injected_step + 1 for r in runs),
+            "response_min_max": peak,
+            "max_fd_rate_c_s": max(r.max_fd_rate_c_s for r in runs),
+            "state_rate_violation_steps": sum(r.state_rate_violation_steps for r in runs),
+            "state_imbalance_violation_steps": sum(
+                r.state_imbalance_violation_steps for r in runs
+            ),
+            "pressure_limited_steps": sum(r.pressure_limited_steps for r in runs),
+            "max_energy_residual": max(r.max_energy_residual for r in runs),
+            "conservation_compliant": all(r.conservation_compliant for r in runs),
+            "true": _rule_summary([r.true_rules for r in runs]),
+            "measured": _rule_summary([r.measured_rules for r in runs]),
+            "outside_true": {
+                rule: sum(r.outside_true[rule] for r in runs) for rule in RULE_NAMES
+            },
+            "outside_measured": {
+                rule: sum(r.outside_measured[rule] for r in runs) for rule in RULE_NAMES
+            },
+            "seconds": sum(r.seconds for r in runs),
+        }
+    return summary
+
+
+# ----------------------------------------------------------------------
 # Determinismo y rendimiento
 # ----------------------------------------------------------------------
 
@@ -849,10 +1186,40 @@ def main(argv: list[str] | None = None) -> int:
     digest.add_argument("--params", default=str(DEFAULT_PARAMS_PATH))
     digest.add_argument("--run-index", type=int, default=0)
     digest.add_argument("--steps", type=int, default=None)
+    faults = sub.add_parser(
+        "faults", help="measure the rule-violation matrix of the process faults"
+    )
+    faults.add_argument("--params", default=str(DEFAULT_PARAMS_PATH))
+    faults.add_argument("--output", required=True)
+    faults.add_argument("--repeats", type=int, default=3)
+    faults.add_argument("--hold-steps", type=int, default=None)
+    faults.add_argument("--recovery-steps", type=int, default=None)
     args = parser.parse_args(argv)
 
     params: SimulationParams = load_simulation_params(args.params)
     simulator = ReactorSimulator.from_params(params)
+    if args.command == "faults":
+        results = fault_matrix(
+            simulator,
+            n_repeats=args.repeats,
+            hold_steps=args.hold_steps,
+            recovery_steps=args.recovery_steps,
+        )
+        document = _jsonable(
+            {
+                "params": {
+                    "dt_seconds": params.dt_seconds,
+                    "openmc_seed": params.openmc_seed,
+                    "repeats": args.repeats,
+                },
+                "summary": summarize_fault_matrix(results),
+                "runs": results,
+            }
+        )
+        text = json.dumps(document, indent=2, sort_keys=True)
+        Path(args.output).write_text(text, encoding="utf-8")
+        _LOG.info("Wrote the fault matrix to %s", args.output)
+        return 0
     if args.command == "digest":
         plan = simulator.plans[args.run_index]
         if args.steps is not None:

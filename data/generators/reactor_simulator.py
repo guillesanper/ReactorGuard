@@ -11,8 +11,9 @@ contrato canonico. Ahora:
     - todo lo configurable llega por `SimulationParams` (seccion simulation: de
       params.yaml), nada vive como constante de modulo.
 
-En F3-M3 todos los runs son de operacion normal; los fallos de proceso y de
-instrumento llegan con F3-M4 y F3-M5.
+`plans` es el dataset de operacion normal (F3-M3). Los fallos de proceso (F3-M4)
+se piden con `process_plan` y se integran con el mismo `simulate`: perturban las
+entradas del modelo, no la medicion. Los de instrumento llegan con F3-M5.
 
 Este modulo NO importa nada de `data/validation` (la validacion offline vive en
 los tests). El punto de entrada del stage `simulate` (F3-M6) es `main`.
@@ -40,7 +41,19 @@ from data.simulation.dataset_builder import (
     write_run_parquet,
 )
 from data.simulation.plant_params import load_neutronics, load_plant_params
-from data.simulation.scenario import LoadProfile, RunPlan, normal_run_plans
+from data.simulation.process_faults import (
+    FaultTiers,
+    build_fault_inputs,
+    parse_fault_tiers,
+    process_run_plan,
+)
+from data.simulation.scenario import (
+    FaultLevel,
+    LoadProfile,
+    RunPlan,
+    ScenarioKind,
+    normal_run_plans,
+)
 from data.simulation.sensor_catalog import SensorCatalog, load_sensor_catalog
 from data.simulation.simulation_params import (
     DEFAULT_PARAMS_PATH,
@@ -85,6 +98,7 @@ class ReactorSimulator:
         self.catalog = catalog
         self.spans = spans
         self.profile = LoadProfile.from_params(params)
+        self._fault_tiers: FaultTiers | None = None
 
     @classmethod
     def from_params(cls, params: SimulationParams) -> ReactorSimulator:
@@ -118,11 +132,71 @@ class ReactorSimulator:
 
     @property
     def plans(self) -> list[RunPlan]:
-        """Return the plan of every run."""
+        """Return the plan of every normal-operation run of the dataset."""
         return normal_run_plans(self.params)
+
+    @property
+    def fault_tiers(self) -> FaultTiers:
+        """Return the process-fault levels of plant_parameters.yaml (parsed once).
+
+        Raises:
+            KeyError: If a fault, level or required key is missing.
+            ValueError: If a magnitude is outside its validity range.
+        """
+        if self._fault_tiers is None:
+            self._fault_tiers = parse_fault_tiers(self.model.plant.fault_tiers)
+        return self._fault_tiers
+
+    def process_plan(
+        self,
+        scenario: ScenarioKind,
+        level: FaultLevel,
+        *,
+        run_index: int = 0,
+        seed: int | None = None,
+        injected_step: int | None = None,
+        hold_steps: int | None = None,
+        recovery_steps: int | None = None,
+        persistent: bool = False,
+    ) -> RunPlan:
+        """Return the plan of one process-fault run.
+
+        Args:
+            scenario: Uno de los tres escenarios de proceso.
+            level: Nivel de magnitud.
+            run_index: Posicion del run (instantes y semilla).
+            seed: Semilla maestra; por defecto `params.openmc_seed`.
+            injected_step: Primera muestra del fallo; por defecto el fin del
+                calentamiento.
+            hold_steps: Pasos a magnitud plena; por defecto los de `fault_tiers`.
+            recovery_steps: Pasos de recuperacion; por defecto los de `fault_tiers`.
+            persistent: Fallo hasta el final del run, sin recuperacion.
+
+        Returns:
+            The RunPlan.
+
+        Raises:
+            KeyError: If the scenario is not a process fault.
+            ValueError: If the fault window does not fit in the run.
+        """
+        return process_run_plan(
+            self.params,
+            self.fault_tiers.for_kind(scenario),
+            level,
+            run_index=run_index,
+            seed=seed,
+            injected_step=injected_step,
+            hold_steps=hold_steps,
+            recovery_steps=recovery_steps,
+            persistent=persistent,
+        )
 
     def simulate(self, plan: RunPlan) -> RunSimulation:
         """Integrate one run (load profile from the run's own generator).
+
+        Un run de operacion normal solo lleva el programa de carga; un run con
+        fallo de proceso le superpone las entradas del fallo (rampa de
+        reactividad, demanda de bomba o fuga) segun su envolvente.
 
         Args:
             plan: Plan del run.
@@ -130,10 +204,30 @@ class ReactorSimulator:
         Returns:
             The RunSimulation.
         """
+        dt_s = self.params.dt_seconds
         load_rng, _, _ = plan.rngs()
-        loads = self.profile.sample(load_rng, plan.n_steps, self.params.dt_seconds)
-        inputs = [ModelInputs(load=float(load)) for load in loads]
-        return simulate_run(self.model, self.catalog, plan, inputs, self.params.dt_seconds)
+        loads = self.profile.sample(load_rng, plan.n_steps, dt_s)
+        spec = plan.process_fault
+        if spec is None:
+            inputs = [ModelInputs(load=float(load)) for load in loads]
+            return simulate_run(self.model, self.catalog, plan, inputs, dt_s)
+        fault = build_fault_inputs(
+            self.model,
+            self.fault_tiers.for_kind(plan.scenario),
+            spec.level,
+            spec,
+            loads.tolist(),
+            dt_s,
+        )
+        return simulate_run(
+            self.model,
+            self.catalog,
+            plan,
+            fault.sample,
+            dt_s,
+            fine_inputs=fault.fine,
+            substeps=fault.substeps,
+        )
 
     def generate_run(self, plan: RunPlan) -> pd.DataFrame:
         """Return the long frame of one run.

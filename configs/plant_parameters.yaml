@@ -62,5 +62,66 @@ limits:
   power_flux_threshold_percent: 4.5 # |P_th - k flux| [pp]: 2,26 (retardo 30 s en 5 %/min) + 5 x 0,40
   conservation_tolerance: 1.0e-6    # residuo relativo de conservacion de energia (D7); medido 2e-15
 
-# --- Niveles de magnitud de los fallos de proceso (se rellenan en F3-M4) ---
-fault_tiers: {}
+# --- Niveles de magnitud de los fallos de proceso (F3-M4) ---
+# Leido por data/simulation/process_faults.py (parse_fault_tiers). Cada nivel lleva el
+# parametro que lo gobierna y, en `expect:`, la banda MEDIBLE que lo define: la
+# respuesta del modelo a carga constante 1,0, sin ruido, con el fallo persistente
+# (measure_level_response). Un test comprueba que la medida cae en la banda.
+# Rango de validez (tabla de agua sin extrapolar): insercion <= 700 pcm, demanda
+# de bomba >= 0,45 (a carga 1,0 el acantilado de ebullicion esta en 0,40-0,41),
+# margen de saturacion del vacio entre -16 y +5 K.
+# Bandas medidas en F3-M4 (carga 1,0, 5 muestras de calentamiento y 60 de respuesta).
+fault_tiers:
+  core_temp_excursion:
+    onset_minutes: 30.0             # rampa lineal de insercion de reactividad
+    hold_steps: 120                 # 6 h a 180 s a magnitud plena (defecto de process_run_plan)
+    recovery_steps: 20              # 1 h de retorno lineal; 0 = termina de golpe
+    levels:
+      low:                          # medido: T_out +2,84 K, n 1,073, margen 22,2 K
+        reactivity_pcm: 100.0
+        expect: {t_out_rise_k: [2.0, 4.0], n_peak: [1.04, 1.10]}
+      medium:                       # medido: T_out +8,47 K, n 1,220, margen 18,4 K
+        reactivity_pcm: 300.0
+        expect: {t_out_rise_k: [7.0, 10.0], n_peak: [1.18, 1.26]}
+      high:                         # medido: T_out +16,75 K, n 1,439, margen 12,9 K
+        reactivity_pcm: 600.0
+        expect: {t_out_rise_k: [15.0, 18.5], n_peak: [1.40, 1.48], margin_min_k: [11.0, 14.5]}
+
+  coolant_flow_reduction:
+    onset_minutes: 0.0              # la dinamica es la constante de tiempo
+    time_constant_minutes: 5.0      # la demanda cae como 1 - exp(-t / tau)
+    oscillation_period_s: 300.0     # < 360 s (Nyquist a 180 s): se aliasa a 450 s
+    hold_steps: 120
+    recovery_steps: 20
+    levels:
+      low:                          # medido: caudal 13.335 kg/s, T_out +5,19 K, margen 18,9 K
+        demand_fraction: 0.75
+        oscillation_amplitude: 0.01
+        expect: {flow_min_kg_s: [12500.0, 14000.0], margin_min_k: [17.0, 21.0]}
+      medium:                       # medido: caudal 10.470 kg/s, T_out +10,65 K, margen 13,5 K
+        demand_fraction: 0.60
+        oscillation_amplitude: 0.02
+        expect: {flow_min_kg_s: [9800.0, 11200.0], margin_min_k: [12.0, 15.0]}
+      high:                         # medido: caudal 7.604 kg/s, T_out +20,19 K, margen 3,9 K
+        demand_fraction: 0.45
+        oscillation_amplitude: 0.03
+        expect: {flow_min_kg_s: [7000.0, 8200.0], margin_min_k: [2.5, 5.5], t_out_rise_k: [18.0, 22.0]}
+
+  void_formation:
+    onset_minutes: 30.0             # rampa lineal de la fuga
+    hold_steps: 120
+    recovery_steps: 20
+    # El nivel es el margen de saturacion T_sat(P) - T_out OBJETIVO en lazo abierto
+    # [K]: la fuga se calcula sobre el equilibrio de la carga vigente (la misma fuga
+    # en bar daba consecuencias distintas a 70 y a 100 %). Negativo = ebullicion.
+    # Las bandas valen a carga 0,7 y 1,0 (medido en ambas).
+    levels:
+      low:                          # vacio incipiente: la regla 6 no dispara (void 0,003-0,020)
+        saturation_margin_k: 1.5
+        expect: {void_peak: [0.0005, 0.04], margin_min_k: [0.5, 3.0]}
+      medium:                       # ebullicion franca (void 0,16-0,17, margen -1,7 a -3,3 K)
+        saturation_margin_k: 0.0
+        expect: {void_peak: [0.10, 0.25], margin_min_k: [-5.0, -0.5]}
+      high:                         # vacio casi al tope 0,5 (void 0,41-0,44, margen -12 a -13 K)
+        saturation_margin_k: -8.0
+        expect: {void_peak: [0.35, 0.50], margin_min_k: [-16.0, -10.0]}

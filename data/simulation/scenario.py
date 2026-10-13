@@ -54,6 +54,17 @@ class FaultSeverity(StrEnum):
     LOW = "LOW"
 
 
+class FaultLevel(StrEnum):
+    """Nivel de magnitud de un fallo de proceso (bajo, medio, alto).
+
+    El valor es la clave de `fault_tiers:` en configs/plant_parameters.yaml.
+    """
+
+    LOW = "low"
+    MEDIUM = "medium"
+    HIGH = "high"
+
+
 class ScenarioKind(StrEnum):
     """Un escenario por run (D3): operacion normal y los 8 tipos del TDD 2.2.
 
@@ -226,6 +237,105 @@ class LoadProfile:
 
 
 @dataclass(frozen=True)
+class ProcessFaultSpec:
+    """Envolvente temporal de un fallo de proceso dentro de un run.
+
+    Todo se expresa en PASOS de muestreo desde `injected_step`. La magnitud
+    relativa del fallo (`envelope`) sube linealmente durante `onset_steps`, se
+    mantiene `hold_steps` y vuelve a cero linealmente durante `recovery_steps`.
+    Si `hold_steps` es None el fallo persiste hasta el final del run y no hay
+    recuperacion.
+
+    La ventana etiquetada (`is_active`) va de `injected_step` hasta
+    `injected_step + onset + hold + recovery`, ambos incluidos: el fallo se
+    etiqueta en TODOS los sensores desde su inicio, aunque la magnitud sea aun
+    cero en esa primera muestra.
+
+    Attributes:
+        level: Nivel de magnitud (clave de `fault_tiers:`).
+        injected_step: Indice de la primera muestra del fallo (`injected_at`).
+        onset_steps: Pasos de la rampa de entrada (0 = entra de golpe).
+        hold_steps: Pasos a magnitud plena; None = persiste hasta el final.
+        recovery_steps: Pasos de la rampa de salida (0 = termina de golpe).
+
+    Raises:
+        ValueError: If a step count is negative, or a recovery is requested
+            for a fault that persists.
+    """
+
+    level: FaultLevel
+    injected_step: int
+    onset_steps: int = 0
+    hold_steps: int | None = None
+    recovery_steps: int = 0
+
+    def __post_init__(self) -> None:
+        """Validate the timeline."""
+        if self.injected_step < 0:
+            raise ValueError(
+                f"ProcessFaultSpec.injected_step must be >= 0, got {self.injected_step}."
+            )
+        if self.onset_steps < 0:
+            raise ValueError(f"ProcessFaultSpec.onset_steps must be >= 0, got {self.onset_steps}.")
+        if self.hold_steps is not None and self.hold_steps < 0:
+            raise ValueError(f"ProcessFaultSpec.hold_steps must be >= 0, got {self.hold_steps}.")
+        if self.recovery_steps < 0:
+            raise ValueError(
+                f"ProcessFaultSpec.recovery_steps must be >= 0, got {self.recovery_steps}."
+            )
+        if self.hold_steps is None and self.recovery_steps > 0:
+            raise ValueError(
+                "ProcessFaultSpec: a persistent fault (hold_steps=None) cannot recover."
+            )
+
+    @property
+    def last_active_step(self) -> int | None:
+        """Return the last labelled step, or None if the fault persists to the end."""
+        if self.hold_steps is None:
+            return None
+        return self.injected_step + self.onset_steps + self.hold_steps + self.recovery_steps
+
+    def is_active(self, step: int) -> bool:
+        """Return whether a step belongs to the labelled window.
+
+        Args:
+            step: Sample index.
+
+        Returns:
+            True from `injected_step` to `last_active_step` (or to the end).
+        """
+        if step < self.injected_step:
+            return False
+        last = self.last_active_step
+        return last is None or step <= last
+
+    def envelope(self, step: float) -> float:
+        """Return the relative magnitude of the fault at a (fractional) step.
+
+        Args:
+            step: Position in samples, measured from the start of the run. It
+                may be fractional (the simulator evaluates it at sub-steps).
+
+        Returns:
+            0 before `injected_step`, then the onset ramp, 1 while held and the
+            recovery ramp back to 0.
+        """
+        t = step - self.injected_step
+        if t < 0.0:
+            return 0.0
+        if t < self.onset_steps:
+            return t / self.onset_steps
+        if self.hold_steps is None:
+            return 1.0
+        t_hold_end = self.onset_steps + self.hold_steps
+        if t <= t_hold_end:
+            return 1.0
+        if self.recovery_steps > 0 and t < t_hold_end + self.recovery_steps:
+            return 1.0 - (t - t_hold_end) / self.recovery_steps
+        return 0.0
+
+
+@dataclass(frozen=True)
 class RunPlan:
     """Plan de un run: que escenario, cuantos pasos, cuando y con que semilla.
 
@@ -241,6 +351,12 @@ class RunPlan:
         start_time: Instante (UTC) del primer paso.
         seed_entropy: Entropia de la semilla maestra.
         spawn_key: Clave de spawn del run bajo la semilla maestra.
+        process_fault: Envolvente del fallo de proceso; obligatoria si el
+            escenario es de proceso y prohibida en cualquier otro.
+
+    Raises:
+        ValueError: If the process-fault envelope does not match the scenario,
+            or a finite window does not fit in the run.
     """
 
     run_index: int
@@ -250,6 +366,27 @@ class RunPlan:
     start_time: datetime
     seed_entropy: int
     spawn_key: tuple[int, ...]
+    process_fault: ProcessFaultSpec | None = None
+
+    def __post_init__(self) -> None:
+        """Check that the process-fault envelope matches the scenario."""
+        is_process = self.scenario.axis is FaultAxis.PROCESS
+        if is_process and self.process_fault is None:
+            raise ValueError(
+                f"{self.run_id}: scenario '{self.scenario.value}' needs a ProcessFaultSpec."
+            )
+        if not is_process and self.process_fault is not None:
+            raise ValueError(
+                f"{self.run_id}: scenario '{self.scenario.value}' cannot carry a ProcessFaultSpec."
+            )
+        spec = self.process_fault
+        if spec is not None:
+            last = spec.last_active_step
+            if spec.injected_step >= self.n_steps or (last is not None and last >= self.n_steps):
+                raise ValueError(
+                    f"{self.run_id}: the fault window (start {spec.injected_step}, "
+                    f"end {last}) does not fit in {self.n_steps} steps."
+                )
 
     def rngs(self) -> tuple[np.random.Generator, np.random.Generator, np.random.Generator]:
         """Return the (load, noise, fault) generators of this run.

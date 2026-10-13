@@ -85,9 +85,16 @@ class TestRealPlantParameters:
             params.limits.pump_max_fraction * params.nominal_flow_kg_s
         )
 
-    def test_fault_tiers_are_empty_until_f3_m4(self) -> None:
-        """The placeholder block exists and is a mapping."""
-        assert load_plant_params(_REPO_ROOT / DEFAULT_PLANT_PARAMS_PATH).fault_tiers == {}
+    def test_fault_tiers_hold_the_three_process_faults(self) -> None:
+        """F3-M4 fills the block: one entry per process fault, three levels each."""
+        tiers = load_plant_params(_REPO_ROOT / DEFAULT_PLANT_PARAMS_PATH).fault_tiers
+        assert set(tiers) == {
+            "core_temp_excursion",
+            "coolant_flow_reduction",
+            "void_formation",
+        }
+        for block in tiers.values():
+            assert set(block["levels"]) == {"low", "medium", "high"}
 
     def test_params_are_frozen(self) -> None:
         """PlantParams is immutable."""

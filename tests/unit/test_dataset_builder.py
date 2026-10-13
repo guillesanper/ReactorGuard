@@ -37,7 +37,13 @@ from data.simulation.dataset_builder import (
     wide_frame_from_matrix,
     write_run_parquet,
 )
-from data.simulation.scenario import RunPlan, ScenarioKind, normal_run_plans
+from data.simulation.scenario import (
+    FaultLevel,
+    ProcessFaultSpec,
+    RunPlan,
+    ScenarioKind,
+    normal_run_plans,
+)
 from data.simulation.sensor_catalog import SensorCatalog
 from data.simulation.simulation_params import SimulationParams, load_simulation_params
 from data.simulation.thermal_model import ModelInputs, ReactorModel
@@ -330,10 +336,10 @@ class TestLongFrame:
         assert all(r.is_usable for r in readings)
         assert all(r.plant_id == PLANT for r in readings)
 
-    def test_rejects_non_normal_scenarios(
+    def test_rejects_instrument_scenarios(
         self, sim: RunSimulation, catalog: SensorCatalog, spans: dict[str, SensorSpan]
     ) -> None:
-        """Fault labels arrive with F3-M4/F3-M5: until then the builder refuses them."""
+        """Instrument-fault labels arrive with F3-M5: until then the builder refuses them."""
         faulty = dataclasses.replace(
             sim, plan=dataclasses.replace(sim.plan, scenario=ScenarioKind.STUCK)
         )
@@ -354,6 +360,150 @@ class TestLongFrame:
         a = build_run_frame(sim, catalog, spans, PLANT, np.random.default_rng(3))
         b = build_run_frame(sim, catalog, spans, PLANT, np.random.default_rng(3))
         assert a.equals(b)
+
+
+def _process_sim(
+    sim: RunSimulation,
+    kind: ScenarioKind,
+    spec: ProcessFaultSpec,
+) -> RunSimulation:
+    """Return the run `sim` re-labelled as a process-fault run (labels come from the plan)."""
+    plan = dataclasses.replace(sim.plan, scenario=kind, process_fault=spec)
+    return dataclasses.replace(sim, plan=plan)
+
+
+class TestProcessLabels:
+    """A process fault labels EVERY sensor of each step in its window, from the start."""
+
+    SPEC = ProcessFaultSpec(
+        level=FaultLevel.MEDIUM, injected_step=10, onset_steps=2, hold_steps=5, recovery_steps=3
+    )
+
+    @pytest.fixture()
+    def labelled(
+        self, sim: RunSimulation, catalog: SensorCatalog, spans: dict[str, SensorSpan]
+    ) -> pd.DataFrame:
+        """Return the long frame of an excursion run with the window 10..20."""
+        faulty = _process_sim(sim, ScenarioKind.CORE_TEMP_EXCURSION, self.SPEC)
+        return assemble_long_frame(faulty, sim.true_values, catalog, spans, PLANT)
+
+    def test_window_covers_every_sensor_of_each_step(
+        self, labelled: pd.DataFrame, catalog: SensorCatalog
+    ) -> None:
+        """Steps 10 to 20 inclusive carry the label on all sensors; the rest none."""
+        active = labelled["timestep"].between(10, 20)
+        assert (labelled.loc[active, "process_fault"] == "core_temp_excursion").all()
+        assert (labelled.loc[~active, "process_fault"] == NO_FAULT).all()
+        assert active.sum() == 11 * len(catalog.sensors)
+
+    def test_severity_is_the_tdd_table(self, labelled: pd.DataFrame) -> None:
+        """The severity inside the window is the static TDD 2.2 value."""
+        active = labelled["timestep"].between(10, 20)
+        assert (labelled.loc[active, "process_severity"] == "CRITICAL").all()
+        assert labelled.loc[~active, "process_severity"].isna().all()
+
+    def test_injected_at_is_the_exact_start(
+        self, labelled: pd.DataFrame, sim: RunSimulation
+    ) -> None:
+        """injected_at is the timestamp of step 10 on every labelled row, NaT elsewhere."""
+        active = labelled["timestep"].between(10, 20)
+        assert (labelled.loc[active, "injected_at"] == pd.Timestamp(sim.timestamps[10])).all()
+        assert labelled.loc[~active, "injected_at"].isna().all()
+        first = labelled[labelled["process_fault"] != NO_FAULT]["timestep"].min()
+        assert first == self.SPEC.injected_step
+
+    def test_episode_id_and_corruption(self, labelled: pd.DataFrame) -> None:
+        """One episode id per run; a process fault never marks a reading corrupted."""
+        active = labelled["process_fault"] != NO_FAULT
+        assert (labelled.loc[active, "episode_id"] == "sim_run_001:core_temp_excursion").all()
+        assert labelled.loc[~active, "episode_id"].isna().all()
+        assert not labelled["corrupted"].any()
+
+    def test_instrument_axis_untouched(self, labelled: pd.DataFrame) -> None:
+        """The instrument axis stays at none."""
+        assert (labelled["instrument_fault"] == NO_FAULT).all()
+        assert labelled["instrument_severity"].isna().all()
+
+    def test_persistent_fault_labels_to_the_end(
+        self, sim: RunSimulation, catalog: SensorCatalog, spans: dict[str, SensorSpan]
+    ) -> None:
+        """hold_steps=None keeps the label to the last step of the run."""
+        spec = ProcessFaultSpec(level=FaultLevel.LOW, injected_step=20, onset_steps=1)
+        faulty = _process_sim(sim, ScenarioKind.COOLANT_FLOW_REDUCTION, spec)
+        frame = assemble_long_frame(faulty, sim.true_values, catalog, spans, PLANT)
+        active = frame["process_fault"] != NO_FAULT
+        assert frame.loc[active, "timestep"].min() == 20
+        assert frame.loc[active, "timestep"].max() == sim.n_steps - 1
+        assert (frame.loc[active, "process_severity"] == "HIGH").all()
+
+    def test_labelled_frame_rebuilds_readings(self, labelled: pd.DataFrame) -> None:
+        """The labelled frame still validates against the canonical contract."""
+        readings = list(readings_from_frame(labelled))
+        assert len(readings) == len(labelled)
+
+
+class TestSubsteps:
+    """Sub-stepped integration reproduces the coarse grid and validates its inputs."""
+
+    @pytest.fixture()
+    def constant(self) -> list[ModelInputs]:
+        """Return 30 samples of a constant 90 % load."""
+        return [ModelInputs(load=0.9)] * 30
+
+    def test_matches_the_coarse_grid_on_equal_inputs(
+        self,
+        model: ReactorModel,
+        catalog: SensorCatalog,
+        plan: RunPlan,
+        constant: list[ModelInputs],
+    ) -> None:
+        """Splitting each interval in three leaves the states where they were."""
+        coarse = simulate_run(model, catalog, plan, constant, 180.0)
+        fine = [ModelInputs(load=0.9)] * (29 * 3 + 1)
+        split = simulate_run(model, catalog, plan, constant, 180.0, fine_inputs=fine, substeps=3)
+        assert np.allclose(coarse.states, split.states, rtol=1e-9, atol=1e-9)
+        assert split.max_energy_residual < 1e-6
+
+    def test_energy_closes_over_the_whole_interval(
+        self,
+        model: ReactorModel,
+        catalog: SensorCatalog,
+        plan: RunPlan,
+        constant: list[ModelInputs],
+    ) -> None:
+        """Each StepResult is one sampling interval, not one sub-interval."""
+        fine = [ModelInputs(load=0.9)] * (29 * 4 + 1)
+        sim_fine = simulate_run(model, catalog, plan, constant, 180.0, fine_inputs=fine, substeps=4)
+        assert len(sim_fine.steps) == 29
+        assert all(step.energy_residual_rel < 1e-6 for step in sim_fine.steps)
+
+    @pytest.mark.parametrize("substeps", [0, -1])
+    def test_rejects_non_positive_substeps(
+        self,
+        model: ReactorModel,
+        catalog: SensorCatalog,
+        plan: RunPlan,
+        constant: list[ModelInputs],
+        substeps: int,
+    ) -> None:
+        """substeps must be at least 1."""
+        with pytest.raises(ValueError, match="substeps"):
+            simulate_run(model, catalog, plan, constant, 180.0, substeps=substeps)
+
+    def test_requires_the_fine_grid(
+        self,
+        model: ReactorModel,
+        catalog: SensorCatalog,
+        plan: RunPlan,
+        constant: list[ModelInputs],
+    ) -> None:
+        """substeps > 1 without fine inputs, or with the wrong length, is an error."""
+        with pytest.raises(ValueError, match="fine inputs"):
+            simulate_run(model, catalog, plan, constant, 180.0, substeps=2)
+        with pytest.raises(ValueError, match="fine inputs"):
+            simulate_run(
+                model, catalog, plan, constant, 180.0, fine_inputs=constant[:5], substeps=2
+            )
 
 
 class TestWideFrames:

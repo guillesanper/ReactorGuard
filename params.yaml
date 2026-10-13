@@ -46,31 +46,48 @@ tep:
 # Simulation parameters  (data/generators/reactor_simulator.py)
 # -----------------------------------------------------------------------------
 simulation:
-  # Total number of time-step samples to generate per run
+  # PASOS de tiempo totales (no lecturas); se redondea hacia arriba a runs completos
   n_samples: 50000
 
-  # Fraction of samples that will have a fault injected [0.0 – 1.0]
-  # 0.05 = 5 % anomalous samples (class imbalance typical for nuclear data)
-  fault_injection_rate: 0.05
+  # Fraccion de LECTURAS etiquetadas como afectadas por un fallo (D11)
+  fault_injection_rate: 0.40
+  # Fraccion minima de lecturas CRITICAL; <= fault_injection_rate
+  critical_min_fraction: 0.05
+  # Reparto de la cuota etiquetada por severidad TDD 2.2 (suma 1)
+  severity_weights: {critical: 0.30, high: 0.30, medium: 0.25, low: 0.15}
 
-  # OpenMC random seed for reproducible neutron-transport calculations
-  # Change to generate a different dataset split
+  # Semilla maestra (D12): SeedSequence(openmc_seed).spawn(n_runs)
   openmc_seed: 42
 
-  # Sampling interval in seconds (matches real reactor SCADA polling rate)
-  dt_seconds: 1.0
+  # Cadencia emitida [s] (D1, cerrada con datos en F3-M3)
+  dt_seconds: 180
+  # Pasos por run y fraccion inicial a carga constante (da la ventana previa a injected_at)
+  run_length_steps: 1500
+  warmup_fraction: 0.20
+  # Instante (UTC) del primer paso del primer run
+  start_time: "2026-01-01T00:00:00+00:00"
+  plant_id: SIM-PWR-01
 
-  # Reactor operating conditions
-  nominal_power_mw: 3000.0       # Nominal thermal power [MWth]
-  coolant_temp_nominal_k: 564.0  # Nominal coolant outlet temperature [K]
-  fuel_temp_nominal_k: 900.0     # Nominal fuel centreline temperature [K]
+  # Programa de carga de la operacion normal (F3-M3)
+  load_min_fraction: 0.70
+  load_max_fraction: 1.00
+  max_ramp_percent_per_min: 5.0
+  load_hold_minutes_min: 60
+  load_hold_minutes_max: 360
 
-  # Fault types to inject (subset of all available faults)
-  fault_types:
-    - loss_of_coolant          # LOCA
-    - reactivity_insertion     # RIA
-    - steam_generator_tube_rupture
-    - loss_of_feedwater
+  # Rutas
+  output_dir: data/raw/simulation
+  metrics_path: metrics/simulation_metrics.json
+  plant_parameters_path: configs/plant_parameters.yaml
+  neutronics_path: configs/neutronics_coefficients.yaml
+  sensors_path: configs/sim_sensors.yaml
+  spans_path: configs/sim_sensor_spans.yaml
+  water_table_path: configs/water_table.yaml
+
+  # Campos de SensorMetadata (sinteticos)
+  calibration_date: "2025-06-01"
+  last_maintenance_date: "2025-12-01"
+  drift_coefficient: 0.0001
 
 # -----------------------------------------------------------------------------
 # Feature engineering parameters  (ml/features/)

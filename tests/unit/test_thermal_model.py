@@ -644,6 +644,75 @@ class TestJacobian:
             assert np.max(np.abs(analytic - numeric) / np.maximum(scale, 1e-12)) < 1e-5
 
 
+class TestPressureLimiter:
+    """The pressure target is held inside the water table instead of leaving it."""
+
+    def test_limits_are_the_table_range(self, model: ReactorModel) -> None:
+        """Floor and ceiling are the table's pressure axis."""
+        assert model.pressure_limits_bar == (60.0, 170.0)
+
+    def test_normal_operation_never_touches_the_limits(
+        self, model: ReactorModel, nominal: np.ndarray
+    ) -> None:
+        """At the nominal point the limiter is inactive (target = 155 bar)."""
+        d = model.derivatives(nominal, ModelInputs())
+        assert d[StateIndex.PRESSURE] == pytest.approx(0.0, abs=1e-12)
+
+    def test_ceiling_holds_under_a_huge_insertion(
+        self, model: ReactorModel, nominal: np.ndarray
+    ) -> None:
+        """800 pcm with the rods frozen used to leave the table; now P saturates at 170 bar."""
+        inputs = ModelInputs(reactivity_insertion=8.0e-3, rod_control_enabled=False)
+        y = nominal
+        peak = 0.0
+        for _ in range(40):
+            y = model.advance(y, inputs, DT).y
+            peak = max(peak, float(y[StateIndex.PRESSURE]))
+        assert peak <= 170.0 + 1e-9
+        assert peak > 169.0
+
+    def test_floor_holds_under_a_huge_leak(self, model: ReactorModel, nominal: np.ndarray) -> None:
+        """A leak far beyond the table's range saturates P at 60 bar."""
+        y = _run(model, nominal, ModelInputs(leak_bar=120.0), 40)
+        assert y[StateIndex.PRESSURE] >= 60.0 - 1e-9
+        assert y[StateIndex.PRESSURE] == pytest.approx(60.0, abs=0.5)
+
+    @pytest.mark.parametrize(
+        ("t_core", "t_sg", "leak"),
+        [(345.0, 340.0, 0.0), (300.0, 296.0, 120.0), (320.0, 290.0, 5.0)],
+        ids=["above-ceiling", "below-floor", "inside"],
+    )
+    def test_jacobian_matches_differences_with_the_limiter(
+        self, model: ReactorModel, nominal: np.ndarray, t_core: float, t_sg: float, leak: float
+    ) -> None:
+        """The analytic Jacobian drops the T_avg -> P term exactly when P is limited."""
+        plant = model.plant
+        y = nominal.copy()
+        y[StateIndex.T_CORE], y[StateIndex.T_SG] = t_core, t_sg
+        y[StateIndex.PRESSURE] = 120.0
+        u = (0.9, 0.0, 1.0, leak, 1.0)
+        props = thermal_model._Props(
+            cp_j_kg_k=model.table.cp(0.5 * (t_core + t_sg), 120.0),
+            t_sat_c=model.table.t_sat_c(120.0),
+        )
+
+        def f(v: np.ndarray) -> np.ndarray:
+            d = model._derivative(v[:N_STATES].tolist(), u, props)
+            t_avg = 0.5 * (v[8] + v[9])
+            d.append(plant.thermal_power_mw * v[0])
+            d.append(model.nominal.ua_mw_k * u[0] * (t_avg - model.t_secondary_c(u[0])))
+            return np.array(d)
+
+        aug = np.concatenate([y, [0.0, 0.0]])
+        h = 1e-6 * max(abs(aug[8]), 1.0)
+        e = np.zeros(N_STATES + 2)
+        e[8] = h
+        numeric = (f(aug + e) - f(aug - e)) / (2.0 * h)
+        analytic = model.jacobian(y.tolist(), u, props)[:, 8]
+        scale = max(np.abs(numeric).max(), np.abs(analytic).max(), 1e-12)
+        assert np.max(np.abs(analytic - numeric)) / scale < 1e-5
+
+
 class TestValidation:
     """Bad arguments and failures are explicit."""
 

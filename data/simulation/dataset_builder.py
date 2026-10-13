@@ -12,10 +12,13 @@ los dos ejes de fallo con su severidad, `injected_at` y `episode_id`.
 Este modulo es de produccion: NO importa nada de `data/validation`. La validacion
 offline vive en los tests y en `calibration_study`.
 
-Los fallos (F3-M4 y F3-M5) se enchufan en dos puntos: las entradas del modelo
-(`simulate_run` recibe una secuencia de `ModelInputs`, no solo una carga) y la
-serie medida (`build_run_frame` recibe `measured` ya ensamblada). En F3-M3 solo
-hay operacion normal y las etiquetas son las de "sin fallo".
+Los fallos se enchufan en dos puntos: las entradas del modelo (`simulate_run`
+recibe una secuencia de `ModelInputs`, no solo una carga) y la serie medida
+(`build_run_frame` recibe `measured` ya ensamblada). Los fallos de PROCESO
+(F3-M4) solo cambian las entradas: las etiquetas salen de `RunPlan.process_fault`
+y el valor medido es el del estado perturbado, con `corrupted = False` (corrupta
+es la lectura de un instrumento, no la de una planta que de verdad cambio). Los
+de INSTRUMENTO (F3-M5) cambiaran `measured`.
 """
 
 from __future__ import annotations
@@ -34,7 +37,7 @@ from numpy.typing import NDArray
 from data.generators.tep_adapter import READING_ID_NAMESPACE
 from data.schemas.sensor_reading import QualityFlag
 from data.schemas.sensor_spans import SensorSpan
-from data.simulation.scenario import FaultAxis, RunPlan, ScenarioKind
+from data.simulation.scenario import FAULT_SEVERITY, FaultAxis, RunPlan, ScenarioKind
 from data.simulation.sensor_catalog import SensorCatalog
 from data.simulation.thermal_model import Diagnostics, ModelInputs, ReactorModel, StepResult
 
@@ -142,17 +145,70 @@ class RunSimulation:
         return max(step.energy_residual_rel for step in self.steps)
 
 
+def advance_substeps(
+    model: ReactorModel,
+    y: NDArray[np.float64],
+    fine_inputs: Sequence[ModelInputs],
+    start: int,
+    substeps: int,
+    sub_dt_s: float,
+) -> StepResult:
+    """Integrate one sampling interval as `substeps` consecutive sub-intervals.
+
+    Sirve para fallos con dinamica mas rapida que la cadencia (la oscilacion de
+    la bomba): el estado se integra con las entradas de cada sub-instante y solo
+    se emite la muestra del final del intervalo. El cierre de energia se vuelve a
+    calcular sobre el intervalo completo.
+
+    Args:
+        model: Modelo termico.
+        y: Estado al inicio del intervalo.
+        fine_inputs: Entradas en la rejilla fina.
+        start: Indice de `fine_inputs` donde empieza el intervalo.
+        substeps: Sub-intervalos por intervalo de muestreo.
+        sub_dt_s: Duracion de cada sub-intervalo [s].
+
+    Returns:
+        The StepResult of the whole interval.
+    """
+    state = y
+    e_gen = e_sec = 0.0
+    n_rhs = 0
+    for j in range(substeps):
+        result = model.advance(state, fine_inputs[start + j], sub_dt_s, fine_inputs[start + j + 1])
+        e_gen += result.energy_generated_mj
+        e_sec += result.energy_removed_mj
+        n_rhs += result.n_rhs_evaluations
+        state = result.y
+    d_u = model.internal_energy_mj(state) - model.internal_energy_mj(y)
+    residual = abs(d_u - (e_gen - e_sec)) / max(e_gen, float(np.finfo(float).tiny))
+    return StepResult(
+        y=state,
+        energy_generated_mj=e_gen,
+        energy_removed_mj=e_sec,
+        internal_energy_change_mj=d_u,
+        energy_residual_rel=float(residual),
+        n_rhs_evaluations=n_rhs,
+    )
+
+
 def simulate_run(
     model: ReactorModel,
     catalog: SensorCatalog,
     plan: RunPlan,
     inputs: Sequence[ModelInputs],
     dt_s: float,
+    *,
+    fine_inputs: Sequence[ModelInputs] | None = None,
+    substeps: int = 1,
 ) -> RunSimulation:
     """Integrate one run from the equilibrium of its first load.
 
     Entre dos muestras las entradas varian linealmente (`inputs_end`), asi que un
-    programa de carga muestreado es exactamente lo que el modelo integra.
+    programa de carga muestreado es exactamente lo que el modelo integra. Un fallo
+    con dinamica mas rapida que la cadencia aporta ademas una rejilla fina
+    (`fine_inputs`, `substeps` por intervalo): el estado se integra sobre ella y
+    solo se emiten las muestras de la rejilla gruesa.
 
     Args:
         model: Modelo termico.
@@ -160,13 +216,17 @@ def simulate_run(
         plan: Plan del run (da los instantes y la identidad).
         inputs: Entradas en cada muestra; longitud `plan.n_steps`.
         dt_s: Cadencia de muestreo [s].
+        fine_inputs: Entradas en la rejilla fina, longitud
+            `(plan.n_steps - 1) * substeps + 1`; obligatoria si `substeps > 1`.
+        substeps: Sub-intervalos por intervalo de muestreo.
 
     Returns:
         The RunSimulation.
 
     Raises:
-        ValueError: If len(inputs) != plan.n_steps, fewer than 2 samples, or
-            dt_s <= 0 (the model also raises if the state leaves the water table).
+        ValueError: If len(inputs) != plan.n_steps, fewer than 2 samples,
+            dt_s <= 0, substeps < 1 or the fine grid has the wrong length (the
+            model also raises if the state leaves the water table).
     """
     if not dt_s > 0.0:
         raise ValueError(f"dt_s must be > 0, got {dt_s}.")
@@ -176,12 +236,26 @@ def simulate_run(
         )
     if plan.n_steps < 2:
         raise ValueError(f"{plan.run_id}: a run needs at least 2 steps, got {plan.n_steps}.")
+    if substeps < 1:
+        raise ValueError(f"substeps must be >= 1, got {substeps}.")
+    if substeps > 1:
+        expected = (plan.n_steps - 1) * substeps + 1
+        if fine_inputs is None or len(fine_inputs) != expected:
+            got = None if fine_inputs is None else len(fine_inputs)
+            raise ValueError(
+                f"{plan.run_id}: substeps={substeps} needs {expected} fine inputs, got {got}."
+            )
 
     state = model.steady_state(inputs[0].load)
     states = [state]
     steps: list[StepResult] = []
     for k in range(plan.n_steps - 1):
-        step = model.advance(states[-1], inputs[k], dt_s, inputs[k + 1])
+        if substeps == 1 or fine_inputs is None:
+            step = model.advance(states[-1], inputs[k], dt_s, inputs[k + 1])
+        else:
+            step = advance_substeps(
+                model, states[-1], fine_inputs, k * substeps, substeps, dt_s / substeps
+            )
         steps.append(step)
         states.append(step.y)
 
@@ -281,6 +355,59 @@ def raw_counts_matrix(
     return counts
 
 
+@dataclass(frozen=True)
+class _StepLabels:
+    """Process-fault labels of a run, one entry per step (not per reading).
+
+    Attributes:
+        process_fault: `none` or the scenario value, per step.
+        severity: Static TDD severity inside the window, None outside.
+        episode: Episode identifier inside the window, None outside.
+        injected_at: Start of the active episode inside the window, NaT outside.
+    """
+
+    process_fault: NDArray[np.object_]
+    severity: NDArray[np.object_]
+    episode: NDArray[np.object_]
+    injected_at: pd.DatetimeIndex
+
+
+def _process_labels(sim: RunSimulation) -> _StepLabels:
+    """Return the process-fault labels of a run.
+
+    La etiqueta cubre TODOS los sensores de cada paso de la ventana
+    (`ProcessFaultSpec.is_active`), desde el instante de inicio. Una corrida
+    normal o de instrumento devuelve las etiquetas de "sin fallo de proceso".
+
+    Args:
+        sim: Run integrado.
+
+    Returns:
+        The per-step labels.
+    """
+    n_steps = sim.n_steps
+    process_fault = np.full(n_steps, NO_FAULT, dtype=object)
+    severity = np.full(n_steps, None, dtype=object)
+    episode = np.full(n_steps, None, dtype=object)
+    injected: list[datetime | None] = [None] * n_steps
+    spec = sim.plan.process_fault
+    if spec is not None:
+        kind = sim.plan.scenario
+        start = sim.timestamps[spec.injected_step]
+        for step in range(n_steps):
+            if spec.is_active(step):
+                process_fault[step] = kind.value
+                severity[step] = FAULT_SEVERITY[kind].value
+                episode[step] = f"{sim.plan.run_id}:{kind.value}"
+                injected[step] = start
+    return _StepLabels(
+        process_fault=process_fault,
+        severity=severity,
+        episode=episode,
+        injected_at=pd.DatetimeIndex(pd.to_datetime(injected, utc=True)),
+    )
+
+
 def assemble_long_frame(
     sim: RunSimulation,
     measured: NDArray[np.float64],
@@ -305,15 +432,15 @@ def assemble_long_frame(
         DataFrame with the columns of LONG_COLUMNS.
 
     Raises:
-        NotImplementedError: If the run is not normal operation (the fault labels
-            arrive with F3-M4 and F3-M5).
+        NotImplementedError: If the run is an instrument fault (its labels
+            arrive with F3-M5).
         ValueError: If `measured` does not match the run.
         KeyError: If a sensor has no span.
     """
-    if sim.plan.scenario is not ScenarioKind.NORMAL:
+    if sim.plan.scenario.axis is FaultAxis.INSTRUMENT:
         raise NotImplementedError(
-            f"{sim.plan.run_id}: scenario '{sim.plan.scenario.value}' needs the fault "
-            "labels of F3-M4/F3-M5; F3-M3 only assembles normal operation."
+            f"{sim.plan.run_id}: scenario '{sim.plan.scenario.value}' is an instrument "
+            "fault; its labels arrive with F3-M5."
         )
     if measured.shape != sim.true_values.shape:
         raise ValueError(
@@ -331,7 +458,7 @@ def assemble_long_frame(
         for tag in catalog.tags
     ]
     sensors = catalog.sensors
-    no_label = pd.array([None] * n_rows, dtype="string")
+    labels = _process_labels(sim)
     columns = {
         "reading_id": reading_ids,
         "timestamp": pd.Series(pd.DatetimeIndex(sim.timestamps).repeat(n_sensors)),
@@ -356,12 +483,12 @@ def assemble_long_frame(
         "scenario": np.full(n_rows, sim.plan.scenario.value, dtype=object),
         "true_value": sim.true_values.reshape(-1),
         "corrupted": np.zeros(n_rows, dtype=np.bool_),
-        "process_fault": np.full(n_rows, NO_FAULT, dtype=object),
-        "process_severity": no_label,
+        "process_fault": np.repeat(labels.process_fault, n_sensors),
+        "process_severity": pd.array(np.repeat(labels.severity, n_sensors), dtype="string"),
         "instrument_fault": np.full(n_rows, NO_FAULT, dtype=object),
-        "instrument_severity": no_label,
-        "injected_at": pd.Series(pd.NaT, index=range(n_rows), dtype="datetime64[ns, UTC]"),
-        "episode_id": no_label,
+        "instrument_severity": pd.array([None] * n_rows, dtype="string"),
+        "injected_at": pd.Series(labels.injected_at.repeat(n_sensors)),
+        "episode_id": pd.array(np.repeat(labels.episode, n_sensors), dtype="string"),
     }
     return pd.DataFrame(columns, columns=list(LONG_COLUMNS))
 

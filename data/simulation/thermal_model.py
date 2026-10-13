@@ -22,7 +22,7 @@ Ecuaciones (t en s, P0 en MW, C en MJ/K, m cp en MW/K):
     C_c dT_c/dt = hA (T_f - T_avg) - m cp (T_c - T_s)
     C_s dT_s/dt = m cp (T_c - T_s) - UA load (T_avg - T_sec(load))
     T_ref(load) = T_avg0 + s_ref (load - 1),  T_sec(load) = T_ref(load) - (T_avg0 - T_sec0)
-    tau_p dP/dt = P_nom + k_p (T_avg - T_avg0) - leak - P
+    tau_p dP/dt = clip(P_nom + k_p (T_avg - T_avg0) - leak, P_lo, P_hi) - P
     tau_v dvoid/dt = clip((T_c - T_sat(P) + delta) / w, 0, v_max) - void
     tau_b dm/dt = m_nom demand - m
     dz/dt = e, tau_r dr/dt = k_p e + k_i z - r, con e = T_ref(load) - T_avg
@@ -33,6 +33,15 @@ construccion porque el mismo cp aparece en los dos terminos de transporte.
 
 La carga es, por construccion, la potencia de equilibrio: UA_eff = UA load con
 el salto T_avg - T_sec constante da Q_sec = load P0 y n_eq = load.
+
+Limitador de presion (F3-M4): el objetivo de presion se acota a [P_lo, P_hi] = el
+rango de presiones de la tabla de agua (60-170 bar). El techo es fisico (las
+valvulas de alivio del presurizador abren a ~170 bar); el suelo es un LIMITE DE
+VALIDEZ del modelo de agua liquida, no fisica. No actua en operacion normal
+(P <= ~157 bar): solo evita que un transitorio de vacio o de potencia, que ya
+esta fuera de lo que la tabla representa, aborte el run sacando P de la rejilla
+(la tabla no extrapola). Un estado con P en el limite se reconoce por
+`pressure_limits_bar`.
 
 Propiedades congeladas por intervalo: cp y T_sat se evaluan UNA vez al inicio
 de cada paso (operador de splitting documentado). `freeze_properties=False`
@@ -280,6 +289,8 @@ class ReactorModel:
         self._atol = atol
         self.nominal = self._derive_nominal()
         self._delta_t_sg_k = self.nominal.t_avg_c - plant.t_secondary_nominal_c
+        self._p_floor_bar = float(table.p_range_bar[0])
+        self._p_ceiling_bar = float(table.p_range_bar[1])
 
         self._beta_total = neutronics.beta_total
         self._fractions = neutronics.beta_fractions
@@ -321,6 +332,11 @@ class ReactorModel:
             p_secondary_bar=p_secondary,
             t_sat_c=t_sat,
         )
+
+    @property
+    def pressure_limits_bar(self) -> tuple[float, float]:
+        """Return the (floor, ceiling) the pressure target is limited to [bar]."""
+        return self._p_floor_bar, self._p_ceiling_bar
 
     def t_reference_c(self, load: float) -> float:
         """Return the T_avg programmed by the rod controller at a load [C]."""
@@ -439,10 +455,14 @@ class ReactorModel:
         t_ref = nominal.t_avg_c + plant.t_ref_slope_k_per_load * (load - 1.0)
         q_sec = nominal.ua_mw_k * load * (t_avg - (t_ref - self._delta_t_sg_k))
 
-        p_target = (
-            plant.nominal_pressure_bar
-            + plant.pressurizer_gain_bar_per_k * (t_avg - nominal.t_avg_c)
-            - leak
+        p_target = min(
+            max(
+                plant.nominal_pressure_bar
+                + plant.pressurizer_gain_bar_per_k * (t_avg - nominal.t_avg_c)
+                - leak,
+                self._p_floor_bar,
+            ),
+            self._p_ceiling_bar,
         )
         void_target = min(
             max(
@@ -527,7 +547,13 @@ class ReactorModel:
         jac[9, 12] = cp_w * (t_core - t_sg) / c_s
 
         tau_p = plant.tau_pressurizer_s
-        jac[10, 8] = jac[10, 9] = 0.5 * plant.pressurizer_gain_bar_per_k / tau_p
+        p_raw = (
+            plant.nominal_pressure_bar
+            + plant.pressurizer_gain_bar_per_k * (t_avg - nominal.t_avg_c)
+            - u[3]
+        )
+        if self._p_floor_bar < p_raw < self._p_ceiling_bar:
+            jac[10, 8] = jac[10, 9] = 0.5 * plant.pressurizer_gain_bar_per_k / tau_p
         jac[10, 10] = -1.0 / tau_p
 
         void_arg = (t_core - props.t_sat_c + plant.void_onset_offset_k) / plant.void_ramp_width_k

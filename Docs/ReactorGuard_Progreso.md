@@ -1,6 +1,6 @@
 # ReactorGuard — Registro de Progreso
 **Nuclear Reactor Anomaly Detection Platform**
-*Actualizado: 2026-10-11 — Fase 2 verificada contra el commit `d35f802`; Fase 3: F3-M1 (`b343fb7`) y F3-M2 (`36c9d3a`) commiteados, F3-M3 hecho sin commitear*
+*Actualizado: 2026-10-13 — Fase 2 verificada contra el commit `d35f802`; Fase 3: F3-M1 (`b343fb7`), F3-M2 (`36c9d3a`) y F3-M3 (`7051d89`) commiteados, F3-M4 hecho sin commitear*
 
 Este documento distingue tres cosas que antes se confundian: **codigo escrito**, **verificado en local**
 y **criterio medido en el entorno real**. Una tarea puede estar completada como codigo y aun asi no
@@ -265,7 +265,7 @@ positivos en otros sensores.
 
 ## Fase 3 — Simulation Layer: OpenMC + PyDy
 **Semana 5** · En curso. Plan aprobado por hitos en [ReactorGuard_Fase3_Plan.md](ReactorGuard_Fase3_Plan.md)
-(decisiones D1-D13 y registro de progreso en su seccion 15). F3-M0 (preflight), F3-M1, F3-M2 y F3-M3 hechos.
+(decisiones D1-D13 y registro de progreso en su seccion 15). F3-M0 (preflight), F3-M1, F3-M2, F3-M3 y F3-M4 hechos.
 
 `data/generators/reactor_simulator.py` estaba roto contra el schema canonico; **F3-M3 lo reescribio** y ya cuenta en mypy y en la cobertura.
 
@@ -286,16 +286,18 @@ rampas de 0,5 a 10 %/min) viola 0 de las 7 reglas y conserva la energia (instant
 frente al 5 % del TDD, y 0,11 % de falsos positivos a 70 % de carga (decision para F3-M3). A 180 s la regla
 dT/dt exige un salto de 1800 K entre muestras (C5): no es un detector a esa cadencia.
 
-**F3-M3 (simulador en operacion normal, spans y estudio de cadencia)** aporta `data/simulation/{simulation_params,scenario,dataset_builder}.py`, la reescritura de `data/generators/reactor_simulator.py`, `data/generators/derive_sim_spans.py` + `configs/sim_sensor_spans.yaml` (27 sensores, 5 runs normales, semilla propia) y `data/generators/simulation_study.py` (cadencia, ruido, determinismo y rendimiento, repetible en F3-M8). Genera 34 runs normales como frame largo con las 11 columnas de `readings_from_frame` mas la verdad-terreno del TDD 2.2, validables offline con el mismo codigo del TEP. **Decision cerrada con datos**: sigma de los termopares de lazo 0,15 K (la regla de energia a baja carga). **Hallazgo para Fase 2**: el detector Kalman del validador usa `observation_noise = 1,0` fija en unidades de ingenieria y alerta en ~49 % de las lecturas normales de los canales de caudal (deuda, no se toca). Pendiente del usuario: aplicar el diff de la seccion `simulation:` de `params.yaml`.
+**F3-M3 (simulador en operacion normal, spans y estudio de cadencia)** aporta `data/simulation/{simulation_params,scenario,dataset_builder}.py`, la reescritura de `data/generators/reactor_simulator.py`, `data/generators/derive_sim_spans.py` + `configs/sim_sensor_spans.yaml` (27 sensores, 5 runs normales, semilla propia) y `data/generators/simulation_study.py` (cadencia, ruido, determinismo y rendimiento, repetible en F3-M8). Genera 34 runs normales como frame largo con las 11 columnas de `readings_from_frame` mas la verdad-terreno del TDD 2.2, validables offline con el mismo codigo del TEP. **Decision cerrada con datos**: sigma de los termopares de lazo 0,15 K (la regla de energia a baja carga). **Hallazgo para Fase 2**: el detector Kalman del validador usa `observation_noise = 1,0` fija en unidades de ingenieria y alerta en ~49 % de las lecturas normales de los canales de caudal (deuda, no se toca). La seccion `simulation:` de `params.yaml` se aplico en F3-M4.
+
+**F3-M4 (fallos de proceso)** aporta `data/simulation/process_faults.py` (excursion de temperatura del nucleo, reduccion de caudal y vacio como perturbaciones de las ECUACIONES via `ModelInputs`, con niveles bajo/medio/alto en `fault_tiers:` de `configs/plant_parameters.yaml`, cada uno definido por un objetivo medible y comprobado por un test), `ProcessFaultSpec`/`RunPlan.process_fault` en `scenario.py`, etiquetas de proceso en `dataset_builder.py` (todos los sensores de la ventana, `corrupted = False`, severidad de la tabla TDD) y el subcomando `faults` de `simulation_study.py`. **Matriz medida** (`Docs/physics_constraints.md`, seccion 12): la excursion y la reduccion de caudal no violan ninguna de las 7 reglas en ningun nivel (0/453 y 0/423) porque la energia se conserva y a 180 s todo es cuasi-estatico; el vacio viola la energia y la potencia/flujo en el 80-85 % de la ventana (a las 10-13 muestras), la ebullicion en el 39-81 % y no viola la de dT/dt (inobservable, aunque la derivada verdadera llega a 283 C/s). **Hallazgo**: el modelo necesito un limitador de presion (60-170 bar, el rango de la tabla) porque un vacio con recuperacion abortaba al salir de la tabla; no cambia los bytes de los runs normales. El ciclo del vacio sale entero de `alpha_void` (provisional hasta F3-M8).
 
 | ID | Tarea | Estado |
 |----|-------|--------|
 | T5.1 | OpenMC configurado: modelo PWR simplificado | Pendiente (F3-M8, opcional, corre en Docker; no esta en PyPI ni en conda-forge win-64) |
 | T5.2 | Modelo termodinamico: ODEs coolant/core | **Completado en F3-M1** (scipy LSODA, no PyDy); `data/simulation/thermal_model.py` |
-| T5.3 | `reactor_simulator.py`: neutronica + termica integradas | **Completado en F3-M3** en operacion normal (modelo ODE, 34 runs, 1.377.000 lecturas, determinista entre procesos, 414 pasos/s); los fallos llegan en F3-M4/M5 |
-| T5.4 | `fault_injector.py`: drift, stuck, noise spike, bias + 4 tipos adicionales | **Parcial**: `data/validation/fault_injector.py` ya cubre los 4 tipos base sobre TEP (T3.6); faltan los 4 fisicos |
+| T5.3 | `reactor_simulator.py`: neutronica + termica integradas | **Completado en F3-M3** en operacion normal (modelo ODE, 34 runs, 1.377.000 lecturas, determinista entre procesos, 414 pasos/s); los fallos de proceso llegan en F3-M4 y los de instrumento en F3-M5 |
+| T5.4 | `fault_injector.py`: drift, stuck, noise spike, bias + 4 tipos adicionales | **Parcial, F3-M4**: los 3 fallos de proceso del TDD 2.2 (excursion termica, reduccion de caudal, vacio) estan en `data/simulation/process_faults.py` con 3 niveles cada uno; los 5 de instrumento sobre la simulacion llegan en F3-M5 (sobre TEP ya los cubre `data/validation/fault_injector.py`, T3.6) |
 | T5.5 | DVC stage `simulate` con labels | Pendiente (F3-M6); `ReactorSimulator.write` y `main` ya escriben el layout del TDD 4.4 |
-| T5.6 | Validacion de constraints fisicos (Appendix B TDD) | **Parcial, F3-M2**: reglas y conservacion implementadas y verificadas contra el modelo (`physics_constraints.py`, `Docs/physics_constraints.md`). Pendiente: la matriz de violaciones esperadas (M4-M6) y la suite de `tests/safety`, que sigue en `skip` hasta F3-M6 |
+| T5.6 | Validacion de constraints fisicos (Appendix B TDD) | **Parcial, F3-M2**: reglas y conservacion implementadas y verificadas contra el modelo (`physics_constraints.py`, `Docs/physics_constraints.md`). **F3-M4**: matriz de violaciones de los 3 fallos de proceso medida (seccion 12 del documento). Pendiente: la de los fallos de instrumento (M5) y la suite de `tests/safety`, que sigue en `skip` hasta F3-M6 |
 
 ---
 

@@ -8,7 +8,7 @@ carga y de pendiente, calentamiento constante, determinismo) y los planes de run
 from __future__ import annotations
 
 import math
-from datetime import timedelta
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import numpy as np
@@ -19,8 +19,10 @@ from data.simulation.scenario import (
     FAULT_SEVERITY,
     N_RUN_STREAMS,
     FaultAxis,
+    FaultLevel,
     FaultSeverity,
     LoadProfile,
+    ProcessFaultSpec,
     RunPlan,
     ScenarioKind,
     normal_run_plans,
@@ -101,6 +103,119 @@ class TestSeverityTable:
         """The scenario value is the `fault_type=<value>` directory name."""
         values = [k.value for k in ScenarioKind]
         assert len(set(values)) == len(values)
+
+
+class TestProcessFaultSpec:
+    """The temporal envelope of a process fault: onset, hold, recovery, labelled window."""
+
+    SPEC = ProcessFaultSpec(
+        level=FaultLevel.HIGH, injected_step=10, onset_steps=4, hold_steps=6, recovery_steps=5
+    )
+
+    def test_envelope_is_zero_before_the_start(self) -> None:
+        """Nothing happens before injected_step."""
+        assert self.SPEC.envelope(0.0) == 0.0
+        assert self.SPEC.envelope(9.999) == 0.0
+
+    def test_envelope_starts_at_zero_and_reaches_one(self) -> None:
+        """The onset ramps linearly from 0 at the start to 1 after onset_steps."""
+        assert self.SPEC.envelope(10.0) == 0.0
+        assert self.SPEC.envelope(12.0) == pytest.approx(0.5)
+        assert self.SPEC.envelope(14.0) == 1.0
+
+    def test_envelope_holds_then_recovers(self) -> None:
+        """Full magnitude through the hold, then a linear ramp back to zero."""
+        assert self.SPEC.envelope(20.0) == 1.0
+        assert self.SPEC.envelope(22.5) == pytest.approx(0.5)
+        assert self.SPEC.envelope(25.0) == 0.0
+        assert self.SPEC.envelope(40.0) == 0.0
+
+    def test_abrupt_end_without_recovery(self) -> None:
+        """recovery_steps=0 ends the fault at once after the hold."""
+        spec = ProcessFaultSpec(level=FaultLevel.LOW, injected_step=5, onset_steps=0, hold_steps=3)
+        assert spec.envelope(5.0) == 1.0
+        assert spec.envelope(8.0) == 1.0
+        assert spec.envelope(8.5) == 0.0
+        assert spec.last_active_step == 8
+
+    def test_labelled_window_is_closed_on_both_ends(self) -> None:
+        """is_active covers injected_step through onset + hold + recovery, inclusive."""
+        assert self.SPEC.last_active_step == 25
+        assert not self.SPEC.is_active(9)
+        assert self.SPEC.is_active(10)
+        assert self.SPEC.is_active(25)
+        assert not self.SPEC.is_active(26)
+
+    def test_persistent_fault_never_ends(self) -> None:
+        """hold_steps=None keeps the fault, and the label, to the end of the run."""
+        spec = ProcessFaultSpec(level=FaultLevel.MEDIUM, injected_step=7, onset_steps=2)
+        assert spec.last_active_step is None
+        assert spec.is_active(10_000)
+        assert spec.envelope(10_000.0) == 1.0
+
+    @pytest.mark.parametrize(
+        ("kwargs", "message"),
+        [
+            ({"injected_step": -1}, "injected_step"),
+            ({"injected_step": 0, "onset_steps": -1}, "onset_steps"),
+            ({"injected_step": 0, "hold_steps": -1}, "hold_steps"),
+            ({"injected_step": 0, "hold_steps": 3, "recovery_steps": -1}, "recovery_steps"),
+            ({"injected_step": 0, "recovery_steps": 2}, "persistent"),
+        ],
+    )
+    def test_rejects_invalid_timelines(self, kwargs: dict[str, int], message: str) -> None:
+        """Negative counts and a recovering persistent fault are errors."""
+        with pytest.raises(ValueError, match=message):
+            ProcessFaultSpec(level=FaultLevel.LOW, **kwargs)
+
+
+class TestRunPlanProcessFault:
+    """A plan carries a ProcessFaultSpec exactly when its scenario is a process fault."""
+
+    def _plan(self, **overrides: object) -> RunPlan:
+        base: dict[str, object] = {
+            "run_index": 0,
+            "run_id": "sim_run_001",
+            "scenario": ScenarioKind.NORMAL,
+            "n_steps": 50,
+            "start_time": datetime(2026, 1, 1, tzinfo=UTC),
+            "seed_entropy": 1,
+            "spawn_key": (0,),
+        }
+        base.update(overrides)
+        return RunPlan(**base)  # type: ignore[arg-type]
+
+    def test_process_scenario_needs_a_spec(self) -> None:
+        """A process scenario without its envelope is rejected."""
+        with pytest.raises(ValueError, match="needs a ProcessFaultSpec"):
+            self._plan(scenario=ScenarioKind.VOID_FORMATION)
+
+    @pytest.mark.parametrize("kind", [ScenarioKind.NORMAL, ScenarioKind.STUCK])
+    def test_other_scenarios_cannot_carry_one(self, kind: ScenarioKind) -> None:
+        """Normal and instrument runs have no process envelope."""
+        spec = ProcessFaultSpec(level=FaultLevel.LOW, injected_step=5)
+        with pytest.raises(ValueError, match="cannot carry"):
+            self._plan(scenario=kind, process_fault=spec)
+
+    def test_window_must_fit_in_the_run(self) -> None:
+        """A start past the end, or a finite window that overruns, is rejected."""
+        late = ProcessFaultSpec(level=FaultLevel.LOW, injected_step=50)
+        with pytest.raises(ValueError, match="does not fit"):
+            self._plan(scenario=ScenarioKind.VOID_FORMATION, process_fault=late)
+        long = ProcessFaultSpec(
+            level=FaultLevel.LOW, injected_step=40, onset_steps=5, hold_steps=10, recovery_steps=0
+        )
+        with pytest.raises(ValueError, match="does not fit"):
+            self._plan(scenario=ScenarioKind.VOID_FORMATION, process_fault=long)
+
+    def test_valid_plan_is_accepted(self) -> None:
+        """A window that fits is stored as given."""
+        spec = ProcessFaultSpec(
+            level=FaultLevel.MEDIUM, injected_step=10, onset_steps=2, hold_steps=5, recovery_steps=3
+        )
+        plan = self._plan(scenario=ScenarioKind.CORE_TEMP_EXCURSION, process_fault=spec)
+        assert plan.process_fault is spec
+        assert plan.scenario.severity is FaultSeverity.CRITICAL
 
 
 class TestLoadProfile:

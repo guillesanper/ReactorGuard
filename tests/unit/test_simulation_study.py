@@ -20,18 +20,23 @@ from data.generators.reactor_simulator import ReactorSimulator
 from data.generators.simulation_study import (
     DEFAULT_CADENCES_S,
     CadenceResult,
+    FaultRuleCell,
+    FaultRunResult,
     RuleMarginStats,
     _jsonable,
     build_report,
     cadence_run,
     cadence_study,
     determinism_check,
+    fault_matrix,
+    fault_run,
     main,
     measure_throughput,
     noise_calibration,
     parquet_digest,
     simulate_runs,
     subprocess_digest,
+    summarize_fault_matrix,
     summarize_rules,
     with_noise_sigma,
 )
@@ -42,6 +47,7 @@ from data.simulation.physics_constraints import (
     evaluate_rules_detailed,
     rule_margins,
 )
+from data.simulation.scenario import FaultLevel, ScenarioKind
 from tests.support.sim_frames import build_simulator, wide_frame, write_sim_params
 
 
@@ -364,6 +370,123 @@ class TestReport:
         printed = capsys.readouterr().out.strip().splitlines()[-1]
         assert len(printed) == 64
         int(printed, 16)
+
+
+_HOLD = 6
+_RECOVERY = 2
+
+
+@pytest.fixture(scope="module")
+def void_high(simulator: ReactorSimulator) -> FaultRunResult:
+    """Return a high-level void run (expensive: integrated once per module)."""
+    return fault_run(
+        simulator,
+        ScenarioKind.VOID_FORMATION,
+        FaultLevel.HIGH,
+        hold_steps=_HOLD,
+        recovery_steps=_RECOVERY,
+    )
+
+
+class TestFaultMatrix:
+    """The fault matrix measures which rules a process fault violates, and when."""
+
+    HOLD = _HOLD
+    RECOVERY = _RECOVERY
+
+    def test_window_and_identity(self, void_high: FaultRunResult) -> None:
+        """The run starts at the end of the warm-up and the window is closed."""
+        assert void_high.scenario == "void_formation"
+        assert void_high.level == "high"
+        assert void_high.injected_step == 6
+        assert void_high.last_active_step == 6 + 10 + self.HOLD + self.RECOVERY
+        cell = void_high.true_rules["boiling"]
+        assert cell.n_window_steps == void_high.last_active_step - void_high.injected_step + 1
+
+    def test_every_rule_has_a_cell(self, void_high: FaultRunResult) -> None:
+        """One cell per rule, for true values and for measurements."""
+        assert tuple(void_high.true_rules) == RULE_NAMES
+        assert tuple(void_high.measured_rules) == RULE_NAMES
+        assert tuple(void_high.outside_true) == RULE_NAMES
+
+    def test_boiling_is_violated_with_a_delay(self, void_high: FaultRunResult) -> None:
+        """A high void level boils: rule 6 fires, after the injection and not before."""
+        cell = void_high.true_rules["boiling"]
+        assert cell.n_violations > 0
+        assert cell.rate is not None and cell.rate > 0.0
+        assert cell.first_delay_steps is not None
+        assert 1 <= cell.first_delay_steps <= 16
+
+    def test_true_state_derivative_exceeds_the_limit_but_the_sampled_one_does_not(
+        self, void_high: FaultRunResult
+    ) -> None:
+        """The instantaneous dT/dt passes 10 C/s (D9) yet rule 3 cannot see it at 180 s."""
+        assert void_high.state_rate_violation_steps > 0
+        assert void_high.max_fd_rate_c_s < 10.0
+        assert void_high.true_rules["max_dt_dt"].n_violations == 0
+
+    def test_energy_is_conserved(self, void_high: FaultRunResult) -> None:
+        """Conservation holds on the full state although the rules are violated."""
+        assert void_high.conservation_compliant
+        assert void_high.max_energy_residual < 1e-6
+
+    def test_a_mild_fault_violates_nothing(self, simulator: ReactorSimulator) -> None:
+        """A low flow reduction leaves every rule quiet, on truth and measurement."""
+        result = fault_run(
+            simulator,
+            ScenarioKind.COOLANT_FLOW_REDUCTION,
+            FaultLevel.LOW,
+            hold_steps=self.HOLD,
+            recovery_steps=self.RECOVERY,
+        )
+        assert all(c.n_violations == 0 for c in result.true_rules.values())
+        assert all(c.first_delay_steps is None for c in result.true_rules.values())
+        assert result.response.margin_min_k > 10.0
+
+    def test_matrix_groups_runs_by_cell(self, simulator: ReactorSimulator) -> None:
+        """Repetitions use different run indices and aggregate into one cell."""
+        results = fault_matrix(
+            simulator,
+            scenarios=(ScenarioKind.CORE_TEMP_EXCURSION,),
+            levels=(FaultLevel.LOW,),
+            n_repeats=2,
+            hold_steps=self.HOLD,
+            recovery_steps=self.RECOVERY,
+        )
+        assert [r.run_index for r in results] == [0, 1]
+        summary = summarize_fault_matrix(results)
+        assert list(summary) == ["core_temp_excursion/low"]
+        cell = summary["core_temp_excursion/low"]
+        assert cell["n_runs"] == 2
+        assert cell["conservation_compliant"] is True
+        assert set(cell["true"]) == set(RULE_NAMES)
+        json.dumps(_jsonable(summary))
+
+    def test_rejects_zero_repeats(self, simulator: ReactorSimulator) -> None:
+        """At least one run per cell."""
+        with pytest.raises(ValueError, match="n_repeats"):
+            fault_matrix(simulator, n_repeats=0)
+
+    def test_cell_rate_is_none_without_evaluable_rows(self) -> None:
+        """A rule that never evaluated has no rate."""
+        cell = FaultRuleCell(
+            n_window_steps=4, n_evaluable=0, n_violations=0, first_delay_steps=None
+        )
+        assert cell.rate is None
+
+    def test_main_faults_writes_the_matrix(self, tmp_path: Path) -> None:
+        """`faults` writes summary and runs for all nine cells."""
+        params_path = write_sim_params(tmp_path)
+        output = tmp_path / "matrix.json"
+        code = main(
+            ["faults", "--params", str(params_path), "--output", str(output),
+             "--repeats", "1", "--hold-steps", "3", "--recovery-steps", "1"]
+        )
+        assert code == 0
+        data = json.loads(output.read_text(encoding="utf-8"))
+        assert len(data["summary"]) == 9
+        assert len(data["runs"]) == 9
+        assert data["params"]["repeats"] == 1
 
 
 class TestRuleMarginsAgainstTheModel:
