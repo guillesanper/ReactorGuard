@@ -96,6 +96,20 @@ class TestRealPlantParameters:
         for block in tiers.values():
             assert set(block["levels"]) == {"low", "medium", "high"}
 
+    def test_instrument_and_planner_blocks_are_loaded(self) -> None:
+        """F3-M5 fills the instrument levels and the planner caps."""
+        params = load_plant_params(_REPO_ROOT / DEFAULT_PLANT_PARAMS_PATH)
+        assert set(params.instrument_faults) == {
+            "drift",
+            "stuck",
+            "noise_spike",
+            "bias",
+            "intermittent",
+        }
+        for block in params.instrument_faults.values():
+            assert set(block["levels"]) == {"low", "medium", "high"}
+        assert params.scenario_planner["n_min_runs"] == 3
+
     def test_params_are_frozen(self) -> None:
         """PlantParams is immutable."""
         params = load_plant_params(_REPO_ROOT / DEFAULT_PLANT_PARAMS_PATH)
@@ -147,6 +161,22 @@ class TestPlantParameterErrors:
         document = _plant_document()
         del document["fault_tiers"]
         with pytest.raises(KeyError, match="fault_tiers"):
+            load_plant_params(_dump(tmp_path / "p.yaml", document))
+
+    @pytest.mark.parametrize("block", ["instrument_faults", "scenario_planner"])
+    def test_missing_f3_m5_blocks(self, tmp_path: Path, block: str) -> None:
+        """The instrument levels and the planner caps are required."""
+        document = _plant_document()
+        del document[block]
+        with pytest.raises(KeyError, match=block):
+            load_plant_params(_dump(tmp_path / "p.yaml", document))
+
+    @pytest.mark.parametrize("block", ["instrument_faults", "scenario_planner"])
+    def test_f3_m5_blocks_must_be_mappings(self, tmp_path: Path, block: str) -> None:
+        """A list for either block is a TypeError."""
+        document = _plant_document()
+        document[block] = [1]
+        with pytest.raises(TypeError, match=block):
             load_plant_params(_dump(tmp_path / "p.yaml", document))
 
     def test_fault_tiers_must_be_a_mapping(self, tmp_path: Path) -> None:

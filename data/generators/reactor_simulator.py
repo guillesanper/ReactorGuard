@@ -13,7 +13,10 @@ contrato canonico. Ahora:
 
 `plans` es el dataset de operacion normal (F3-M3). Los fallos de proceso (F3-M4)
 se piden con `process_plan` y se integran con el mismo `simulate`: perturban las
-entradas del modelo, no la medicion. Los de instrumento llegan con F3-M5.
+entradas del modelo, no la medicion. Los de instrumento (F3-M5) tampoco tocan la
+planta: `generate_run` les aplica sus episodios a la serie medida, despues del
+ruido. `planned` es el dataset con fallos que fija el planificador por
+presupuesto (D11); el stage `simulate` (F3-M6) lo usara en lugar de `plans`.
 
 Este modulo NO importa nada de `data/validation` (la validacion offline vive en
 los tests). El punto de entrada del stage `simulate` (F3-M6) es `main`.
@@ -53,6 +56,12 @@ from data.simulation.scenario import (
     RunPlan,
     ScenarioKind,
     normal_run_plans,
+)
+from data.simulation.scenario_planner import (
+    PlannedDataset,
+    ScenarioConfig,
+    plan_dataset,
+    planner_rng,
 )
 from data.simulation.sensor_catalog import SensorCatalog, load_sensor_catalog
 from data.simulation.simulation_params import (
@@ -99,6 +108,7 @@ class ReactorSimulator:
         self.spans = spans
         self.profile = LoadProfile.from_params(params)
         self._fault_tiers: FaultTiers | None = None
+        self._scenario_config: ScenarioConfig | None = None
 
     @classmethod
     def from_params(cls, params: SimulationParams) -> ReactorSimulator:
@@ -146,6 +156,46 @@ class ReactorSimulator:
         if self._fault_tiers is None:
             self._fault_tiers = parse_fault_tiers(self.model.plant.fault_tiers)
         return self._fault_tiers
+
+    @property
+    def scenario_config(self) -> ScenarioConfig:
+        """Return the fault levels and planner caps of plant_parameters.yaml (parsed once).
+
+        Raises:
+            KeyError: If a fault, level or required key is missing.
+            ValueError: If a magnitude is out of range.
+        """
+        if self._scenario_config is None:
+            self._scenario_config = ScenarioConfig.from_plant(self.model.plant)
+        return self._scenario_config
+
+    def planned(
+        self,
+        *,
+        fault_injection_rate: float | None = None,
+        severity_weights: dict[str, float] | None = None,
+    ) -> PlannedDataset:
+        """Plan the dataset with faults under the D11 label budget.
+
+        Args:
+            fault_injection_rate: Sustituye al de `params` (estudios de capacidad).
+            severity_weights: Sustituye a los pesos de `params`.
+
+        Returns:
+            The PlannedDataset (plans, budget and per-type decisions).
+
+        Raises:
+            ValueError: If the quotas do not fit under the density caps; the
+                message carries the numbers (D11: the planner does not force).
+        """
+        return plan_dataset(
+            self.params,
+            self.catalog,
+            planner_rng(self.params),
+            self.scenario_config,
+            fault_injection_rate=fault_injection_rate,
+            severity_weights=severity_weights,
+        )
 
     def process_plan(
         self,
@@ -230,7 +280,7 @@ class ReactorSimulator:
         )
 
     def generate_run(self, plan: RunPlan) -> pd.DataFrame:
-        """Return the long frame of one run.
+        """Return the long frame of one run (normal, process or instrument fault).
 
         Args:
             plan: Plan del run.

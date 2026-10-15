@@ -92,6 +92,29 @@ class ScenarioKind(StrEnum):
         return FAULT_SEVERITY.get(self)
 
 
+class InstrumentFaultKind(StrEnum):
+    """Manipulacion de instrumento (TDD 2.2, filas 1 a 5).
+
+    Sus valores coinciden con los de `ScenarioKind`: un run de instrumento lleva un
+    unico tipo (D3) y el tipo del run es el de todos sus episodios.
+    """
+
+    DRIFT = "drift"
+    STUCK = "stuck"
+    NOISE_SPIKE = "noise_spike"
+    BIAS = "bias"
+    INTERMITTENT = "intermittent"
+
+    @property
+    def scenario(self) -> ScenarioKind:
+        """Return the scenario whose runs carry this manipulation."""
+        return ScenarioKind(self.value)
+
+
+INSTRUMENT_KINDS: tuple[InstrumentFaultKind, ...] = tuple(InstrumentFaultKind)
+"""Los cinco tipos de instrumento, en el orden del TDD 2.2."""
+
+
 FAULT_AXIS: Mapping[ScenarioKind, FaultAxis] = MappingProxyType(
     {
         ScenarioKind.NORMAL: FaultAxis.NONE,
@@ -120,6 +143,9 @@ FAULT_SEVERITY: Mapping[ScenarioKind, FaultSeverity] = MappingProxyType(
     }
 )
 """Severidad estatica de TDD 2.2 (D10). Unica fuente: nada mas la redefine."""
+
+FAULT_KINDS: tuple[ScenarioKind, ...] = tuple(k for k in ScenarioKind if k in FAULT_SEVERITY)
+"""Los 8 tipos de fallo del TDD 2.2, en el orden de `ScenarioKind` (sin `normal`)."""
 
 
 @dataclass(frozen=True)
@@ -336,6 +362,98 @@ class ProcessFaultSpec:
 
 
 @dataclass(frozen=True)
+class InstrumentEpisode:
+    """Una manipulacion de UN sensor durante una ventana contigua de un run.
+
+    El episodio es la descripcion completa y reproducible de lo que se le hace a
+    la serie medida: toda decision aleatoria (sensor, instante, sentido, magnitud)
+    la toma el planificador y queda aqui; solo la cadena de Markov del
+    intermitente se realiza al aplicarlo, con el generador de fallos del run.
+
+    Significado de `magnitude` segun el tipo:
+
+        drift         pendiente [anchos de sobre de alarma por hora]
+        stuck         sin uso (la longitud es el nivel)
+        noise_spike   multiplo k del sigma normal del sensor
+        bias          desplazamiento [anchos de sobre de alarma]
+        intermittent  sin uso (`p_enter` y `p_exit` son el nivel)
+
+    Attributes:
+        sensor_id: Tag del sensor manipulado.
+        kind: Tipo de manipulacion.
+        level: Nivel de magnitud (clave de `instrument_faults:`).
+        start_step: Primera muestra manipulada (= `injected_at`).
+        length_steps: Muestras de la ventana etiquetada (1 en un pico).
+        magnitude: Magnitud del tipo (ver arriba).
+        direction: +1 o -1: sentido del desplazamiento (drift, pico, sesgo) o
+            carril que toma una rafaga invalida (intermitente: +1 span.max).
+        p_enter: Probabilidad por muestra de pasar de valido a invalido
+            (intermitente).
+        p_exit: Probabilidad por muestra de volver de invalido a valido
+            (intermitente).
+
+    Raises:
+        ValueError: If the window, the magnitude or the direction are not valid
+            for the kind.
+    """
+
+    sensor_id: str
+    kind: InstrumentFaultKind
+    level: FaultLevel
+    start_step: int
+    length_steps: int
+    magnitude: float = 0.0
+    direction: int = 1
+    p_enter: float = 0.0
+    p_exit: float = 0.0
+
+    def __post_init__(self) -> None:
+        """Validate the window and the kind-specific magnitude."""
+        label = f"InstrumentEpisode({self.sensor_id}, {self.kind.value})"
+        if self.start_step < 0:
+            raise ValueError(f"{label}: start_step must be >= 0, got {self.start_step}.")
+        if self.length_steps < 1:
+            raise ValueError(f"{label}: length_steps must be >= 1, got {self.length_steps}.")
+        if self.direction not in (-1, 1):
+            raise ValueError(f"{label}: direction must be -1 or +1, got {self.direction}.")
+        if self.kind is InstrumentFaultKind.STUCK and self.start_step < 1:
+            raise ValueError(f"{label}: a stuck sensor needs a previous valid sample (start >= 1).")
+        if self.kind is InstrumentFaultKind.NOISE_SPIKE and self.length_steps != 1:
+            raise ValueError(f"{label}: a noise spike lasts one sample, got {self.length_steps}.")
+        needs_magnitude = self.kind in (
+            InstrumentFaultKind.DRIFT,
+            InstrumentFaultKind.NOISE_SPIKE,
+            InstrumentFaultKind.BIAS,
+        )
+        if needs_magnitude and not (math.isfinite(self.magnitude) and self.magnitude > 0.0):
+            raise ValueError(f"{label}: magnitude must be > 0, got {self.magnitude}.")
+        if self.kind is InstrumentFaultKind.INTERMITTENT:
+            for name, probability in (("p_enter", self.p_enter), ("p_exit", self.p_exit)):
+                if not 0.0 < probability <= 1.0:
+                    raise ValueError(f"{label}: {name} must be in (0, 1], got {probability}.")
+
+    @property
+    def last_step(self) -> int:
+        """Return the last labelled step of the episode (inclusive)."""
+        return self.start_step + self.length_steps - 1
+
+    def is_active(self, step: int) -> bool:
+        """Return whether a step belongs to the labelled window."""
+        return self.start_step <= step <= self.last_step
+
+    def episode_id(self, run_id: str) -> str:
+        """Return the identifier the labels carry for this episode.
+
+        Args:
+            run_id: Identificador del run.
+
+        Returns:
+            `<run_id>:<tipo>:<sensor>:<paso inicial>`, unico dentro del dataset.
+        """
+        return f"{run_id}:{self.kind.value}:{self.sensor_id}:{self.start_step}"
+
+
+@dataclass(frozen=True)
 class RunPlan:
     """Plan de un run: que escenario, cuantos pasos, cuando y con que semilla.
 
@@ -353,10 +471,14 @@ class RunPlan:
         spawn_key: Clave de spawn del run bajo la semilla maestra.
         process_fault: Envolvente del fallo de proceso; obligatoria si el
             escenario es de proceso y prohibida en cualquier otro.
+        instrument_faults: Episodios de instrumento; al menos uno si el escenario
+            es de instrumento y ninguno en cualquier otro. Todos del tipo del
+            escenario (D3), en sensores distintos salvo los picos de ruido.
 
     Raises:
-        ValueError: If the process-fault envelope does not match the scenario,
-            or a finite window does not fit in the run.
+        ValueError: If the process-fault envelope or the instrument episodes do
+            not match the scenario, a window does not fit in the run, or two
+            episodes of one sensor collide.
     """
 
     run_index: int
@@ -367,9 +489,10 @@ class RunPlan:
     seed_entropy: int
     spawn_key: tuple[int, ...]
     process_fault: ProcessFaultSpec | None = None
+    instrument_faults: tuple[InstrumentEpisode, ...] = ()
 
     def __post_init__(self) -> None:
-        """Check that the process-fault envelope matches the scenario."""
+        """Check that the fault description matches the scenario."""
         is_process = self.scenario.axis is FaultAxis.PROCESS
         if is_process and self.process_fault is None:
             raise ValueError(
@@ -387,6 +510,79 @@ class RunPlan:
                     f"{self.run_id}: the fault window (start {spec.injected_step}, "
                     f"end {last}) does not fit in {self.n_steps} steps."
                 )
+        self._check_instrument_faults()
+
+    def _check_instrument_faults(self) -> None:
+        """Validate the instrument episodes against the scenario and the run.
+
+        Raises:
+            ValueError: If the episodes do not match the scenario, a window leaves
+                the run, a non-spike sensor repeats, or two spikes of one sensor
+                are closer than two samples.
+        """
+        is_instrument = self.scenario.axis is FaultAxis.INSTRUMENT
+        episodes = self.instrument_faults
+        if is_instrument and not episodes:
+            raise ValueError(
+                f"{self.run_id}: scenario '{self.scenario.value}' needs at least one "
+                "InstrumentEpisode."
+            )
+        if not is_instrument and episodes:
+            raise ValueError(
+                f"{self.run_id}: scenario '{self.scenario.value}' cannot carry InstrumentEpisodes."
+            )
+        starts: dict[str, list[int]] = {}
+        for episode in episodes:
+            if episode.kind.scenario is not self.scenario:
+                raise ValueError(
+                    f"{self.run_id}: a '{episode.kind.value}' episode does not belong to a "
+                    f"'{self.scenario.value}' run (one scenario per run, D3)."
+                )
+            if episode.last_step >= self.n_steps:
+                raise ValueError(
+                    f"{self.run_id}: the {episode.kind.value} episode on {episode.sensor_id} "
+                    f"(start {episode.start_step}, end {episode.last_step}) does not fit in "
+                    f"{self.n_steps} steps."
+                )
+            starts.setdefault(episode.sensor_id, []).append(episode.start_step)
+        for sensor_id, steps in starts.items():
+            if len(steps) == 1:
+                continue
+            if self.scenario is not ScenarioKind.NOISE_SPIKE:
+                raise ValueError(
+                    f"{self.run_id}: sensor {sensor_id} carries {len(steps)} "
+                    f"{self.scenario.value} episodes; only noise spikes may repeat on a sensor."
+                )
+            ordered = sorted(steps)
+            if any(b - a < 2 for a, b in zip(ordered, ordered[1:], strict=False)):
+                raise ValueError(
+                    f"{self.run_id}: two spikes on {sensor_id} are closer than 2 samples."
+                )
+
+    def expected_labelled_readings(self, n_sensors: int) -> int:
+        """Return how many readings the labels of this run mark as affected.
+
+        Un fallo de proceso etiqueta todos los sensores de su ventana; uno de
+        instrumento, las muestras de cada episodio. Coincide con las filas del
+        frame con alguna etiqueta de fallo (lo comprueba un test).
+
+        Args:
+            n_sensors: Sensores del catalogo.
+
+        Returns:
+            The labelled readings; 0 for a normal run.
+
+        Raises:
+            ValueError: If n_sensors is not positive.
+        """
+        if n_sensors < 1:
+            raise ValueError(f"n_sensors must be >= 1, got {n_sensors}.")
+        spec = self.process_fault
+        if spec is not None:
+            last = spec.last_active_step
+            end = self.n_steps - 1 if last is None else last
+            return n_sensors * (end - spec.injected_step + 1)
+        return sum(episode.length_steps for episode in self.instrument_faults)
 
     def rngs(self) -> tuple[np.random.Generator, np.random.Generator, np.random.Generator]:
         """Return the (load, noise, fault) generators of this run.
@@ -421,6 +617,55 @@ def run_id_for(run_index: int) -> str:
         `sim_run_001` for index 0 (three digits, widening past 999).
     """
     return f"sim_run_{run_index + 1:03d}"
+
+
+def make_run_plan(
+    params: SimulationParams,
+    run_index: int,
+    scenario: ScenarioKind,
+    *,
+    seed: int | None = None,
+    process_fault: ProcessFaultSpec | None = None,
+    instrument_faults: tuple[InstrumentEpisode, ...] = (),
+) -> RunPlan:
+    """Return the plan of ONE run at a position of the dataset.
+
+    Misma convencion que `normal_run_plans` y que `process_run_plan` (D12): el
+    run `i` toma la semilla `SeedSequence(seed, spawn_key=(i,))`, que es la del
+    hijo `i` de `SeedSequence(seed).spawn(n)`, y arranca en
+    `start_time + i * duracion_del_run`. Un plan de cualquier escenario con el
+    mismo `run_index` comparte, por tanto, traza de carga y flujo de ruido: la
+    pareja (fallo, normal) es un contrafactico exacto hasta la inyeccion.
+
+    Args:
+        params: Resolved simulation parameters.
+        run_index: Posicion del run (0-based); da instantes y semilla.
+        scenario: Escenario del run.
+        seed: Semilla maestra; por defecto `params.openmc_seed`.
+        process_fault: Envolvente del fallo de proceso (solo escenarios de proceso).
+        instrument_faults: Episodios (solo escenarios de instrumento).
+
+    Returns:
+        The RunPlan.
+
+    Raises:
+        ValueError: If run_index is negative or the fault description does not
+            match the scenario.
+    """
+    if run_index < 0:
+        raise ValueError(f"run_index must be >= 0, got {run_index}.")
+    master = params.openmc_seed if seed is None else int(seed)
+    return RunPlan(
+        run_index=run_index,
+        run_id=run_id_for(run_index),
+        scenario=scenario,
+        n_steps=params.run_length_steps,
+        start_time=params.start_time + timedelta(seconds=run_index * params.run_duration_s),
+        seed_entropy=master,
+        spawn_key=(run_index,),
+        process_fault=process_fault,
+        instrument_faults=instrument_faults,
+    )
 
 
 def normal_run_plans(

@@ -16,15 +16,20 @@ import pytest
 
 from data.simulation.scenario import (
     FAULT_AXIS,
+    FAULT_KINDS,
     FAULT_SEVERITY,
+    INSTRUMENT_KINDS,
     N_RUN_STREAMS,
     FaultAxis,
     FaultLevel,
     FaultSeverity,
+    InstrumentEpisode,
+    InstrumentFaultKind,
     LoadProfile,
     ProcessFaultSpec,
     RunPlan,
     ScenarioKind,
+    make_run_plan,
     normal_run_plans,
     run_id_for,
 )
@@ -216,6 +221,138 @@ class TestRunPlanProcessFault:
         plan = self._plan(scenario=ScenarioKind.CORE_TEMP_EXCURSION, process_fault=spec)
         assert plan.process_fault is spec
         assert plan.scenario.severity is FaultSeverity.CRITICAL
+
+
+class TestRunPlanInstrumentFaults:
+    """A plan carries InstrumentEpisodes exactly when its scenario is an instrument fault."""
+
+    def _plan(self, **overrides: object) -> RunPlan:
+        base: dict[str, object] = {
+            "run_index": 0,
+            "run_id": "sim_run_001",
+            "scenario": ScenarioKind.STUCK,
+            "n_steps": 50,
+            "start_time": datetime(2026, 1, 1, tzinfo=UTC),
+            "seed_entropy": 1,
+            "spawn_key": (0,),
+        }
+        base.update(overrides)
+        return RunPlan(**base)  # type: ignore[arg-type]
+
+    @staticmethod
+    def _episode(
+        sensor: str = "TC-HL-1",
+        kind: InstrumentFaultKind = InstrumentFaultKind.STUCK,
+        start: int = 10,
+        length: int = 5,
+    ) -> InstrumentEpisode:
+        extra = {"magnitude": 3.0} if kind is not InstrumentFaultKind.STUCK else {}
+        if kind is InstrumentFaultKind.INTERMITTENT:
+            extra = {"p_enter": 0.1, "p_exit": 0.5}
+        return InstrumentEpisode(sensor, kind, FaultLevel.LOW, start, length, **extra)  # type: ignore[arg-type]
+
+    def test_instrument_scenario_needs_episodes(self) -> None:
+        """An instrument run with no episode is rejected."""
+        with pytest.raises(ValueError, match="needs at least one"):
+            self._plan()
+
+    @pytest.mark.parametrize("kind", [ScenarioKind.NORMAL, ScenarioKind.VOID_FORMATION])
+    def test_other_scenarios_cannot_carry_episodes(self, kind: ScenarioKind) -> None:
+        """Normal and process runs have no instrument episodes."""
+        extra: dict[str, object] = {}
+        if kind is ScenarioKind.VOID_FORMATION:
+            extra["process_fault"] = ProcessFaultSpec(level=FaultLevel.LOW, injected_step=5)
+        with pytest.raises(ValueError, match="cannot carry InstrumentEpisodes"):
+            self._plan(scenario=kind, instrument_faults=(self._episode(),), **extra)
+
+    def test_one_scenario_per_run(self) -> None:
+        """A bias episode does not belong to a stuck run (D3)."""
+        episode = self._episode(kind=InstrumentFaultKind.BIAS)
+        with pytest.raises(ValueError, match="one scenario per run"):
+            self._plan(instrument_faults=(episode,))
+
+    def test_window_must_fit_in_the_run(self) -> None:
+        """An episode that leaves the run is rejected."""
+        with pytest.raises(ValueError, match="does not fit"):
+            self._plan(instrument_faults=(self._episode(start=48, length=5),))
+
+    def test_a_sensor_carries_one_episode_except_spikes(self) -> None:
+        """Two stuck episodes on one sensor are rejected."""
+        two = (self._episode(start=5), self._episode(start=20))
+        with pytest.raises(ValueError, match="only noise spikes may repeat"):
+            self._plan(instrument_faults=two)
+
+    def test_spikes_may_repeat_two_samples_apart(self) -> None:
+        """Spikes on one sensor are fine if separated by at least two samples."""
+        spikes = tuple(
+            self._episode(kind=InstrumentFaultKind.NOISE_SPIKE, start=s, length=1)
+            for s in (5, 7, 20)
+        )
+        plan = self._plan(scenario=ScenarioKind.NOISE_SPIKE, instrument_faults=spikes)
+        assert len(plan.instrument_faults) == 3
+        close = tuple(
+            self._episode(kind=InstrumentFaultKind.NOISE_SPIKE, start=s, length=1) for s in (5, 6)
+        )
+        with pytest.raises(ValueError, match="closer than 2 samples"):
+            self._plan(scenario=ScenarioKind.NOISE_SPIKE, instrument_faults=close)
+
+    def test_expected_labelled_readings(self) -> None:
+        """Process: all sensors of the window; instrument: the episode lengths; normal: 0."""
+        n = 27
+        assert self._plan(instrument_faults=(self._episode(),)).expected_labelled_readings(n) == 5
+        process = self._plan(
+            scenario=ScenarioKind.CORE_TEMP_EXCURSION,
+            process_fault=ProcessFaultSpec(
+                level=FaultLevel.LOW,
+                injected_step=10,
+                onset_steps=2,
+                hold_steps=5,
+                recovery_steps=3,
+            ),
+        )
+        assert process.expected_labelled_readings(n) == n * 11
+        persistent = self._plan(
+            scenario=ScenarioKind.VOID_FORMATION,
+            process_fault=ProcessFaultSpec(level=FaultLevel.LOW, injected_step=40),
+        )
+        assert persistent.expected_labelled_readings(n) == n * 10
+        assert self._plan(scenario=ScenarioKind.NORMAL).expected_labelled_readings(n) == 0
+        with pytest.raises(ValueError, match="n_sensors"):
+            persistent.expected_labelled_readings(0)
+
+
+class TestMakeRunPlan:
+    """`make_run_plan` follows the seed and time convention of the other builders."""
+
+    def test_matches_normal_run_plans(self, params: SimulationParams) -> None:
+        """Run i of any scenario shares stream, seed and slot with normal run i."""
+        normal = normal_run_plans(params)
+        for index, expected in enumerate(normal):
+            made = make_run_plan(params, index, ScenarioKind.NORMAL)
+            assert made == expected
+
+    def test_a_faulted_run_is_the_exact_counterfactual(self, params: SimulationParams) -> None:
+        """Same index: same load and noise streams as the normal run."""
+        episode = InstrumentEpisode("TC-HL-1", InstrumentFaultKind.STUCK, FaultLevel.LOW, 8, 6)
+        faulted = make_run_plan(params, 1, ScenarioKind.STUCK, instrument_faults=(episode,))
+        normal = make_run_plan(params, 1, ScenarioKind.NORMAL)
+        assert faulted.spawn_key == normal.spawn_key
+        assert faulted.start_time == normal.start_time
+        assert np.array_equal(faulted.rngs()[1].normal(size=4), normal.rngs()[1].normal(size=4))
+
+    def test_custom_seed_and_negative_index(self, params: SimulationParams) -> None:
+        """A custom master seed is stored; a negative index is rejected."""
+        assert make_run_plan(params, 0, ScenarioKind.NORMAL, seed=5).seed_entropy == 5
+        with pytest.raises(ValueError, match="run_index"):
+            make_run_plan(params, -1, ScenarioKind.NORMAL)
+
+    def test_fault_kind_tables(self) -> None:
+        """Eight fault types: five on the instrument axis, three on the process axis."""
+        assert len(FAULT_KINDS) == 8
+        assert len(INSTRUMENT_KINDS) == 5
+        assert {k for k in FAULT_KINDS if k.axis is FaultAxis.INSTRUMENT} == {
+            k.scenario for k in INSTRUMENT_KINDS
+        }
 
 
 class TestLoadProfile:

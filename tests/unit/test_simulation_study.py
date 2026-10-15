@@ -16,27 +16,37 @@ from typing import Any
 import numpy as np
 import pytest
 
+from data.generators import simulation_study
 from data.generators.reactor_simulator import ReactorSimulator
 from data.generators.simulation_study import (
+    CANDIDATE_WEIGHTS,
     DEFAULT_CADENCES_S,
+    EXPECTED_VALIDATOR_FAULT,
     CadenceResult,
     FaultRuleCell,
     FaultRunResult,
+    InstrumentRuleCell,
     RuleMarginStats,
     _jsonable,
     build_report,
     cadence_run,
     cadence_study,
+    capacity_report,
     determinism_check,
     fault_matrix,
     fault_run,
+    instrument_detection,
+    instrument_matrix,
     main,
     measure_throughput,
     noise_calibration,
     parquet_digest,
+    plan_coverage_report,
     simulate_runs,
+    single_channel_roles,
     subprocess_digest,
     summarize_fault_matrix,
+    summarize_instrument_matrix,
     summarize_rules,
     with_noise_sigma,
 )
@@ -47,7 +57,12 @@ from data.simulation.physics_constraints import (
     evaluate_rules_detailed,
     rule_margins,
 )
-from data.simulation.scenario import FaultLevel, ScenarioKind
+from data.simulation.scenario import (
+    INSTRUMENT_KINDS,
+    FaultLevel,
+    InstrumentFaultKind,
+    ScenarioKind,
+)
 from tests.support.sim_frames import build_simulator, wide_frame, write_sim_params
 
 
@@ -503,3 +518,394 @@ class TestRuleMarginsAgainstTheModel:
         wide = wide_frame(trace, model, simulator.catalog)
         margins = rule_margins(wide, simulator.catalog.roles, model.table, limits)
         assert (margins.min(skipna=True) > 0.0).all()
+
+
+# ----------------------------------------------------------------------
+# F3-M5: fallos de instrumento, capacidad y plan
+# ----------------------------------------------------------------------
+
+
+@dataclass
+class _FaultStub:
+    """Validator fault double carrying the FaultType value the study reads."""
+
+    fault_type: Any
+
+
+@dataclass
+class _TypeStub:
+    value: str
+
+
+class _FlagSensorValidator:
+    """Validator double: flags EVERY reading of one sensor with a given fault type."""
+
+    def __init__(self, tag: str, fault: str) -> None:
+        self.tag = tag
+        self.fault = fault
+
+    def validate(self, reading: Any) -> _FakeResult:
+        if reading.sensor.id == self.tag:
+            return _FakeResult([_FaultStub(_TypeStub(self.fault))])  # type: ignore[list-item]
+        return _FakeResult([])
+
+
+@pytest.fixture(scope="module")
+def big_simulator(tmp_path_factory: pytest.TempPathFactory) -> ReactorSimulator:
+    """Return a simulator over the dataset-sized plan (34 runs of 1500 steps); never integrated."""
+    return build_simulator(
+        tmp_path_factory.mktemp("big"),
+        n_samples=50000,
+        run_length_steps=1500,
+        openmc_seed=42,
+    )
+
+
+class TestSingleChannelRoles:
+    """Isolating a sensor removes the median vote for the roles it plays."""
+
+    def test_only_the_roles_of_the_sensor_change(self, simulator: ReactorSimulator) -> None:
+        """TC-HL-1 becomes the only T_out channel; every other role is unchanged."""
+        roles = simulator.catalog.roles
+        isolated = single_channel_roles(roles, "TC-HL-1")
+        assert isolated["T_out"] == ("TC-HL-1",)
+        assert isolated["T_in"] == roles["T_in"]
+        assert isolated["flow"] == roles["flow"]
+
+    def test_a_flow_channel_is_isolated_in_every_role_it_plays(
+        self, simulator: ReactorSimulator
+    ) -> None:
+        """FT-HL-1 is in `flow` and in `flow_hot_leg`: both become single-channel."""
+        isolated = single_channel_roles(simulator.catalog.roles, "FT-HL-1")
+        assert isolated["flow"] == ("FT-HL-1",)
+        assert isolated["flow_hot_leg"] == ("FT-HL-1",)
+        assert isolated["flow_cold_leg"] == simulator.catalog.roles["flow_cold_leg"]
+
+    def test_a_sensor_outside_the_roles_changes_nothing(self, simulator: ReactorSimulator) -> None:
+        """TC-CORE-01 is in no role."""
+        roles = simulator.catalog.roles
+        assert single_channel_roles(roles, "TC-CORE-01") == {k: tuple(v) for k, v in roles.items()}
+
+
+@pytest.fixture(scope="module")
+def cells(simulator: ReactorSimulator) -> list[InstrumentRuleCell]:
+    """Return a small matrix: low and high levels on three sensors, both directions."""
+    return instrument_matrix(
+        simulator,
+        levels=(FaultLevel.LOW, FaultLevel.HIGH),
+        sensors=("TC-HL-1", "TC-CORE-01", "FT-HL-1"),
+        directions=(1, -1),
+        control_sensors=(),
+    )
+
+
+class TestInstrumentMatrix:
+    """The rule matrix of the five instrument faults, sensor by sensor."""
+
+    def test_one_cell_per_kind_level_sensor_direction(
+        self, cells: list[InstrumentRuleCell]
+    ) -> None:
+        """5 kinds x 2 levels x 3 sensors x 2 directions, every rule in every cell."""
+        assert len(cells) == 5 * 2 * 3 * 2
+        assert all(set(c.voted) == set(RULE_NAMES) for c in cells)
+        assert all(set(c.per_channel) == set(RULE_NAMES) for c in cells)
+        assert {c.start_step for c in cells} == {12}
+
+    def test_a_sensor_outside_the_roles_violates_nothing(
+        self, cells: list[InstrumentRuleCell]
+    ) -> None:
+        """No rule reads TC-CORE-01: it cannot alter any of them, voted or isolated."""
+        control = [c for c in cells if c.sensor_id == "TC-CORE-01"]
+        assert control
+        assert all(c.in_roles == () for c in control)
+        for cell in control:
+            assert all(r.n_violations == 0 for r in cell.voted.values())
+            assert all(r.n_violations == 0 for r in cell.per_channel.values())
+
+    def test_a_high_bias_on_a_t_out_channel_breaks_the_energy_balance(
+        self, cells: list[InstrumentRuleCell]
+    ) -> None:
+        """~11 K on one hot-leg channel is a >5 % error of the core delta T, voted or not."""
+        bias = [
+            c
+            for c in cells
+            if c.kind == "bias" and c.level == "high" and c.sensor_id == "TC-HL-1"
+        ]
+        assert bias
+        for cell in bias:
+            assert cell.voted["energy_balance"].n_violations > 0
+            assert cell.per_channel["energy_balance"].n_violations > 0
+            assert cell.in_roles == ("T_out",)
+
+    def test_isolating_the_channel_exposes_what_the_median_hides(
+        self, cells: list[InstrumentRuleCell]
+    ) -> None:
+        """A low bias on one of two T_out channels: the median halves it, the channel does not."""
+        low = [
+            c for c in cells if c.kind == "bias" and c.level == "low" and c.sensor_id == "TC-HL-1"
+        ]
+        voted = sum(c.voted["energy_balance"].n_violations for c in low)
+        single = sum(c.per_channel["energy_balance"].n_violations for c in low)
+        assert single > voted
+
+    def test_outside_the_window_the_rules_stay_quiet(
+        self, cells: list[InstrumentRuleCell]
+    ) -> None:
+        """Before the episode nothing is violated (the plant is the normal one)."""
+        for cell in cells:
+            if cell.kind == "bias":
+                continue
+            assert sum(cell.outside_voted.values()) == 0
+
+    def test_summary_separates_role_and_non_role_sensors(
+        self, cells: list[InstrumentRuleCell]
+    ) -> None:
+        """Per (kind, level): role sensors by sensor, non-role as a block."""
+        summary = summarize_instrument_matrix(cells)
+        assert set(summary) == {
+            f"{k}/{lv}"
+            for k in ("drift", "stuck", "noise_spike", "bias", "intermittent")
+            for lv in ("low", "high")
+        }
+        entry = summary["bias/high"]
+        assert entry["n_cells"] == 6
+        assert entry["role_sensors"]["n_cells"] == 4
+        assert entry["non_role_sensors"]["n_cells"] == 2
+        assert set(entry["role_sensors"]["by_sensor"]) == {"TC-HL-1", "FT-HL-1"}
+        assert entry["role_sensors"]["by_sensor"]["TC-HL-1"]["roles"] == ["T_out"]
+        voted = entry["role_sensors"]["voted"]
+        assert voted["energy_balance"]["n_violations"] > 0
+        assert entry["non_role_sensors"]["voted"]["energy_balance"]["n_violations"] == 0
+
+    def test_default_sensors_are_the_role_sensors_plus_the_control(
+        self, simulator: ReactorSimulator
+    ) -> None:
+        """Without `sensors`, the 14 role sensors and the control are measured."""
+        one = instrument_matrix(
+            simulator,
+            kinds=(InstrumentFaultKind.NOISE_SPIKE,),
+            levels=(FaultLevel.HIGH,),
+            directions=(1,),
+        )
+        tags = {c.sensor_id for c in one}
+        assert "TC-CORE-01" in tags
+        assert {"TC-HL-1", "TC-CL-2", "FT-CL-1", "PT-PRZ-02", "NI-FLUX-03", "PWR-TH-01"} <= tags
+        assert len(tags) == 15
+
+    def test_requires_a_direction(self, simulator: ReactorSimulator) -> None:
+        """An empty direction list is an error."""
+        with pytest.raises(ValueError, match="directions"):
+            instrument_matrix(simulator, directions=())
+
+    def test_episode_window_is_clipped_to_the_run(self, simulator: ReactorSimulator) -> None:
+        """A drift of 900 steps in a 30-step run covers what fits."""
+        cells = instrument_matrix(
+            simulator,
+            kinds=(InstrumentFaultKind.DRIFT,),
+            levels=(FaultLevel.LOW,),
+            sensors=("TC-HL-1",),
+            directions=(1,),
+        )
+        assert (cells[0].start_step, cells[0].last_step) == (12, 29)
+
+
+class TestInstrumentDetection:
+    """What the Phase 2 validator sees of each injected instrument fault."""
+
+    def test_counts_with_a_validator_that_flags_one_sensor(
+        self, simulator: ReactorSimulator
+    ) -> None:
+        """Only the episode on the flagged sensor is detected; false positives are counted."""
+        cells = instrument_detection(
+            simulator,
+            n_repeats=1,
+            kinds=(InstrumentFaultKind.STUCK,),
+            levels=(FaultLevel.HIGH,),
+            validator_factory=lambda spans: _FlagSensorValidator("TC-CORE-01", "stuck"),
+        )
+        assert len(cells) == 1
+        cell = cells[0]
+        assert (cell.kind, cell.level) == ("stuck", "high")
+        # One episode per sensor type (6); window 18 samples each (12..29).
+        assert cell.n_episodes == 6
+        assert cell.n_episodes_excl_flow == 5
+        assert cell.labelled_readings == 6 * 18
+        assert cell.episodes_detected == 1
+        assert cell.episodes_detected_excl_flow == 1
+        assert cell.readings_flagged == 18
+        assert cell.readings_flagged_expected == 18
+        assert cell.faults_by_type == {"stuck": 18}
+        assert cell.first_delay_steps == [0]
+        assert cell.episodes_by_group["thermocouple"] == (1, 1)
+        assert cell.episodes_by_group["flow"] == (0, 1)
+        # TC-CORE-01 is flagged on its 12 unlabelled samples: all false positives, no flow.
+        n_non_flow = len(simulator.catalog.sensors) - 5
+        unlabelled = 30 * n_non_flow - 5 * 18
+        assert cell.false_positive_per_1000 == pytest.approx(1000 * 12 / unlabelled)
+        assert cell.false_positive_per_1000_flow == 0.0
+
+    def test_flow_false_positives_are_reported_apart(self, simulator: ReactorSimulator) -> None:
+        """A validator that flags a flow channel only inflates the flow false-positive rate."""
+        cells = instrument_detection(
+            simulator,
+            n_repeats=1,
+            kinds=(InstrumentFaultKind.BIAS,),
+            levels=(FaultLevel.LOW,),
+            validator_factory=lambda spans: _FlagSensorValidator("FT-HL-2", "kalman_anomaly"),
+        )
+        cell = cells[0]
+        assert cell.false_positive_per_1000 == 0.0
+        assert cell.false_positive_per_1000_flow is not None
+        assert cell.false_positive_per_1000_flow > 0.0
+        assert cell.episodes_detected == 0
+
+    def test_spikes_are_separate_episodes(self, simulator: ReactorSimulator) -> None:
+        """`spikes_per_sensor` spikes per sensor, one episode and one reading each."""
+        cells = instrument_detection(
+            simulator,
+            n_repeats=1,
+            kinds=(InstrumentFaultKind.NOISE_SPIKE,),
+            levels=(FaultLevel.HIGH,),
+            spikes_per_sensor=3,
+            validator_factory=lambda spans: _FlagSensorValidator("NOPE", "noise_spike"),
+        )
+        cell = cells[0]
+        assert cell.n_episodes == 6 * 3
+        assert cell.labelled_readings == 6 * 3
+        assert cell.episodes_detected == 0
+
+    def test_the_real_validator_sees_a_long_freeze(self, simulator: ReactorSimulator) -> None:
+        """With the Phase 2 validator unchanged, an 18-sample freeze is a `stuck` fault."""
+        cells = instrument_detection(
+            simulator,
+            n_repeats=1,
+            kinds=(InstrumentFaultKind.STUCK,),
+            levels=(FaultLevel.HIGH,),
+        )
+        cell = cells[0]
+        assert cell.episodes_detected_excl_flow == cell.n_episodes_excl_flow == 5
+        assert cell.faults_by_type.get("stuck", 0) > 0
+        assert cell.readings_flagged_expected == cell.faults_by_type["stuck"]
+
+    def test_requires_a_repeat(self, simulator: ReactorSimulator) -> None:
+        """n_repeats >= 1."""
+        with pytest.raises(ValueError, match="n_repeats"):
+            instrument_detection(simulator, n_repeats=0)
+
+    def test_expected_fault_types_cover_the_five_kinds(self) -> None:
+        """Every manipulation names the validator fault it should produce."""
+        assert set(EXPECTED_VALIDATOR_FAULT) == {k.value for k in INSTRUMENT_KINDS}
+
+
+class TestCapacityAndPlan:
+    """Budget, caps, reachable rate and the coverage of the planned dataset."""
+
+    def test_capacity_report_of_the_default_configuration(
+        self, big_simulator: ReactorSimulator
+    ) -> None:
+        """The D11 40 % is not feasible; the report says by how much, with the caps."""
+        report = capacity_report(big_simulator)
+        assert report["budget"]["feasible"] is False
+        assert report["budget"]["runs_needed"] > report["budget"]["runs_available"]
+        assert report["params"]["n_runs"] == 34
+        severities = {s["severity"]: s for s in report["budget"]["severities"]}
+        assert severities["LOW"]["capacity_per_run"] == 270
+        assert severities["CRITICAL"]["kinds"] == [
+            "stuck",
+            "core_temp_excursion",
+            "void_formation",
+        ]
+        rates = report["max_feasible_rate"]
+        assert 0.005 < rates["d11"]["rate"] < 0.03
+        assert rates["capacity_b"]["rate"] > rates["capacity_a"]["rate"] > rates["d11"]["rate"]
+        assert rates["capacity_b"]["critical_share"] >= 0.05
+        assert report["capacity_per_run"]["void_formation"]["max_episodes"] == 1
+
+    def test_plan_report_of_a_feasible_configuration(
+        self, big_simulator: ReactorSimulator
+    ) -> None:
+        """Eight types and the whole grid, with the partitions measured."""
+        report = plan_coverage_report(
+            big_simulator,
+            fault_injection_rate=0.12,
+            severity_weights=CANDIDATE_WEIGHTS["capacity_b"],
+        )
+        assert abs(report["rate"] - 0.12) < 0.02
+        assert report["scenarios"]["normal"] >= 2
+        coverage = report["coverage"]
+        assert coverage["types_ok"] and coverage["grid_ok"] and coverage["passed"]
+        assert coverage["overall"]["n_types"] == 8
+        assert coverage["overall"]["grid_size"] == 8 * 6 * 3
+        assert set(coverage["partitions"]) == {"train", "val", "test"}
+        assert coverage["partitions"]["train"]["n_types"] == 8
+        shares = report["by_severity"]
+        assert shares["CRITICAL"]["fraction"] >= 0.05
+
+    def test_plan_report_raises_when_unreachable(self, big_simulator: ReactorSimulator) -> None:
+        """The default rate and weights are refused, with the numbers."""
+        with pytest.raises(ValueError, match="unreachable"):
+            plan_coverage_report(big_simulator)
+
+    def test_main_plan_writes_capacity_and_plan(self, tmp_path: Path) -> None:
+        """`plan` writes the capacity table and the coverage of a feasible plan."""
+        params_path = write_sim_params(
+            tmp_path, n_samples=50000, run_length_steps=1500, openmc_seed=42
+        )
+        output = tmp_path / "plan.json"
+        code = main(
+            [
+                "plan",
+                "--params",
+                str(params_path),
+                "--output",
+                str(output),
+                "--rate",
+                "0.12",
+                "--weights",
+                "capacity_b",
+            ]
+        )
+        assert code == 0
+        data = json.loads(output.read_text(encoding="utf-8"))
+        assert data["capacity"]["budget"]["feasible"] is False
+        assert data["plan"]["coverage"]["passed"] is True
+
+    def test_main_plan_records_the_refusal(self, tmp_path: Path) -> None:
+        """Without overrides the plan entry carries the planner message."""
+        params_path = write_sim_params(
+            tmp_path, n_samples=50000, run_length_steps=1500, openmc_seed=42
+        )
+        output = tmp_path / "plan.json"
+        assert main(["plan", "--params", str(params_path), "--output", str(output)]) == 0
+        data = json.loads(output.read_text(encoding="utf-8"))
+        assert "unreachable" in data["plan"]["error"]
+
+    def test_main_instrument_writes_matrix_and_detection(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """`instrument` writes the matrix summary, the detection cells and the raw cells."""
+        original = simulation_study.instrument_matrix
+
+        def two_sensors(simulator: ReactorSimulator, **kwargs: Any) -> list[InstrumentRuleCell]:
+            """Restrict the matrix to two sensors and one direction (the full one is slow)."""
+            return original(
+                simulator,
+                sensors=("TC-HL-1", "TC-CORE-01"),
+                directions=(1,),
+                control_sensors=(),
+                **kwargs,
+            )
+
+        monkeypatch.setattr(simulation_study, "instrument_matrix", two_sensors)
+        params_path = write_sim_params(tmp_path)
+        output = tmp_path / "instrument.json"
+        code = main(
+            ["instrument", "--params", str(params_path), "--output", str(output), "--repeats", "1"]
+        )
+        assert code == 0
+        data = json.loads(output.read_text(encoding="utf-8"))
+        assert len(data["matrix"]) == 15
+        assert len(data["cells"]) == 5 * 3 * 2
+        assert len(data["detection"]) == 15
+        assert data["params"]["repeats"] == 1
+        assert {d["kind"] for d in data["detection"]} == {k.value for k in INSTRUMENT_KINDS}

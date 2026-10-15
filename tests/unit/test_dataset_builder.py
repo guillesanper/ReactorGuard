@@ -39,6 +39,8 @@ from data.simulation.dataset_builder import (
 )
 from data.simulation.scenario import (
     FaultLevel,
+    InstrumentEpisode,
+    InstrumentFaultKind,
     ProcessFaultSpec,
     RunPlan,
     ScenarioKind,
@@ -302,6 +304,8 @@ class TestLongFrame:
         assert frame["process_severity"].isna().all()
         assert frame["instrument_severity"].isna().all()
         assert frame["injected_at"].isna().all()
+        assert frame["injected_at_step"].isna().all()
+        assert frame["fault_level"].isna().all()
         assert frame["episode_id"].isna().all()
         assert not frame["corrupted"].any()
         assert (frame["scenario"] == "normal").all()
@@ -336,15 +340,30 @@ class TestLongFrame:
         assert all(r.is_usable for r in readings)
         assert all(r.plant_id == PLANT for r in readings)
 
-    def test_rejects_instrument_scenarios(
+    def test_instrument_run_needs_the_corruption_mask(
         self, sim: RunSimulation, catalog: SensorCatalog, spans: dict[str, SensorSpan]
     ) -> None:
-        """Instrument-fault labels arrive with F3-M5: until then the builder refuses them."""
+        """An instrument run cannot be assembled without the mask that says what is corrupt."""
+        episode = InstrumentEpisode("TC-HL-1", InstrumentFaultKind.STUCK, FaultLevel.LOW, 5, 10)
         faulty = dataclasses.replace(
-            sim, plan=dataclasses.replace(sim.plan, scenario=ScenarioKind.STUCK)
+            sim,
+            plan=dataclasses.replace(
+                sim.plan, scenario=ScenarioKind.STUCK, instrument_faults=(episode,)
+            ),
         )
-        with pytest.raises(NotImplementedError, match="stuck"):
+        with pytest.raises(ValueError, match="corruption mask"):
             assemble_long_frame(faulty, sim.true_values, catalog, spans, PLANT)
+        mask = np.zeros(sim.true_values.shape, dtype=np.bool_)
+        mask[5:15, catalog.tags.index("TC-HL-1")] = True
+        labelled = assemble_long_frame(faulty, sim.true_values, catalog, spans, PLANT, mask)
+        assert int((labelled["instrument_fault"] == "stuck").sum()) == 10
+        assert int(labelled["corrupted"].sum()) == 10
+
+    def test_label_columns_include_step_and_level(self) -> None:
+        """injected_at_step and fault_level are part of the label block (F3-M5)."""
+        assert "injected_at_step" in LABEL_COLUMNS
+        assert "fault_level" in LABEL_COLUMNS
+        assert LABEL_COLUMNS.index("injected_at_step") == LABEL_COLUMNS.index("injected_at") + 1
 
     def test_rejects_wrong_shape(
         self, sim: RunSimulation, catalog: SensorCatalog, spans: dict[str, SensorSpan]
@@ -411,6 +430,14 @@ class TestProcessLabels:
         assert labelled.loc[~active, "injected_at"].isna().all()
         first = labelled[labelled["process_fault"] != NO_FAULT]["timestep"].min()
         assert first == self.SPEC.injected_step
+
+    def test_step_and_level_labels(self, labelled: pd.DataFrame) -> None:
+        """injected_at_step and fault_level are set inside the window and null outside."""
+        active = labelled["timestep"].between(10, 20)
+        assert (labelled.loc[active, "injected_at_step"] == 10).all()
+        assert (labelled.loc[active, "fault_level"] == "medium").all()
+        assert labelled.loc[~active, "injected_at_step"].isna().all()
+        assert labelled.loc[~active, "fault_level"].isna().all()
 
     def test_episode_id_and_corruption(self, labelled: pd.DataFrame) -> None:
         """One episode id per run; a process fault never marks a reading corrupted."""

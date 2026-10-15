@@ -125,3 +125,59 @@ fault_tiers:
       high:                         # vacio casi al tope 0,5 (void 0,41-0,44, margen -12 a -13 K)
         saturation_margin_k: -8.0
         expect: {void_peak: [0.35, 0.50], margin_min_k: [-16.0, -10.0]}
+
+# --- Niveles de magnitud de los fallos de instrumento (F3-M5) ---
+# Leido por data/simulation/instrument_faults.py (parse_instrument_faults). Los fallos de
+# instrumento se aplican a la serie MEDIDA, despues del ruido; la planta sigue siendo la
+# normal y `true_value` se conserva. Magnitudes en ANCHOS del sobre de alarma del sensor
+# (alarm_max - alarm_min de sim_sensor_spans.yaml), como los umbrales del validador de
+# Fase 2. Un rango [a, b] se sortea uniforme por episodio.
+instrument_faults:
+  drift:
+    levels:
+      # Deriva real del TDD 2.2 (~0,1 C/dia): sobre un termopar de ~9 K de sobre son
+      # ~0,0005 anchos/hora. Invisible para cualquier detector; se etiqueta igual.
+      low: {rate_widths_per_hour: 0.0005, length_steps: 900}
+      # Por debajo del suelo de 10,13 anchos/hora medido en Fase 2: sub-detectable.
+      medium: {rate_widths_per_hour: 0.1, length_steps: 240}
+      # Banda 13-17 anchos/hora de InjectionConfig.ramp_rate_per_hour (medida en Fase 2).
+      high: {rate_widths_per_hour: [13.0, 17.0], length_steps: 40}
+
+  stuck:
+    levels:           # longitud en muestras; el detector de Fase 2 usa una ventana de 8
+      low: {length_steps: 12}
+      medium: {length_steps: 48}
+      high: {length_steps: 240}
+
+  noise_spike:
+    levels:           # k x sigma_normal del sensor
+      low: {k_sigma: [5.0, 7.0]}
+      medium: {k_sigma: [15.0, 25.0]}
+      high: {k_sigma: [50.0, 70.0]}
+
+  bias:
+    onset_fraction: [0.25, 0.50]   # el desvio empieza entre el 25 y el 50 % del run y persiste
+    levels:           # anchos de sobre: dentro, en el borde y fuera del sobre
+      low: {offset_widths: [0.10, 0.20]}
+      medium: {offset_widths: [0.35, 0.50]}
+      high: {offset_widths: [1.00, 1.50]}
+
+  intermittent:
+    levels:           # cadena de Markov valido/invalido; fraccion invalida = p_enter/(p_enter+p_exit)
+      low: {p_enter: 0.02, p_exit: 0.50, length_steps: 120}
+      medium: {p_enter: 0.05, p_exit: 0.30, length_steps: 240}
+      high: {p_enter: 0.15, p_exit: 0.15, length_steps: 360}
+
+# --- Planificador de escenarios (F3-M5) ---
+# Leido por data/simulation/scenario_planner.py (parse_planner_settings). Son los TOPES de
+# densidad de D11: si la cuota de una severidad no cabe bajo ellos, el planificador FALLA
+# con ValueError y no fuerza densidades (se vuelve al usuario).
+scenario_planner:
+  n_min_runs: 3                  # runs minimos por tipo (8 tipos x 3 = 24 de los 34 runs)
+  min_normal_runs: 2             # runs de operacion normal que se reservan siempre
+  max_sensor_fraction: 0.34      # sensores del catalogo que un run de instrumento puede afectar
+  max_window_fraction: 0.60      # ventana maxima de un fallo de proceso, fraccion del run
+  max_spike_rate: 0.02           # picos por muestra y sensor afectado, como maximo
+  k_min_readings: 10             # lecturas etiquetadas para dar un modo de la rejilla por cubierto
+  n_min_episodes: 1              # episodios para dar un modo por cubierto
+  coverage_gate: 0.95            # fraccion minima de la rejilla (D6)

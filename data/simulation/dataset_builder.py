@@ -18,7 +18,10 @@ recibe una secuencia de `ModelInputs`, no solo una carga) y la serie medida
 (F3-M4) solo cambian las entradas: las etiquetas salen de `RunPlan.process_fault`
 y el valor medido es el del estado perturbado, con `corrupted = False` (corrupta
 es la lectura de un instrumento, no la de una planta que de verdad cambio). Los
-de INSTRUMENTO (F3-M5) cambiaran `measured`.
+de INSTRUMENTO (F3-M5) cambian `measured` DESPUES del ruido
+(`instrument_faults.apply_instrument_faults`): las etiquetas salen de
+`RunPlan.instrument_faults`, `true_value` queda intacto y `corrupted` marca solo
+las lecturas cuyo valor difiere de la medida sin fallo.
 """
 
 from __future__ import annotations
@@ -37,6 +40,7 @@ from numpy.typing import NDArray
 from data.generators.tep_adapter import READING_ID_NAMESPACE
 from data.schemas.sensor_reading import QualityFlag
 from data.schemas.sensor_spans import SensorSpan
+from data.simulation.instrument_faults import apply_instrument_faults
 from data.simulation.scenario import FAULT_SEVERITY, FaultAxis, RunPlan, ScenarioKind
 from data.simulation.sensor_catalog import SensorCatalog
 from data.simulation.thermal_model import Diagnostics, ModelInputs, ReactorModel, StepResult
@@ -70,9 +74,15 @@ LABEL_COLUMNS: tuple[str, ...] = (
     "instrument_fault",
     "instrument_severity",
     "injected_at",
+    "injected_at_step",
     "episode_id",
+    "fault_level",
 )
-"""Columnas de verdad-terreno y de identidad del run."""
+"""Columnas de verdad-terreno y de identidad del run.
+
+`injected_at` e `injected_at_step` son el inicio del episodio ACTIVO en esa lectura;
+`fault_level` es su nivel de magnitud (`low`, `medium`, `high`). Los tres, como el
+resto de etiquetas de fallo, son nulos fuera de la ventana de un episodio."""
 
 LONG_COLUMNS: tuple[str, ...] = CONTRACT_COLUMNS + LABEL_COLUMNS
 """Orden de columnas del frame largo."""
@@ -364,12 +374,16 @@ class _StepLabels:
         severity: Static TDD severity inside the window, None outside.
         episode: Episode identifier inside the window, None outside.
         injected_at: Start of the active episode inside the window, NaT outside.
+        injected_step: Start step of the active episode, -1 outside.
+        level: Magnitude level inside the window, None outside.
     """
 
     process_fault: NDArray[np.object_]
     severity: NDArray[np.object_]
     episode: NDArray[np.object_]
     injected_at: pd.DatetimeIndex
+    injected_step: NDArray[np.int64]
+    level: NDArray[np.object_]
 
 
 def _process_labels(sim: RunSimulation) -> _StepLabels:
@@ -389,6 +403,8 @@ def _process_labels(sim: RunSimulation) -> _StepLabels:
     process_fault = np.full(n_steps, NO_FAULT, dtype=object)
     severity = np.full(n_steps, None, dtype=object)
     episode = np.full(n_steps, None, dtype=object)
+    level = np.full(n_steps, None, dtype=object)
+    injected_step = np.full(n_steps, -1, dtype=np.int64)
     injected: list[datetime | None] = [None] * n_steps
     spec = sim.plan.process_fault
     if spec is not None:
@@ -400,11 +416,91 @@ def _process_labels(sim: RunSimulation) -> _StepLabels:
                 severity[step] = FAULT_SEVERITY[kind].value
                 episode[step] = f"{sim.plan.run_id}:{kind.value}"
                 injected[step] = start
+                injected_step[step] = spec.injected_step
+                level[step] = spec.level.value
     return _StepLabels(
         process_fault=process_fault,
         severity=severity,
         episode=episode,
         injected_at=pd.DatetimeIndex(pd.to_datetime(injected, utc=True)),
+        injected_step=injected_step,
+        level=level,
+    )
+
+
+_NAT_NS = int(np.iinfo(np.int64).min)
+"""Representacion entera de NaT (ns desde la epoca)."""
+
+
+@dataclass(frozen=True)
+class _ReadingLabels:
+    """Instrument-fault labels of a run, one entry per (step, sensor).
+
+    Attributes:
+        instrument_fault: `none` or the kind value, shape (n_steps, n_sensors).
+        severity: Static TDD severity inside an episode, None outside.
+        episode: Episode identifier inside an episode, None outside.
+        injected_at: Start instant (ns since the epoch) of the active episode,
+            `_NAT_NS` outside.
+        injected_step: Start step of the active episode, -1 outside.
+        level: Magnitude level inside an episode, None outside.
+    """
+
+    instrument_fault: NDArray[np.object_]
+    severity: NDArray[np.object_]
+    episode: NDArray[np.object_]
+    injected_at: NDArray[np.int64]
+    injected_step: NDArray[np.int64]
+    level: NDArray[np.object_]
+
+
+def _instrument_labels(sim: RunSimulation, catalog: SensorCatalog) -> _ReadingLabels:
+    """Return the instrument-fault labels of a run.
+
+    La etiqueta cubre toda la ventana de cada episodio en el sensor afectado, y
+    solo en el: un fallo de instrumento no es un hecho de la planta. Un run normal
+    o de proceso devuelve las etiquetas de "sin fallo de instrumento".
+
+    Args:
+        sim: Run integrado.
+        catalog: Catalogo de sensores (da la columna de cada tag).
+
+    Returns:
+        The per-reading labels.
+
+    Raises:
+        KeyError: If an episode names a sensor missing from the catalog.
+    """
+    shape = (sim.n_steps, len(catalog.sensors))
+    fault = np.full(shape, NO_FAULT, dtype=object)
+    severity = np.full(shape, None, dtype=object)
+    episode_id = np.full(shape, None, dtype=object)
+    level = np.full(shape, None, dtype=object)
+    injected_at = np.full(shape, _NAT_NS, dtype=np.int64)
+    injected_step = np.full(shape, -1, dtype=np.int64)
+    column = {tag: j for j, tag in enumerate(catalog.tags)}
+    stamps = pd.DatetimeIndex(sim.timestamps).asi8
+    for episode in sim.plan.instrument_faults:
+        if episode.sensor_id not in column:
+            raise KeyError(
+                f"{sim.plan.run_id}: episode names unknown sensor '{episode.sensor_id}'."
+            )
+        j = column[episode.sensor_id]
+        window = slice(episode.start_step, episode.last_step + 1)
+        scenario = episode.kind.scenario
+        fault[window, j] = scenario.value
+        severity[window, j] = FAULT_SEVERITY[scenario].value
+        episode_id[window, j] = episode.episode_id(sim.plan.run_id)
+        level[window, j] = episode.level.value
+        injected_at[window, j] = stamps[episode.start_step]
+        injected_step[window, j] = episode.start_step
+    return _ReadingLabels(
+        instrument_fault=fault,
+        severity=severity,
+        episode=episode_id,
+        injected_at=injected_at,
+        injected_step=injected_step,
+        level=level,
     )
 
 
@@ -414,6 +510,7 @@ def assemble_long_frame(
     catalog: SensorCatalog,
     spans: Mapping[str, SensorSpan],
     plant_id: str,
+    corrupted: NDArray[np.bool_] | None = None,
 ) -> pd.DataFrame:
     """Return the long-format frame of one run, one row per (step, sensor).
 
@@ -427,24 +524,31 @@ def assemble_long_frame(
         catalog: Catalogo de sensores.
         spans: Span calibrado por tag (escala a cuentas ADC).
         plant_id: Identificador de planta de las lecturas.
+        corrupted: Lecturas cuyo valor difiere de la medida sin fallo, forma
+            (n_steps, n_sensors). Obligatoria en un run de instrumento (la
+            produce `apply_instrument_faults`); en los demas es todo False.
 
     Returns:
         DataFrame with the columns of LONG_COLUMNS.
 
     Raises:
-        NotImplementedError: If the run is an instrument fault (its labels
-            arrive with F3-M5).
-        ValueError: If `measured` does not match the run.
-        KeyError: If a sensor has no span.
+        ValueError: If `measured` or `corrupted` do not match the run, or an
+            instrument run is assembled without its corruption mask.
+        KeyError: If a sensor has no span or an episode names an unknown sensor.
     """
-    if sim.plan.scenario.axis is FaultAxis.INSTRUMENT:
-        raise NotImplementedError(
-            f"{sim.plan.run_id}: scenario '{sim.plan.scenario.value}' is an instrument "
-            "fault; its labels arrive with F3-M5."
-        )
     if measured.shape != sim.true_values.shape:
         raise ValueError(
             f"measured has shape {measured.shape}, expected {sim.true_values.shape}."
+        )
+    is_instrument = sim.plan.scenario.axis is FaultAxis.INSTRUMENT
+    if is_instrument and corrupted is None:
+        raise ValueError(
+            f"{sim.plan.run_id}: an instrument run ('{sim.plan.scenario.value}') needs the "
+            "corruption mask produced by apply_instrument_faults."
+        )
+    if corrupted is not None and corrupted.shape != measured.shape:
+        raise ValueError(
+            f"corrupted has shape {corrupted.shape}, expected {measured.shape}."
         )
     n_steps, n_sensors = measured.shape
     n_rows = n_steps * n_sensors
@@ -459,6 +563,25 @@ def assemble_long_frame(
     ]
     sensors = catalog.sensors
     labels = _process_labels(sim)
+    readings = _instrument_labels(sim, catalog)
+    flagged = np.zeros(n_rows, dtype=np.bool_) if corrupted is None else corrupted.reshape(-1)
+    no_label = np.full(n_rows, None, dtype=object)
+    if is_instrument:
+        episode = readings.episode.reshape(-1)
+        instrument_severity = readings.severity.reshape(-1)
+        process_severity = no_label
+        level = readings.level.reshape(-1)
+        injected_step = readings.injected_step.reshape(-1)
+        injected_ns = readings.injected_at.reshape(-1)
+        injected_at = pd.Series(pd.to_datetime(injected_ns, unit="ns", utc=True))
+        injected_at[injected_ns == _NAT_NS] = pd.NaT
+    else:
+        episode = np.repeat(labels.episode, n_sensors)
+        instrument_severity = no_label
+        process_severity = np.repeat(labels.severity, n_sensors)
+        level = np.repeat(labels.level, n_sensors)
+        injected_step = np.repeat(labels.injected_step, n_sensors)
+        injected_at = pd.Series(labels.injected_at.repeat(n_sensors))
     columns = {
         "reading_id": reading_ids,
         "timestamp": pd.Series(pd.DatetimeIndex(sim.timestamps).repeat(n_sensors)),
@@ -482,13 +605,15 @@ def assemble_long_frame(
         "run_id": np.full(n_rows, run_id, dtype=object),
         "scenario": np.full(n_rows, sim.plan.scenario.value, dtype=object),
         "true_value": sim.true_values.reshape(-1),
-        "corrupted": np.zeros(n_rows, dtype=np.bool_),
+        "corrupted": flagged,
         "process_fault": np.repeat(labels.process_fault, n_sensors),
-        "process_severity": pd.array(np.repeat(labels.severity, n_sensors), dtype="string"),
-        "instrument_fault": np.full(n_rows, NO_FAULT, dtype=object),
-        "instrument_severity": pd.array([None] * n_rows, dtype="string"),
-        "injected_at": pd.Series(labels.injected_at.repeat(n_sensors)),
-        "episode_id": pd.array(np.repeat(labels.episode, n_sensors), dtype="string"),
+        "process_severity": pd.array(process_severity, dtype="string"),
+        "instrument_fault": readings.instrument_fault.reshape(-1),
+        "instrument_severity": pd.array(instrument_severity, dtype="string"),
+        "injected_at": injected_at,
+        "injected_at_step": pd.arrays.IntegerArray(injected_step, injected_step < 0),
+        "episode_id": pd.array(episode, dtype="string"),
+        "fault_level": pd.array(level, dtype="string"),
     }
     return pd.DataFrame(columns, columns=list(LONG_COLUMNS))
 
@@ -499,8 +624,13 @@ def build_run_frame(
     spans: Mapping[str, SensorSpan],
     plant_id: str,
     noise_rng: np.random.Generator,
+    fault_rng: np.random.Generator | None = None,
 ) -> pd.DataFrame:
-    """Measure a run with noise and assemble its long frame.
+    """Measure a run with noise, apply its instrument faults and assemble its frame.
+
+    Orden fijo: estado verdadero -> ruido -> fallos de instrumento -> cuentas ADC.
+    Los fallos de instrumento actuan sobre la serie YA medida, de modo que
+    `true_value` es el de la planta y el valor leido es el del instrumento.
 
     Args:
         sim: Run integrado.
@@ -508,11 +638,20 @@ def build_run_frame(
         spans: Span calibrado por tag.
         plant_id: Identificador de planta.
         noise_rng: Generador del flujo de ruido del run (`RunPlan.rngs()[1]`).
+        fault_rng: Generador del flujo de fallos del run (`RunPlan.rngs()[2]`);
+            solo lo consume el intermitente. Por defecto, el del plan.
 
     Returns:
         The long frame (see `assemble_long_frame`).
     """
-    return assemble_long_frame(sim, measure(sim, catalog, noise_rng), catalog, spans, plant_id)
+    measured = measure(sim, catalog, noise_rng)
+    if sim.plan.scenario.axis is not FaultAxis.INSTRUMENT:
+        return assemble_long_frame(sim, measured, catalog, spans, plant_id)
+    rng = sim.plan.rngs()[2] if fault_rng is None else fault_rng
+    effect = apply_instrument_faults(measured, catalog, spans, sim.plan, sim.dt_s, rng)
+    return assemble_long_frame(
+        sim, effect.values, catalog, spans, plant_id, corrupted=effect.corrupted
+    )
 
 
 def wide_frame_from_matrix(

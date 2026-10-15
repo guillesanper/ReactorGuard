@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import math
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -78,7 +78,9 @@ class PlantParams:
         rod_ki_per_k_s: Ganancia integral del PI de barras [dk/k por K s].
         tau_rod_s: Retardo mecanico de las barras [s].
         limits: Limites de constraints.
-        fault_tiers: Niveles de magnitud de fallos de proceso (vacio hasta F3-M4).
+        fault_tiers: Niveles de magnitud de fallos de proceso (F3-M4).
+        instrument_faults: Niveles de magnitud de fallos de instrumento (F3-M5).
+        scenario_planner: Topes de densidad y minimos del planificador (F3-M5).
     """
 
     thermal_power_mw: float
@@ -105,6 +107,8 @@ class PlantParams:
     tau_rod_s: float
     limits: PlantLimits
     fault_tiers: dict[str, Any]
+    instrument_faults: dict[str, Any] = field(default_factory=dict)
+    scenario_planner: dict[str, Any] = field(default_factory=dict)
 
     @property
     def pump_max_kg_s(self) -> float:
@@ -248,6 +252,12 @@ def load_plant_params(path: str | Path = DEFAULT_PLANT_PARAMS_PATH) -> PlantPara
     fault_tiers = _require(document, "fault_tiers", name)
     if not isinstance(fault_tiers, dict):
         raise TypeError(f"{name}: 'fault_tiers' must be a mapping.")
+    instrument_faults = _require(document, "instrument_faults", name)
+    if not isinstance(instrument_faults, dict):
+        raise TypeError(f"{name}: 'instrument_faults' must be a mapping.")
+    scenario_planner = _require(document, "scenario_planner", name)
+    if not isinstance(scenario_planner, dict):
+        raise TypeError(f"{name}: 'scenario_planner' must be a mapping.")
 
     def p(key: str) -> float:
         return float(_require(plant, key, f"{name}: 'plant'"))
@@ -303,6 +313,8 @@ def load_plant_params(path: str | Path = DEFAULT_PLANT_PARAMS_PATH) -> PlantPara
             ),
         ),
         fault_tiers=dict(fault_tiers),
+        instrument_faults=dict(instrument_faults),
+        scenario_planner=dict(scenario_planner),
     )
     if params.void_max_fraction >= 1.0:
         raise ValueError("plant.void_max_fraction must be < 1.")

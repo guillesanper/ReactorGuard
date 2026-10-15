@@ -228,3 +228,72 @@ class TestRunFrameFromEditedPlan:
         payload = {"run_id": plan.run_id, "seed": plan.seed_entropy, "key": list(plan.spawn_key)}
         assert json.loads(json.dumps(payload))["run_id"] == "sim_run_001"
         assert yaml.safe_load(yaml.safe_dump(payload))["seed"] == 7
+
+
+@pytest.fixture(scope="module")
+def dataset_sized(tmp_path_factory: pytest.TempPathFactory) -> ReactorSimulator:
+    """Return a simulator over 34 runs of 1500 steps (planned, never integrated)."""
+    return build_simulator(
+        tmp_path_factory.mktemp("planned"),
+        n_samples=50000,
+        run_length_steps=1500,
+        openmc_seed=42,
+    )
+
+
+class TestPlannedDataset:
+    """`planned` runs the D11 planner over the simulator's own configuration."""
+
+    def test_scenario_config_is_parsed_once(self, simulator: ReactorSimulator) -> None:
+        """The levels and caps are resolved lazily and cached."""
+        first = simulator.scenario_config
+        assert simulator.scenario_config is first
+        assert first.planner.n_min_runs == 3
+        assert len(first.instrument.kinds) == 5
+        assert len(first.process.kinds) == 3
+
+    def test_the_default_budget_is_refused_with_numbers(
+        self, dataset_sized: ReactorSimulator
+    ) -> None:
+        """40 % with the D11 weights does not fit under the caps: the planner says why."""
+        with pytest.raises(ValueError, match="unreachable"):
+            dataset_sized.planned()
+
+    def test_a_feasible_budget_gives_one_plan_per_run(
+        self, dataset_sized: ReactorSimulator
+    ) -> None:
+        """The plan holds every run, with the eight types present."""
+        planned = dataset_sized.planned(
+            fault_injection_rate=0.12,
+            severity_weights={"critical": 0.55, "high": 0.38, "medium": 0.06, "low": 0.01},
+        )
+        assert len(planned.plans) == dataset_sized.params.n_runs == 34
+        scenarios = {p.scenario for p in planned.plans}
+        assert len(scenarios) == 9
+        assert abs(planned.labelled_fraction - 0.12) < 0.02
+
+    def test_plans_property_stays_the_normal_dataset(self, dataset_sized: ReactorSimulator) -> None:
+        """`plans` is still operation normal: the planned dataset is a separate call."""
+        assert all(p.scenario is ScenarioKind.NORMAL for p in dataset_sized.plans)
+
+    def test_a_planned_instrument_run_generates_a_labelled_frame(
+        self, simulator: ReactorSimulator
+    ) -> None:
+        """generate_run applies the episodes of an instrument plan."""
+        from data.simulation.scenario import (
+            FaultLevel,
+            InstrumentEpisode,
+            InstrumentFaultKind,
+            make_run_plan,
+        )
+
+        episode = InstrumentEpisode(
+            "PT-PRZ-01", InstrumentFaultKind.BIAS, FaultLevel.HIGH, 10, 20, 1.2
+        )
+        plan = make_run_plan(simulator.params, 0, ScenarioKind.BIAS, instrument_faults=(episode,))
+        frame = simulator.generate_run(plan)
+        assert tuple(frame.columns) == LONG_COLUMNS
+        labelled = frame[frame["instrument_fault"] == "bias"]
+        assert len(labelled) == 20
+        assert labelled["corrupted"].all()
+        assert (labelled["sensor_id"] == "PT-PRZ-01").all()
