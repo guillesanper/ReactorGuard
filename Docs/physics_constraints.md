@@ -273,10 +273,12 @@ seccion 7.3 son las del sigma inicial de 0,30 K.
 
 Leyenda: `0*` = medido (cero violaciones); `n/N (p %)` = medido: violaciones sobre
 muestras evaluables de la ventana del fallo, tasa y retardo en muestras (`dK`: la
-primera violacion llega K muestras de 180 s despues del inicio); `H+` = **hipotesis**
-de que la regla se viola; `H0` = hipotesis de que no se viola; `?` = sin hipotesis
-fundada; `[M5]` = hito donde se mide. **Nada de H+/H0/? es una medicion.** Las filas
-de proceso son de F3-M4 (seccion 12); las de instrumento se miden en F3-M5.
+primera violacion llega K muestras de 180 s despues del inicio); `k/14 sens.` (solo
+filas de instrumento) = sensores, de los 14 que algun rol de las constraints lee, que violan la
+regla, y `n/N` esta agregado solo sobre ellos. Las filas de proceso son de F3-M4 (seccion 12);
+las de instrumento, de F3-M5 (seccion 13), con la mediana del rol (votada). La seccion
+13.3 trae las mismas celdas por canal y la 13.4 los grupos de sensores que violan cada
+regla. Ya no queda ninguna hipotesis (H+/H0/?) en la tabla.
 
 | Escenario | 1 energia | 2 orden | 3 dT/dt | 4 caudal | 5 pot./flujo | 6 ebullicion | 7 masa |
 |---|---|---|---|---|---|---|---|
@@ -288,11 +290,21 @@ de proceso son de F3-M4 (seccion 12); las de instrumento se miden en F3-M5.
 | Proceso: vacio, nivel bajo (F3-M4, 453 muestras) | 107/453 (23,6 %) d46 | 0* | 0* (inobservable a 180 s) | 0* | 79/453 (17,4 %) d46 | 0* (el vacio incipiente no llega a T_sat) | 0* |
 | Proceso: vacio, nivel medio (F3-M4, 453 muestras) | 361/453 (79,7 %) d12 | 0* | 0* (inobservable a 180 s) | 87/453 (19,2 %) d32 | 361/453 (79,7 %) d13 | 176/453 (38,9 %) d16 | 185/360 (51,4 %) d23 |
 | Proceso: vacio, nivel alto (F3-M4, 453 muestras) | 386/453 (85,2 %) d10 | 0* | 0* (inobservable a 180 s) | 82/453 (18,1 %) d13 | 386/453 (85,2 %) d10 | 365/453 (80,6 %) d9 | 207/318 (65,1 %) d12 |
-| Instrumento: deriva [M5] | H0 hasta ~3 K sobre un canal de T_out (la mediana de 2 reparte b/2 y 5 % de 29,7 K = 1,5 K) | H0 | H0 | H0 | H0 | H0 | H0 |
-| Instrumento: bloqueado [M5] | ? | ? | H0 | ? (si queda en rango) | ? | ? | ? |
-| Instrumento: pico de ruido [M5] | H0 | H0 | H0 (1800 K a 180 s) | H+ (si el pico supera 4950 en un canal de caudal) | H0 | H0 | H0 |
-| Instrumento: sesgo [M5] | H+ (a partir de ~3 K en un termopar de T_out) | H0 | H0 | ? | ? | ? | ? |
-| Instrumento: intermitente [M5] | ? | ? | ? | ? | ? | ? | ? |
+| Instrumento: deriva bajo (F3-M5, votada) | 0* | 0* | 0* | 0* | 0* | 0* | 0* |
+| Instrumento: deriva medio (F3-M5, votada) | 4/14 sens.: 1347/1920 (70,2 %) d44 | 0* | 0* | 4/14 sens.: 181/1920 (9,4 %) d141 | 1/14 sens.: 439/480 (91,5 %) d18 | 0* | 4/14 sens.: 275/1920 (14,3 %) d139 |
+| Instrumento: deriva alto (F3-M5, votada) | 6/14 sens.: 304/396 (76,8 %) d0 | 4/14 sens.: 125/320 (39,1 %) d7 | 0* | 4/14 sens.: 265/320 (82,8 %) d1 | 1/14 sens.: 80/80 (100,0 %) d0 | 4/14 sens.: 103/254 (40,6 %) d7 | 4/14 sens.: 312/320 (97,5 %) d1 |
+| Instrumento: bloqueado bajo (F3-M5, votada) | 0* | 0* | 0* | 0* | 0* | 0* | 0* |
+| Instrumento: bloqueado medio (F3-M5, votada) | 0* | 0* | 0* | 0* | 0* | 0* | 0* |
+| Instrumento: bloqueado alto (F3-M5, votada) | 3/14 sens.: 238/1440 (16,5 %) d171 | 0* | 0* | 0* | 1/14 sens.: 356/480 (74,2 %) d60 | 0* | 0* |
+| Instrumento: pico bajo (F3-M5, votada) | 0* | 0* | 0* | 0* | 0* | 0* | 0* |
+| Instrumento: pico medio (F3-M5, votada) | 4/14 sens.: 6/8 (75,0 %) d0 | 0* | 0* | 4/14 sens.: 4/8 (50,0 %) d0 | 1/14 sens.: 2/2 (100,0 %) d0 | 0* | 4/14 sens.: 8/8 (100,0 %) d0 |
+| Instrumento: pico alto (F3-M5, votada) | 4/14 sens.: 8/8 (100,0 %) d0 | 0* | 0* | 4/14 sens.: 4/8 (50,0 %) d0 | 1/14 sens.: 2/2 (100,0 %) d0 | 0* | 4/14 sens.: 8/8 (100,0 %) d0 |
+| Instrumento: sesgo bajo (F3-M5, votada) | 2/14 sens.: 59/3600 (1,6 %) d176 | 0* | 0* | 0* | 1/14 sens.: 1799/1800 (99,9 %) d0 | 0* | 0* |
+| Instrumento: sesgo medio (F3-M5, votada) | 4/14 sens.: 6211/7200 (86,3 %) d0 | 0* | 0* | 0* | 1/14 sens.: 1800/1800 (100,0 %) d0 | 0* | 3/14 sens.: 4/5400 (0,1 %) d314 |
+| Instrumento: sesgo alto (F3-M5, votada) | 4/14 sens.: 7200/7200 (100,0 %) d0 | 0* | 0* | 4/14 sens.: 3558/7200 (49,4 %) d0 | 1/14 sens.: 1800/1800 (100,0 %) d0 | 0* | 4/14 sens.: 5876/7200 (81,6 %) d0 |
+| Instrumento: intermitente bajo (F3-M5, votada) | 4/14 sens.: 70/960 (7,3 %) d0 | 0* | 0* | 4/14 sens.: 14/960 (1,5 %) d0 | 1/14 sens.: 8/240 (3,3 %) d0 | 0* | 4/14 sens.: 25/960 (2,6 %) d0 |
+| Instrumento: intermitente medio (F3-M5, votada) | 4/14 sens.: 285/1920 (14,8 %) d0 | 0* | 0* | 4/14 sens.: 184/1920 (9,6 %) d0 | 1/14 sens.: 82/480 (17,1 %) d0 | 0* | 4/14 sens.: 313/1920 (16,3 %) d0 |
+| Instrumento: intermitente alto (F3-M5, votada) | 4/14 sens.: 1444/2880 (50,1 %) d0 | 0* | 0* | 4/14 sens.: 653/2880 (22,7 %) d0 | 1/14 sens.: 325/720 (45,1 %) d0 | 0* | 4/14 sens.: 1442/2880 (50,1 %) d0 |
 
 ## 10. Limitaciones y preguntas abiertas
 
@@ -303,8 +315,10 @@ de proceso son de F3-M4 (seccion 12); las de instrumento se miden en F3-M5.
   carga la regla 1 no se ha medido con el sigma nuevo: no es operacion normal
   del dataset.
 - **Votacion**: la mediana enmascara un unico canal averiado en las reglas de
-  relacion. Si M5 necesita que un canal defectuoso viole una regla, habra que
-  evaluar por canal; la decision es de M5 con la matriz delante.
+  relacion. **Medido en F3-M5** (13.3-13.5): votada, los 3 canales de flujo neutronico
+  quedan ocultos y los termopares (2 canales) llegan diluidos a la mitad; por canal
+  se ven. La decision de votar o no en el Rule Engine queda para Fase 4 (T7.3); el
+  dataset guarda las lecturas por sensor, de modo que ambas evaluaciones son posibles.
 - **Cota fisica a 180 s**: la regla 3 es inobservable; la deteccion de saltos de
   temperatura la hace el validador de Fase 2 por rango.
 - **Disparo de bomba**: el modelo de F3-M1 apaga el reactor por vacio y lleva
@@ -663,3 +677,321 @@ evaluacion (~8 min). El vacio es caro por la
 no suavidad de la ebullicion: hasta 26.000 evaluaciones de la derivada por paso en el
 ciclo, frente a ~40 en operacion normal. Relajar la tolerancia (rtol 1e-6) lo abarata
 x1,8 pero cambia n en 1,3e-3: no se hizo.
+
+## 13. Mediciones de F3-M5: fallos de instrumento, planificador y cobertura
+
+Implementacion: `data/simulation/instrument_faults.py` (los 5 fallos, funciones puras sobre la
+serie MEDIDA tras el ruido), `data/simulation/scenario_planner.py` (presupuesto D11),
+`data/simulation/coverage.py` (rejilla y particiones). Niveles y topes:
+`configs/plant_parameters.yaml` (`instrument_faults:`, `scenario_planner:`). Herramientas:
+`python -m data.generators.simulation_study instrument|plan ...`. Semilla maestra 42, cadencia
+180 s, runs de 1500 pasos. **Los niveles y los topes son propuestas, no medidas contra datos
+reales**; lo medido aqui es lo que producen.
+
+Un fallo de instrumento no toca las ecuaciones: `true_value` es el de la planta,
+`corrupted = True` marca las lecturas cuyo valor difiere de la medida sin fallo y
+`quality` sigue en `good` (el instrumento no sabe que miente). La ventana etiquetada de
+un episodio va de su primera a su ultima muestra afectada.
+
+### 13.1 Niveles (`instrument_faults:`)
+
+| Tipo | Bajo | Medio | Alto |
+|---|---|---|---|
+| deriva | 0,0005 anchos/h, 900 pasos | 0,1 anchos/h, 240 pasos | 13-17 anchos/h, 40 pasos |
+| bloqueado | 12 pasos | 48 pasos | 240 pasos |
+| pico | 5-7 sigma | 15-25 sigma | 50-70 sigma |
+| sesgo | 0,10-0,20 anchos | 0,35-0,50 anchos | 1,00-1,50 anchos |
+| intermitente | p_enter 0,02 / p_exit 0,50, 120 pasos | 0,05 / 0,30, 240 pasos | 0,15 / 0,15, 360 pasos |
+
+"Ancho" es el ancho del sobre calibrado del sensor (`SensorSpan`). Con el sobre estrecho
+del PWR (~9 K en un termopar) 15 anchos/h son ~6,8 K por muestra: es lo que pedia el plan
+(banda 13-17 de Fase 2), pero es una deriva fisicamente muy rapida.
+
+### 13.2 Metodologia de la matriz
+
+`instrument_matrix`: UN run normal (indice 0, 1500 pasos) integrado y medido una vez; cada
+celda es esa misma medicion con UN episodio sobre UN sensor, con el punto medio del rango de
+magnitud del nivel, empezando en el paso 600 (40 %) y en los dos sentidos (+1, -1). Se
+manipulan los 14 sensores que algun rol de las constraints lee mas un sensor de control
+fuera de los roles (`TC-CORE-01`). Cada celda se evalua dos veces:
+
+- **Votada**: con la mediana del rol, como el Rule Engine de F3-M2. Con 2 canales (T_in,
+  T_out, caudales por pierna, presion) la mediana es la media: un sesgo `b` en un canal llega
+  como `b/2`. Con 3 canales (flujo neutronico) la mediana lo enmascara por completo.
+- **Por canal**: con el sensor aislado como unico canal de sus roles
+  (`single_channel_roles`), que es lo que veria una regla sin votacion.
+
+Las tasas son violaciones sobre muestras evaluables de la ventana del episodio, **agregadas
+solo sobre los sensores que violan la regla** ("k/14 sens."); `dK` es el retardo minimo en
+muestras de 180 s. `0*` = cero violaciones en los 14 sensores y los dos sentidos. Fuera de los
+roles (sensor de control y sensores sin rol) hubo 0 violaciones de las 7 reglas en las 15
+celdas, votadas y por canal: manipular un sensor que ninguna regla lee no la viola.
+
+### 13.3 Matriz por canal (sensor aislado)
+
+La matriz votada esta en la seccion 9. Esta es la misma medicion sin votacion:
+
+| Celda | 1 energia | 2 orden | 3 dT/dt | 4 caudal | 5 pot./flujo | 6 ebullicion | 7 masa |
+|---|---|---|---|---|---|---|---|
+| deriva bajo | 0* | 0* | 0* | 0* | 0* | 0* | 0* |
+| deriva medio | 11/14 sens.: 4098/5280 (77,6 %) d18 | 0* | 0* | 4/14 sens.: 181/1920 (9,4 %) d141 | 4/14 sens.: 1755/1920 (91,4 %) d16 | 0* | 4/14 sens.: 1058/1920 (55,1 %) d42 |
+| deriva alto | 13/14 sens.: 662/709 (93,4 %) d0 | 4/14 sens.: 144/320 (45,0 %) d3 | 0* | 4/14 sens.: 265/320 (82,8 %) d1 | 4/14 sens.: 320/320 (100,0 %) d0 | 4/14 sens.: 100/213 (46,9 %) d3 | 4/14 sens.: 259/261 (99,2 %) d0 |
+| bloqueado bajo | 0* | 0* | 0* | 0* | 0* | 0* | 0* |
+| bloqueado medio | 0* | 0* | 0* | 0* | 0* | 0* | 0* |
+| bloqueado alto | 7/14 sens.: 1482/3360 (44,1 %) d59 | 0* | 0* | 0* | 4/14 sens.: 1408/1920 (73,3 %) d60 | 0* | 0* |
+| pico bajo | 4/14 sens.: 7/8 (87,5 %) d0 | 0* | 0* | 0* | 0* | 0* | 4/14 sens.: 5/8 (62,5 %) d0 |
+| pico medio | 11/14 sens.: 21/22 (95,5 %) d0 | 0* | 0* | 4/14 sens.: 4/8 (50,0 %) d0 | 4/14 sens.: 8/8 (100,0 %) d0 | 0* | 4/14 sens.: 8/8 (100,0 %) d0 |
+| pico alto | 11/14 sens.: 22/22 (100,0 %) d0 | 0* | 0* | 4/14 sens.: 4/8 (50,0 %) d0 | 4/14 sens.: 8/8 (100,0 %) d0 | 0* | 4/14 sens.: 8/8 (100,0 %) d0 |
+| sesgo bajo | 11/14 sens.: 8853/19800 (44,7 %) d0 | 0* | 0* | 0* | 4/14 sens.: 7196/7200 (99,9 %) d0 | 0* | 2/14 sens.: 3/3600 (0,1 %) d276 |
+| sesgo medio | 11/14 sens.: 14871/19800 (75,1 %) d0 | 0* | 0* | 0* | 4/14 sens.: 7200/7200 (100,0 %) d0 | 0* | 4/14 sens.: 1399/7200 (19,4 %) d0 |
+| sesgo alto | 11/14 sens.: 19800/19800 (100,0 %) d0 | 0* | 0* | 4/14 sens.: 3558/7200 (49,4 %) d0 | 4/14 sens.: 7200/7200 (100,0 %) d0 | 0* | 4/14 sens.: 7200/7200 (100,0 %) d0 |
+| intermitente bajo | 11/14 sens.: 141/2640 (5,3 %) d0 | 0* | 0* | 4/14 sens.: 14/960 (1,5 %) d0 | 4/14 sens.: 54/960 (5,6 %) d0 | 0* | 4/14 sens.: 25/960 (2,6 %) d0 |
+| intermitente medio | 11/14 sens.: 815/5280 (15,4 %) d0 | 0* | 0* | 4/14 sens.: 184/1920 (9,6 %) d0 | 4/14 sens.: 299/1920 (15,6 %) d0 | 0* | 4/14 sens.: 313/1920 (16,3 %) d0 |
+| intermitente alto | 11/14 sens.: 3959/7920 (50,0 %) d0 | 0* | 0* | 4/14 sens.: 653/2880 (22,7 %) d0 | 4/14 sens.: 1398/2880 (48,5 %) d0 | 0* | 4/14 sens.: 1442/2880 (50,1 %) d0 |
+
+### 13.4 Que sensores violan que regla (V = votada, C = por canal)
+
+Grupos: `Q_cl`/`Q_hl` caudal pierna fria/caliente, `T_in`/`T_out` termopares, `flux`
+(3 canales neutronicos), `P_th` potencia termica, `P` presion del presurizador.
+
+- deriva bajo: V[-] | C[-]
+- deriva medio: V[energy_balance: T_in,T_out; flow_range: Q_cl,Q_hl; power_flux: P_th; mass_balance: Q_cl,Q_hl] | C[energy_balance: Q_cl,Q_hl,T_in,T_out,flux; flow_range: Q_cl,Q_hl; power_flux: P_th,flux; mass_balance: Q_cl,Q_hl]
+- deriva alto: V[energy_balance: P,T_in,T_out; temperature_ordering: T_in,T_out; flow_range: Q_cl,Q_hl; power_flux: P_th; boiling: P,T_out; mass_balance: Q_cl,Q_hl] | C[energy_balance: P,Q_cl,Q_hl,T_in,T_out,flux; temperature_ordering: T_in,T_out; flow_range: Q_cl,Q_hl; power_flux: P_th,flux; boiling: P,T_out; mass_balance: Q_cl,Q_hl]
+- bloqueado bajo: V[-] | C[-]
+- bloqueado medio: V[-] | C[-]
+- bloqueado alto: V[energy_balance: T_in,T_out; power_flux: P_th] | C[energy_balance: T_in,T_out,flux; power_flux: P_th,flux]
+- pico bajo: V[-] | C[energy_balance: Q_cl,Q_hl; mass_balance: Q_cl,Q_hl]
+- pico medio: V[energy_balance: T_in,T_out; flow_range: Q_cl,Q_hl; power_flux: P_th; mass_balance: Q_cl,Q_hl] | C[energy_balance: Q_cl,Q_hl,T_in,T_out,flux; flow_range: Q_cl,Q_hl; power_flux: P_th,flux; mass_balance: Q_cl,Q_hl]
+- pico alto: V[energy_balance: T_in,T_out; flow_range: Q_cl,Q_hl; power_flux: P_th; mass_balance: Q_cl,Q_hl] | C[energy_balance: Q_cl,Q_hl,T_in,T_out,flux; flow_range: Q_cl,Q_hl; power_flux: P_th,flux; mass_balance: Q_cl,Q_hl]
+- sesgo bajo: V[energy_balance: T_out; power_flux: P_th] | C[energy_balance: Q_cl,Q_hl,T_in,T_out,flux; power_flux: P_th,flux; mass_balance: Q_cl]
+- sesgo medio: V[energy_balance: T_in,T_out; power_flux: P_th; mass_balance: Q_cl,Q_hl] | C[energy_balance: Q_cl,Q_hl,T_in,T_out,flux; power_flux: P_th,flux; mass_balance: Q_cl,Q_hl]
+- sesgo alto: V[energy_balance: T_in,T_out; flow_range: Q_cl,Q_hl; power_flux: P_th; mass_balance: Q_cl,Q_hl] | C[energy_balance: Q_cl,Q_hl,T_in,T_out,flux; flow_range: Q_cl,Q_hl; power_flux: P_th,flux; mass_balance: Q_cl,Q_hl]
+- intermitente bajo: V[energy_balance: T_in,T_out; flow_range: Q_cl,Q_hl; power_flux: P_th; mass_balance: Q_cl,Q_hl] | C[energy_balance: Q_cl,Q_hl,T_in,T_out,flux; flow_range: Q_cl,Q_hl; power_flux: P_th,flux; mass_balance: Q_cl,Q_hl]
+- intermitente medio: V[energy_balance: T_in,T_out; flow_range: Q_cl,Q_hl; power_flux: P_th; mass_balance: Q_cl,Q_hl] | C[energy_balance: Q_cl,Q_hl,T_in,T_out,flux; flow_range: Q_cl,Q_hl; power_flux: P_th,flux; mass_balance: Q_cl,Q_hl]
+- intermitente alto: V[energy_balance: T_in,T_out; flow_range: Q_cl,Q_hl; power_flux: P_th; mass_balance: Q_cl,Q_hl] | C[energy_balance: Q_cl,Q_hl,T_in,T_out,flux; flow_range: Q_cl,Q_hl; power_flux: P_th,flux; mass_balance: Q_cl,Q_hl]
+
+### 13.5 Lectura de la matriz
+
+- **Las reglas 3 (dT/dt) y 6 (ebullicion) casi nunca disparan**: la 3 no dispara en ninguna
+  de las 15 celdas (C5: a 180 s es inobservable) y la 6 solo con la deriva alta (que saca
+  la presion y T_out del sobre). La regla 2 (orden) solo con la deriva alta.
+- **Votada vs por canal**: la votacion oculta por completo los 3 canales de flujo
+  neutronico (por canal violan las reglas 1 y 5 en todas las celdas visibles salvo el pico bajo) y diluye a
+  la mitad los termopares. El **sesgo bajo** (0,10-0,20 anchos) apenas se ve votado en los
+  termopares (59/3600 en la regla 1, solo en T_out); donde se ve es en la potencia termica,
+  que tiene un unico canal y no se vota (regla 5: 1799/1800). Por canal se ve en la regla 1
+  de 11 de los 14 sensores.
+  Es una decision de diseno del Rule Engine de Fase 4 (T7.3): votar esconde los fallos de un
+  canal; no votar los expone, pero tambien expone cada regla al ruido de un solo canal (no
+  medido aqui).
+- **Invisibles a las 7 reglas, votadas y por canal**: la deriva baja (0,0005 anchos/h) y
+  el bloqueado bajo y medio (12 y 48 pasos). Son las celdas que deben aparecer como falsos
+  negativos esperados del Rule Engine.
+- **Pico**: una sola muestra; el pico bajo (5-7 sigma) solo lo ven por canal los
+  caudalimetros (reglas 1 y 7). Votado, el medio y el alto violan las reglas 1, 4, 5 y 7
+  en el instante del pico.
+- **Intermitente**: viola las reglas 1, 4, 5 y 7 (donde su valor invalido cae en el
+  carril `span.min`/`span.max`) con tasas que suben con la fraccion invalida (1,5 a 50 %
+  de las muestras evaluables de los sensores que la violan, votada); es lo que las hipotesis "?" de la seccion 9 no sabian.
+- **Hipotesis frente a medida**: confirmadas la regla 3 (H0) en el pico, la regla 4 (H+)
+  en el pico sobre un canal de caudal y la regla 1 (H+) en el sesgo. La deriva no es H0
+  en todos los niveles: el nivel medio (0,1 anchos/h durante 240 pasos = 1,2 anchos de
+  recorrido) viola la regla 1 en el 70 % de la ventana de 4 de los 14 sensores.
+
+### 13.6 Deteccion del validador de Fase 2 (informativa)
+
+`instrument_detection`: cada episodio inyectado en un run entero (2 repeticiones, 6 grupos
+de sensor = 12 episodios por celda; 120 para el pico) y pasado por `SensorValidator` tal
+como esta, **sin recalibrar nada**. "Excl. caudal" descarta los 2 episodios de caudal por
+repeticion: el Kalman de Fase 2 (`observation_noise = 1,0`) alerta en ~48 % de las
+lecturas normales de esos canales (480 por 1000), una deuda conocida que no se aborda aqui.
+Falsos positivos fuera de caudal y de las ventanas inyectadas: de 0,0 a 1,65 por 1000 lecturas.
+
+| Celda | Episodios detectados (excl. caudal) | Lecturas marcadas / etiquetadas | Retardo (muestras, los 12 episodios) | Detectores que disparan (lecturas) |
+|---|---|---|---|---|
+| deriva bajo | 0/10 | 875/10800 (solo Kalman de caudal) | - | - |
+| deriva medio | 10/10 | 2070/2880 | mediana 62,5, max. 74 | fuera de rango 1971, Kalman 235 |
+| deriva alto | 10/10 | 480/480 | 0 | deriva 452, fuera de rango 479, pico 16, Kalman 44 |
+| bloqueado bajo | 10/10 | 74/144 | mediana 6 | bloqueo 72 |
+| bloqueado medio | 10/10 | 506/576 | mediana 6 | bloqueo 504 |
+| bloqueado alto | 10/10 | 2810/2880 | mediana 6 | bloqueo 2808 |
+| pico bajo | 3/100 | 23/120 | 0 | fuera de rango 21, Kalman 13, pico 1, deriva 6 |
+| pico medio | 68/100 | 88/120 | 0 | fuera de rango 88, pico 50, deriva 46, Kalman 13 |
+| pico alto | 100/100 | 120/120 | 0 | fuera de rango 110, Kalman 113, pico 100, deriva 87 |
+| sesgo bajo | 0/10 | 875/10800 (solo Kalman de caudal) | - | - |
+| sesgo medio | 10/10 | 4225/10800 | mediana 0,5, max. 5 | fuera de rango 3541, Kalman 880 |
+| sesgo alto | 10/10 | 10800/10800 | 0 | fuera de rango 10800, Kalman 883 |
+| intermitente bajo | 10/10 | 259/1440 | 0 | fuera de rango 94, Kalman 197, pico 82, deriva 67, bloqueo 2 |
+| intermitente medio | 10/10 | 782/2880 | 0 | fuera de rango 418, Kalman 477, pico 270, deriva 209, bloqueo 45 |
+| intermitente alto | 10/10 | 2724/4320 | 0 | fuera de rango 2166, Kalman 854, pico 678, deriva 513, bloqueo 636 |
+
+Falsos negativos esperados confirmados: **deriva baja y sesgo bajo no los ve ningun
+detector** (0/10 fuera de caudal; las 875 lecturas marcadas son los falsos positivos del
+Kalman de caudal) y el pico bajo se ve en 3/100 episodios. El nivel medio de la deriva no es
+sub-detectable en su ventana de 240 pasos: acumula 1,2 anchos y sale del rango (retardo
+mediana 62,5 muestras); solo el nivel bajo (0,02 anchos en 900 pasos) es invisible. Las
+etiquetas de nivel del plan hablan del ritmo, no de la visibilidad final.
+
+### 13.7 Presupuesto y capacidad (D11)
+
+Con `params.yaml` (34 runs x 1500 pasos x 27 sensores = 1.377.000 lecturas,
+`fault_injection_rate` 0,40 y pesos 0,30/0,30/0,25/0,15) el objetivo es 550.800 lecturas
+etiquetadas. **El planificador falla con `ValueError`** (no fuerza densidades): necesita 397
+runs frente a 32 disponibles. Cuotas y capacidad por run bajo los topes:
+
+| Severidad | Cuota [lecturas] | Tipos | Capacidad por run | Runs necesarios |
+|---|---|---|---|---|
+| CRITICAL | 165.240 | excursion, vacio, bloqueado | 49.500 | 12 |
+| HIGH | 165.240 | caudal, sesgo, deriva | 36.277 | 15 |
+| MEDIUM | 137.700 | intermitente | 2.160 | 64 |
+| LOW | 82.620 | pico | 270 | 306 |
+
+Capacidad maxima por run y tipo bajo los topes (`max_window_fraction` 0,60,
+`max_sensor_fraction` 0,34, `max_spike_rate` 0,02): excursion, caudal y vacio 24.300 (el 60 %
+del run en 27 sensores); sesgo 8.437; deriva 3.540; intermitente 2.160; bloqueado 900;
+pico 270.
+
+**El limite es estructural**: MEDIUM y LOW dependen de un unico tipo de instrumento cada
+uno (intermitente y pico) y un episodio de instrumento etiqueta un solo sensor. Tasa maxima
+alcanzable por reparto de severidad (biseccion sobre la misma regla del planificador):
+
+| Pesos (crit./alto/medio/bajo) | Tasa maxima | CRITICAL sobre todas las lecturas |
+|---|---|---|
+| 0,30 / 0,30 / 0,25 / 0,15 (D11) | 1,44 % | 0,43 % |
+| 0,50 / 0,38 / 0,10 / 0,02 | 7,84 % | 3,92 % |
+| 0,55 / 0,38 / 0,06 / 0,01 | 15,69 % | 8,63 % |
+| 0,60 / 0,37 / 0,025 / 0,005 | 21,36 % | 12,82 % |
+
+Ninguna alcanza el 40 %, y solo las dos ultimas dan el 5 % de CRITICAL (`critical_min_fraction`).
+Cota por aritmetica (no medida con el planificador): con 2 runs normales y 3 runs por cada
+uno de los 5 tipos de instrumento, quedan 17 runs de proceso x 24.300 = 413.100 lecturas
+(30,0 %) mas ~45.900 de instrumento (3,3 %): **el 40 % no cabe con estos topes con ningun
+reparto de severidades**.
+
+**Relajar los topes con los pesos de D11 tampoco llega** (tasa maxima, CRITICAL):
+
+| `max_sensor_fraction` | `max_spike_rate` | Tasa maxima | CRITICAL |
+|---|---|---|---|
+| 0,34 | 0,02 | 1,44 % | 0,43 % |
+| 0,34 | 0,10 | 4,39 % | 1,32 % |
+| 0,50 | 0,02 | 2,08 % | 0,62 % |
+| 0,50 | 0,10 | 6,34 % | 1,90 % |
+| 1,00 | 0,02 | 4,31 % | 1,29 % |
+| 1,00 | 0,10 | 13,18 % | 3,95 % |
+
+`max_window_fraction` (0,60, 0,80 y 0,90) **no cambia ninguna de estas cifras** con los
+pesos de D11: el limite lo ponen el pico y el intermitente, no la ventana de proceso.
+Con los pesos 0,55/0,38/0,06/0,01 subir los topes si ayuda: 22,66 % con ventana 0,80 y sensores
+0,50 (CRITICAL 12,46 %) y 39,18 % con ventana 0,90, todos los sensores y picos 0,10
+(CRITICAL 21,55 %), a costa de runs con casi todo el catalogo y la mayor parte del run etiquetados.
+
+### 13.8 Dataset planificado medido (tasa 0,12, pesos 0,55/0,38/0,06/0,01)
+
+Generado entero (34 runs, 1.377.000 lecturas) con `ReactorSimulator.simulate` +
+`build_run_frame`, sin tocar `params.yaml`:
+
+| Magnitud | Plan | Frame |
+|---|---|---|
+| Lecturas etiquetadas | 168.958 (12,27 %) | 168.958 (12,27 %), **34/34 runs coinciden** |
+| CRITICAL / HIGH / MEDIUM / LOW | 91.062 / 66.283 / 9.960 / 1.653 | idem: 6,61 / 4,81 / 0,72 / 0,12 % |
+| Runs por tipo | sesgo 3, caudal 3, excursion 3, deriva 3, intermitente 5, pico 7, bloqueado 3, vacio 3, normal 4 | (los del plan) |
+| Cobertura de tipos | 8/8 (tambien en train, val y test) | 8/8 |
+| Rejilla (k_min 10, n_min 1) | 144/144 en el dataset; train 75,0 %, val 38,2 %, test 40,3 % | los mismos conjuntos de modos, lecturas y episodios (plan == frame en las 4 particiones) |
+
+- `quality = good` en todas las lecturas de todos los runs; `true_value` preservado.
+- `corrupted`: 0 en proceso (el fallo perturba las ecuaciones); en instrumento coincide con la
+  etiqueta salvo en el **intermitente: 3.294 de 9.960 lecturas etiquetadas (33,1 %)** estan
+  realmente corruptas, el resto son lecturas validas dentro de la ventana del episodio.
+- Residuo de conservacion por intervalo: peor 3,9e-12 en los 34 runs (0 fallos de
+  tolerancia); sin pasos pegados al limitador de presion (suelo 60, techo 170 bar) con las
+  ventanas planificadas; presion de 87,6 a 167,2 bar.
+- Tamano: 75,6 MB en 34 parquets (2,2 MB por run); el dataset normal medido en F3-M3 pesaba
+  75,2 MB.
+- Reparto por severidad fuera de objetivo: el planificador reparte cada severidad entre
+  sus tipos proporcionalmente a su capacidad por run (M5-c) y las cuotas se redondean a
+  episodios/ventanas enteras: sesgo, deriva y bloqueado salen un 9 a 17 % por encima de su cuota
+  (17.137 frente a 14.603; 7.080 frente a 6.127; 1.800 frente a 1.652).
+
+### 13.9 Barrido de (k_min_readings, n_min_episodes) (D6)
+
+Sobre el plan anterior, sin simular. Fraccion de la rejilla (144 modos = 8 tipos x 6 grupos
+de sensor x 3 niveles) cubierta:
+
+| n_min | k_min | Dataset | Train | Val | Test |
+|---|---|---|---|---|---|
+| 1 | 1 | 100,0 % | 75,0 % | 39,6 % | 40,3 % |
+| 1 | 10 | 100,0 % | 75,0 % | 38,2 % | 40,3 % |
+| 1 | 20 | 95,8 % | 72,2 % | 28,5 % | 29,2 % |
+| 1 | 50 | 87,5 % | 64,6 % | 26,4 % | 25,7 % |
+| 1 | 100 | 75,0 % | 52,8 % | 26,4 % | 25,0 % |
+| 1 | 500 | 59,0 % | 36,1 % | 12,5 % | 11,1 % |
+| 2 | 10 | 25,0 % | 18,1 % | 10,4 % | 13,2 % |
+| 3 | 10 | 16,7 % | 12,5 % | 10,4 % | 12,5 % |
+
+El modo con menos lecturas es el bloqueado bajo (12 lecturas por modo: 12 pasos en 1 sensor
+x 1 episodio), justo sobre la ventana de 8 muestras del detector; el siguiente es la deriva
+alta (40). Cualquier `k_min_readings` <= 12 deja la rejilla al 100 %; se mantiene 10
+(margen sobre los 8 de la ventana). `n_min_episodes = 1` es lo que el presupuesto sostiene: con
+2 episodios por modo la rejilla cae al 25 %, porque cada modo tiene un unico episodio en los
+32 runs. **La puerta D6 (8/8 tipos y 95 % de la rejilla) se cumple en el dataset entero,
+pero val y test ven solo el 38-40 % de la rejilla**: la particion 70/15/15 es por tipo
+sobre la linea temporal de sus runs concatenados (`partition_of`), y con 3 runs por tipo y un
+nivel por run cada nivel cae casi entero en una particion, aunque los 8 tipos estan en las tres.
+
+### 13.10 Coste y validez de las ventanas largas
+
+Tiempos de pared con `simulate` + `build_run_frame` + parquet, en una maquina con
+suspensiones de Windows (Kernel-Power 506/507): los runs 8 (excursion) y 12 (caudal) quedaron
+**contaminados por suspensiones y no se usan**.
+
+| Tipo | Ventana [pasos] | Tiempo por run |
+|---|---|---|
+| normal, instrumento | - | 9 a 19 s |
+| caudal | 519-520 | 35 a 41 s |
+| excursion | 551 | 10 y 49 s |
+| vacio | 551 | 838 s (medio), 457 s (bajo), 834 s (alto) |
+
+El vacio con la ventana planificada cuesta de 14 a 21 veces lo que M4 midio con la ventana
+por defecto (22/50/59 s con 151 pasos) y el coste por paso tambien sube (1,5 s/paso frente a
+0,33): el ciclo del vacio se desarrolla con la ventana. Los 3 runs de vacio suman 2.129 s de
+los 2.560 s medidos sin los dos runs contaminados (83 %); con ellos el dataset completo ronda
+los 43 min de pared, no los 146 s del normal de F3-M3. El sobrecoste de M5 es ~1 s por run
+(el mismo comando `digest` del run 0 tarda 22,5 s en el commit de F3-M4 y 23,5 s en el de
+F3-M5, arranque incluido). Los 9-14 s por run de esta medicion no son comparables con los
+4,3 s medios de M3: aqui se escribe parquet, se calculan etiquetas y la maquina estaba mas
+cargada.
+
+Validez de la ventana maxima (900 pasos = `max_window_fraction` 0,60), un run por celda, mismo
+procedimiento:
+
+| Celda | Ventana [pasos] | P min./max. [bar] | Pasos en el limitador | Residuo max. | Fallos | Tiempo |
+|---|---|---|---|---|---|---|
+| core_temp_excursion high | 900 | 153,4 / 170,0 | 250 | 2,95e-12 | 0 | 110 s |
+| coolant_flow_reduction high | 900 | 153,1 / 155,4 | 0 | 2,92e-15 | 0 | 28 s |
+| core_temp_excursion low | 900 | 153,4 / 160,2 | 0 | 1,64e-15 | 0 | 7 s |
+| coolant_flow_reduction low | 900 | 153,1 / 155,4 | 0 | 3,00e-15 | 0 | 41 s |
+| void_formation low | 900 | 108,5 / 154,9 | 0 | 1,73e-14 | 0 | 409 s |
+| void_formation high | 900 | 91,4 / 154,9 | 0 | 2,39e-14 | 0 | 853 s |
+
+Las 6 celdas medidas quedan dentro de la tabla de agua (60-170 bar) y conservan la energia
+(residuo maximo 2,9e-12, 0 fallos), pero **la excursion alta con 900 pasos opera 250 pasos
+contra el techo de 170 bar** del limitador de presion (F3-M4, M4-3): el estado esta saturado
+y la respuesta deja de ser la del fallo. Con las ventanas planificadas (551) ningun run toca el
+limitador. La excursion media a 900 pasos no se midio. El coste del vacio no crece con la
+ventana: 853 s a 900 pasos frente a 834 s a 551 (alto) y 409 s frente a 457 s (bajo); sin
+suspensiones de Windows en el intervalo de esta medicion.
+
+El rango de validez de M4 se midio con 60-120 pasos; las ventanas planificadas llegan a 551.
+
+### 13.11 Digests (M5-h)
+
+`injected_at_step` y `fault_level` son columnas nuevas del frame largo (nulas en los runs
+normales): las 23 columnas anteriores son identicas elemento a elemento (run 0 y run 3 con
+200 pasos, comparados contra el commit de F3-M4 en un worktree aparte), pero los bytes del
+parquet cambian.
+
+| Run | Digest F3-M4 | Digest F3-M5 |
+|---|---|---|
+| 0 (1500 pasos) | `28d8799d90c9e1d77d9daffbda1e943836c7436bcbc2fa1d30e8d973a23934e0` | `d60169ad0a229ec86a7d4a13bad0a4398fd29fd150d47cf7acfbda344554be8f` |
+| 0 (200 pasos) | `d551c4cad15c01040bc784e32168be15b0fc3c58f5c72441674abb840fcf37cd` | `93dd7bccef83859c3272d5c7242f7b59499baddfd62407dbd68c66edac7da5a2` |
+| 3 (200 pasos) | `b0b53e5b01c91ef962f26ff6173253a1464024cfcce5c1bb5df81000a9f90b6e` | `d0a222158483feb057e6bba824fd2ee61386cc333216519f66b8f671a7f02693` |

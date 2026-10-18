@@ -1,6 +1,6 @@
 # ReactorGuard — Registro de Progreso
 **Nuclear Reactor Anomaly Detection Platform**
-*Actualizado: 2026-10-13 — Fase 2 verificada contra el commit `d35f802`; Fase 3: F3-M1 (`b343fb7`), F3-M2 (`36c9d3a`) y F3-M3 (`7051d89`) commiteados, F3-M4 hecho sin commitear*
+*Actualizado: 2026-10-17 — Fase 2 verificada contra el commit `d35f802`; Fase 3: F3-M1 (`b343fb7`), F3-M2 (`36c9d3a`), F3-M3 (`7051d89`), F3-M4 (`eb97924`) y el codigo de F3-M5 (`967ccb7`) commiteados; mediciones y documentos de F3-M5 sin commitear*
 
 Este documento distingue tres cosas que antes se confundian: **codigo escrito**, **verificado en local**
 y **criterio medido en el entorno real**. Una tarea puede estar completada como codigo y aun asi no
@@ -14,7 +14,7 @@ tener su criterio de exito medido.
 |------|--------|---------|--------|
 | 1 | Foundation – GKE + Kafka | 1–2 | Codigo completo, **sin desplegar**; criterios sin medir |
 | 2 | Data Pipeline + Sensor Validator | 3–4 | **Codigo completo y verificado en local**; criterios 2 y 4 CUMPLIDOS, 1 y 3 NO MEDIDOS hasta medir en el cluster |
-| 3 | Simulation Layer (OpenMC + PyDy) | 5 | **En curso**: F3-M1 (modelo termico, tabla de agua, catalogo), F3-M2 (constraints fisicos) y F3-M3 (simulador en operacion normal, spans y estudio de cadencia) hechos; F3-M4 a F3-M7 pendientes. Plan en `ReactorGuard_Fase3_Plan.md` |
+| 3 | Simulation Layer (OpenMC + PyDy) | 5 | **En curso**: F3-M1 (modelo termico, tabla de agua, catalogo), F3-M2 (constraints fisicos), F3-M3 (simulador en operacion normal, spans y estudio de cadencia), F3-M4 (fallos de proceso) y F3-M5 (fallos de instrumento, planificador y cobertura) hechos; **el 40 % de etiquetado de D11 es inalcanzable y espera tu decision**; F3-M6 y F3-M7 pendientes. Plan en `ReactorGuard_Fase3_Plan.md` |
 | 4 | ML Core – PINN Training | 6–7 | No iniciada (solo andamiaje) |
 | 5 | Uncertainty – BNN + Conformal Prediction | 8 | No iniciada |
 | 6 | API + K8s Serving | 9–10 | No iniciada (solo andamiaje, 2 de 4 endpoints devuelven 501) |
@@ -104,6 +104,35 @@ estado 0,22 C/s; regla de masa evaluable en 15,0 / 94,9 / 99,7 / 99,2 % de las m
 de Fase 2 a 180 s: 90 alertas por 1000 lecturas, todas `kalman_anomaly` en los 5 canales de caudal;
 determinismo identico entre dos construcciones y entre procesos; 414 pasos/s extremo a extremo, dataset
 completo (1.377.000 lecturas) en 146 s y 75,2 MB.
+
+### Linea base al cierre de F3-M5 (2026-10-17, codigo en `967ccb7`, mediciones y documentos sin commitear)
+
+```
+pytest tests/unit tests/safety --cov --cov-fail-under=70
+  2804 passed, 4 skipped       cobertura TOTAL 99,58%   (7340 sentencias, 31 sin cubrir)
+ruff check .                   All checks passed
+mypy ml/ api/ data/            no issues found in 82 source files
+dvc status                     Data and pipelines are up to date
+```
+
+**No se cita la duracion de la suite**: pytest marco 74.551 s (20 h 42 min) porque Windows se suspendio
+durante la corrida (Kernel-Power 506/507). La corrida anterior de M5, con la suite a medias de editar, dio 2585
+passed y 3 failed; los 3 fallos eran de editar `simulation_study.py` mientras los subprocesos de los tests lo
+importaban (confirmado: sin editar durante la corrida, 0 fallos). Los 4 omitidos son los de siempre (3 de
+`tests/safety` hasta F3-M6 y el contraste con `iapws`); los 10 avisos son de `prometheus_client` en
+`test_validation_consumer.py` (Fase 2). `ruff format --check` marca 85 ficheros del repo: es anterior a Fase 3 y
+no es una puerta del proyecto.
+
+Cobertura de los modulos nuevos: `instrument_faults`, `scenario_planner`, `coverage`, `scenario`,
+`dataset_builder`, `plant_params` 100 %; `reactor_simulator` 99 % y `simulation_study` 99 % (guard
+`__main__`).
+
+Mediciones de F3-M5 (detalle en `Docs/physics_constraints.md`, seccion 13): matriz de 15 celdas de instrumento x
+14 sensores x 2 sentidos, votada y por canal (0 violaciones fuera de los roles); validador de Fase 2: deriva baja
+y sesgo bajo invisibles (0/10), pico 3/100, 68/100 y 100/100 por nivel; **D11 inalcanzable**: 397 runs
+necesarios frente a 32, tasa maxima 1,44 % con CRITICAL 0,43 % con los pesos de D11; plan factible (tasa 0,12,
+pesos 0,55/0,38/0,06/0,01) generado entero: 12,27 % etiquetado, plan == frame en 34/34 runs, 8/8 tipos, 144/144
+modos, 75,6 MB, vacio 838/457/834 s por run.
 
 ---
 
@@ -265,7 +294,7 @@ positivos en otros sensores.
 
 ## Fase 3 — Simulation Layer: OpenMC + PyDy
 **Semana 5** · En curso. Plan aprobado por hitos en [ReactorGuard_Fase3_Plan.md](ReactorGuard_Fase3_Plan.md)
-(decisiones D1-D13 y registro de progreso en su seccion 15). F3-M0 (preflight), F3-M1, F3-M2, F3-M3 y F3-M4 hechos.
+(decisiones D1-D13 y registro de progreso en su seccion 15). F3-M0 (preflight), F3-M1, F3-M2, F3-M3, F3-M4 y F3-M5 hechos.
 
 `data/generators/reactor_simulator.py` estaba roto contra el schema canonico; **F3-M3 lo reescribio** y ya cuenta en mypy y en la cobertura.
 
@@ -290,14 +319,16 @@ dT/dt exige un salto de 1800 K entre muestras (C5): no es un detector a esa cade
 
 **F3-M4 (fallos de proceso)** aporta `data/simulation/process_faults.py` (excursion de temperatura del nucleo, reduccion de caudal y vacio como perturbaciones de las ECUACIONES via `ModelInputs`, con niveles bajo/medio/alto en `fault_tiers:` de `configs/plant_parameters.yaml`, cada uno definido por un objetivo medible y comprobado por un test), `ProcessFaultSpec`/`RunPlan.process_fault` en `scenario.py`, etiquetas de proceso en `dataset_builder.py` (todos los sensores de la ventana, `corrupted = False`, severidad de la tabla TDD) y el subcomando `faults` de `simulation_study.py`. **Matriz medida** (`Docs/physics_constraints.md`, seccion 12): la excursion y la reduccion de caudal no violan ninguna de las 7 reglas en ningun nivel (0/453 y 0/423) porque la energia se conserva y a 180 s todo es cuasi-estatico; el vacio viola la energia y la potencia/flujo en el 80-85 % de la ventana (a las 10-13 muestras), la ebullicion en el 39-81 % y no viola la de dT/dt (inobservable, aunque la derivada verdadera llega a 283 C/s). **Hallazgo**: el modelo necesito un limitador de presion (60-170 bar, el rango de la tabla) porque un vacio con recuperacion abortaba al salir de la tabla; no cambia los bytes de los runs normales. El ciclo del vacio sale entero de `alpha_void` (provisional hasta F3-M8).
 
+**F3-M5 (fallos de instrumento, planificador y cobertura)** aporta `data/simulation/instrument_faults.py` (deriva, bloqueado, pico, sesgo e intermitente como funciones puras sobre la serie MEDIDA tras el ruido, con `true_value` preservado, `quality = good` y 3 niveles cada uno en `instrument_faults:` de `configs/plant_parameters.yaml`), `data/simulation/scenario_planner.py` (presupuesto por tasa y severidad de D11, con topes de densidad en `scenario_planner:`; falla con `ValueError` y cifras si la cuota no cabe), `data/simulation/coverage.py` (rejilla de 144 modos y particiones 70/15/15), las etiquetas `injected_at_step` y `fault_level` en el frame, y los subcomandos `instrument` y `plan` de `simulation_study.py`. **Hallazgo principal: el 40 % de etiquetado de D11 es inalcanzable** con los topes (397 runs necesarios frente a 32; con los pesos de D11 la tasa maxima es 1,44 % y CRITICAL 0,43 %); lo limitan el pico y el intermitente, no la ventana de proceso. `params.yaml` no se toco: la decision de tasa y pesos es tuya antes de F3-M6 (opciones en `Docs/physics_constraints.md`, 13.7). Con tasa 0,12 y pesos 0,55/0,38/0,06/0,01 el plan generado entero da 12,27 % etiquetado, plan == frame en 34/34 runs y 144/144 modos, pero val y test ven solo el 38-40 % de la rejilla. **Coste**: el vacio con la ventana planificada tarda 838 / 457 / 834 s por run (~43 min el dataset). **Matriz**: votada, el flujo neutronico queda oculto y los termopares llegan a la mitad; por canal se ven (verdad-terreno del Rule Engine de Fase 4).
+
 | ID | Tarea | Estado |
 |----|-------|--------|
 | T5.1 | OpenMC configurado: modelo PWR simplificado | Pendiente (F3-M8, opcional, corre en Docker; no esta en PyPI ni en conda-forge win-64) |
 | T5.2 | Modelo termodinamico: ODEs coolant/core | **Completado en F3-M1** (scipy LSODA, no PyDy); `data/simulation/thermal_model.py` |
-| T5.3 | `reactor_simulator.py`: neutronica + termica integradas | **Completado en F3-M3** en operacion normal (modelo ODE, 34 runs, 1.377.000 lecturas, determinista entre procesos, 414 pasos/s); los fallos de proceso llegan en F3-M4 y los de instrumento en F3-M5 |
-| T5.4 | `fault_injector.py`: drift, stuck, noise spike, bias + 4 tipos adicionales | **Parcial, F3-M4**: los 3 fallos de proceso del TDD 2.2 (excursion termica, reduccion de caudal, vacio) estan en `data/simulation/process_faults.py` con 3 niveles cada uno; los 5 de instrumento sobre la simulacion llegan en F3-M5 (sobre TEP ya los cubre `data/validation/fault_injector.py`, T3.6) |
+| T5.3 | `reactor_simulator.py`: neutronica + termica integradas | **Completado en F3-M3** en operacion normal (modelo ODE, 34 runs, 1.377.000 lecturas, determinista entre procesos, 414 pasos/s); los fallos de proceso llegaron en F3-M4 y los de instrumento en F3-M5 (`ReactorSimulator.planned` compone el dataset con fallos; generado entero con el plan factible: 75,6 MB, vacio 838 s por run) |
+| T5.4 | `fault_injector.py`: drift, stuck, noise spike, bias + 4 tipos adicionales | **Completado en F3-M5 (los 8 tipos del TDD 2.2)**: 3 de proceso (F3-M4, `process_faults.py`) y 5 de instrumento (F3-M5, `instrument_faults.py`, 3 niveles cada uno) con etiquetas de severidad solo de `FAULT_SEVERITY`; sobre TEP ya los cubre `data/validation/fault_injector.py` (T3.6). Pendiente de tu decision: tasa y pesos de D11 |
 | T5.5 | DVC stage `simulate` con labels | Pendiente (F3-M6); `ReactorSimulator.write` y `main` ya escriben el layout del TDD 4.4 |
-| T5.6 | Validacion de constraints fisicos (Appendix B TDD) | **Parcial, F3-M2**: reglas y conservacion implementadas y verificadas contra el modelo (`physics_constraints.py`, `Docs/physics_constraints.md`). **F3-M4**: matriz de violaciones de los 3 fallos de proceso medida (seccion 12 del documento). Pendiente: la de los fallos de instrumento (M5) y la suite de `tests/safety`, que sigue en `skip` hasta F3-M6 |
+| T5.6 | Validacion de constraints fisicos (Appendix B TDD) | **Matriz completa medida**: reglas y conservacion (F3-M2), fallos de proceso (F3-M4, seccion 12) y los 5 de instrumento, votada y por canal (F3-M5, secciones 9 y 13 de `Docs/physics_constraints.md`). Pendiente: la suite de `tests/safety`, que sigue en `skip` hasta F3-M6 |
 
 ---
 
