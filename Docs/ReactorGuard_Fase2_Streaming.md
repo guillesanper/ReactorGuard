@@ -8,7 +8,7 @@ indica donde se obtuvo. Nada de lo que aqui se describe se ha desplegado en GCP:
 Fase 2 solo se cierran con una medicion en el cluster (ver [seccion 9](#9-que-no-cierra-esta-fase)).
 
 Documentos relacionados: [Progreso](ReactorGuard_Progreso.md) (estado por tarea y criterios),
-[Handoff_Paso4](Handoff_Paso4.md) (guia de despliegue en GCP).
+[Despliegue_GCP](Despliegue_GCP.md) (guia de despliegue en GCP).
 
 ---
 
@@ -266,7 +266,7 @@ cardinalidad; nunca `sensor_id`.
 
 ### 6.1 La ventana de `rate()` y la cadencia de 180 s
 
-El TDD y los prompts originales dan por hecha una muestra por segundo; el TEP entrega **un lote de 52
+El TDD y el plan original dan por hecha una muestra por segundo; el TEP entrega **un lote de 52
 lecturas cada 180 s** (0,29 msg/s de media en modo realtime). Esto cambia como leer cualquier `rate()`:
 
 - **Medido en M8**: con scrape de 15 s, `rate(...[1m])` **no** devuelve vacio. Da 0 en el 80 % de las
@@ -317,7 +317,7 @@ exista el cluster; ninguno se ha ejecutado contra uno.
 
 ## 8. Dimensionado de alertas
 
-El handoff de Paso 4 dimensiono las alertas con el 3,59 % de falsos positivos del residual de Kalman
+La guia de despliegue dimensiono las alertas con el 3,59 % de falsos positivos del residual de Kalman
 (medido solo en operacion normal, sobre sensores intactos de d00): unas **19.700** alertas sobre 550.160
 lecturas. Ese numero **no es el del sistema completo**. Medido con el validador sobre los 22 runs:
 

@@ -14,7 +14,7 @@ tener su criterio de exito medido.
 |------|--------|---------|--------|
 | 1 | Foundation – GKE + Kafka | 1–2 | Codigo completo, **sin desplegar**; criterios sin medir |
 | 2 | Data Pipeline + Sensor Validator | 3–4 | **Codigo completo y verificado en local**; criterios 2 y 4 CUMPLIDOS, 1 y 3 NO MEDIDOS hasta medir en el cluster |
-| 3 | Simulation Layer (OpenMC + PyDy) | 5 | **En curso**: F3-M1 (modelo termico, tabla de agua, catalogo), F3-M2 (constraints fisicos), F3-M3 (simulador en operacion normal, spans y estudio de cadencia), F3-M4 (fallos de proceso) y F3-M5 (fallos de instrumento, planificador y cobertura) hechos; **el 40 % de etiquetado de D11 es inalcanzable y espera tu decision**; F3-M6 y F3-M7 pendientes. Plan en `ReactorGuard_Fase3_Plan.md` |
+| 3 | Simulation Layer (OpenMC + PyDy) | 5 | **En curso**: F3-M1 (modelo termico, tabla de agua, catalogo), F3-M2 (constraints fisicos), F3-M3 (simulador en operacion normal, spans y estudio de cadencia), F3-M4 (fallos de proceso) y F3-M5 (fallos de instrumento, planificador y cobertura) hechos; **el 40 % de etiquetado de D11 es inalcanzable y esta pendiente de decision**; F3-M6 y F3-M7 pendientes. Plan en `ReactorGuard_Fase3_Plan.md` |
 | 4 | ML Core – PINN Training | 6–7 | No iniciada (solo andamiaje) |
 | 5 | Uncertainty – BNN + Conformal Prediction | 8 | No iniciada |
 | 6 | API + K8s Serving | 9–10 | No iniciada (solo andamiaje, 2 de 4 endpoints devuelven 501) |
@@ -84,8 +84,8 @@ dvc status                     Data and pipelines are up to date
 ```
 
 **Los 3 fallos son `TestRepositoryParams` de `tests/unit/test_simulation_params.py`**: leen la seccion
-`simulation:` del `params.yaml` del repo, que **todavia es la antigua**. La edicion fue denegada por el
-clasificador de permisos de la sesion y queda para el usuario (el diff esta en el informe del hito). Con la
+`simulation:` del `params.yaml` del repo, que **todavia es la antigua**. La edicion quedo pendiente
+(el diff esta en el informe del hito). Con la
 seccion nueva aplicada son 2402 passed. El tiempo de la suite (2043 s) NO es comparable con los 457-477 s de
 las lineas base anteriores: Kernel-Power registro suspensiones (eventos 506/507 a las 20:04, 20:06 y 20:32)
 dentro de ese intervalo; la misma suite tardo 477 s en la corrida anterior. Las mediciones del informe de
@@ -270,7 +270,7 @@ positivos en otros sensores.
 6. **El split es temporal dentro de cada `fault_type`.** `temporal_order_holds` es true por clase; en
    agregado no se cumple ni puede (d00 tiene 500 timesteps y el resto 480).
 7. **El TTL de Feast no caduca nada en lectura online** (medido en Feast 0.64). El calculo del 83 % de
-   `Handoff_Paso4.md` sigue siendo el motivo de que el TTL sea de 3 intervalos (540 s) y no de 30 s, pero la
+   `Despliegue_GCP.md` sigue siendo el motivo de que el TTL sea de 3 intervalos (540 s) y no de 30 s, pero la
    caducidad la aplica `FeastClient` con el `event_timestamp` y, en el cluster, Redis con
    `key_ttl_seconds` = 540 s. El 83 % es aritmetico (150 s de 180 s sin valor vigente con un TTL de 30 s),
    no una medicion.
@@ -326,7 +326,7 @@ dT/dt exige un salto de 1800 K entre muestras (C5): no es un detector a esa cade
 | T5.1 | OpenMC configurado: modelo PWR simplificado | Pendiente (F3-M8, opcional, corre en Docker; no esta en PyPI ni en conda-forge win-64) |
 | T5.2 | Modelo termodinamico: ODEs coolant/core | **Completado en F3-M1** (scipy LSODA, no PyDy); `data/simulation/thermal_model.py` |
 | T5.3 | `reactor_simulator.py`: neutronica + termica integradas | **Completado en F3-M3** en operacion normal (modelo ODE, 34 runs, 1.377.000 lecturas, determinista entre procesos, 414 pasos/s); los fallos de proceso llegaron en F3-M4 y los de instrumento en F3-M5 (`ReactorSimulator.planned` compone el dataset con fallos; generado entero con el plan factible: 75,6 MB, vacio 838 s por run) |
-| T5.4 | `fault_injector.py`: drift, stuck, noise spike, bias + 4 tipos adicionales | **Completado en F3-M5 (los 8 tipos del TDD 2.2)**: 3 de proceso (F3-M4, `process_faults.py`) y 5 de instrumento (F3-M5, `instrument_faults.py`, 3 niveles cada uno) con etiquetas de severidad solo de `FAULT_SEVERITY`; sobre TEP ya los cubre `data/validation/fault_injector.py` (T3.6). Pendiente de tu decision: tasa y pesos de D11 |
+| T5.4 | `fault_injector.py`: drift, stuck, noise spike, bias + 4 tipos adicionales | **Completado en F3-M5 (los 8 tipos del TDD 2.2)**: 3 de proceso (F3-M4, `process_faults.py`) y 5 de instrumento (F3-M5, `instrument_faults.py`, 3 niveles cada uno) con etiquetas de severidad solo de `FAULT_SEVERITY`; sobre TEP ya los cubre `data/validation/fault_injector.py` (T3.6). Pendiente de decision: tasa y pesos de D11 |
 | T5.5 | DVC stage `simulate` con labels | Pendiente (F3-M6); `ReactorSimulator.write` y `main` ya escriben el layout del TDD 4.4 |
 | T5.6 | Validacion de constraints fisicos (Appendix B TDD) | **Matriz completa medida**: reglas y conservacion (F3-M2), fallos de proceso (F3-M4, seccion 12) y los 5 de instrumento, votada y por canal (F3-M5, secciones 9 y 13 de `Docs/physics_constraints.md`). Pendiente: la suite de `tests/safety`, que sigue en `skip` hasta F3-M6 |
 
@@ -443,7 +443,7 @@ Lo que impide dar por cerrada la Fase 2 en el cluster y que **no** se resuelve e
 
 1. **Despliegue en GCP con intervencion humana** (autenticacion, bucket de estado, revisar `terraform plan`
    y coste antes de `apply`): cierra los criterios pendientes de Fase 1 y los criterios 1 y 3 de Fase 2.
-   Destruir la infraestructura al terminar. Guia en [Handoff_Paso4.md](Handoff_Paso4.md) (secciones 6 y 7).
+   Destruir la infraestructura al terminar. Guia en [Despliegue_GCP.md](Despliegue_GCP.md) (secciones 6 y 7).
 2. Antes del despliegue, decidir: persistencia del estado de los detectores, DLQ, y que hacer con las
    100.934 alertas (hallazgo 9).
 3. Fases 3 y 4 solo cuando se indique explicitamente.

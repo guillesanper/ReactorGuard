@@ -1,6 +1,6 @@
 """Feast FeatureView and FeatureService of the sensor features.
 
-UN SOLO FeatureView. El prompt original pedia varios, con cuatro TTL distintos
+UN SOLO FeatureView. El diseno original pedia varios, con cuatro TTL distintos
 (1 h, 30 s, 1 min, 5 min) pensados para una cadencia de 1 s. Con una unica
 cadencia de 180 s no hay nada que justifique TTL distintos: todas las features de
 una fila se calculan a la vez, con el mismo timestamp, y caducan a la vez.
