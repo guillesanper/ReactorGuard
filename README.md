@@ -189,41 +189,63 @@ pytest tests/integration/ -m integration   # needs the local stack and KAFKA_BOO
 
 ## Architecture
 
-```
-┌─────────────────────────────────────────────────────────────────┐
-│                        GKE Cluster                               │
-│                                                                   │
-│  ┌──────────────┐    ┌──────────────┐    ┌──────────────────┐   │
-│  │   Reactor    │───►│    Kafka     │───►│  Ingestion       │   │
-│  │   Sensors    │    │  (Strimzi)   │    │  Service         │   │
-│  └──────────────┘    └──────────────┘    └────────┬─────────┘   │
-│                                                    │             │
-│                      ┌─────────────────────────────▼──────────┐  │
-│                      │          Feature Pipeline               │  │
-│                      │  (Feast · feature extraction · cache)   │  │
-│                      └─────────────────────────────┬──────────┘  │
-│                                                    │             │
-│  ┌──────────────────────────────────────────────────▼──────────┐  │
-│  │                    ML Serving (PINN)                         │  │
-│  │  Physics-Informed Neural Network + MAPIE uncertainty         │  │
-│  │  node-pool: ml-serving (n1-standard-8, non-preemptible)      │  │
-│  └──────────────────────────────────┬───────────────────────────┘  │
-│                                     │                           │
-│  ┌──────────────────────────────────▼───────────────────────────┐  │
-│  │                     FastAPI Gateway                           │  │
-│  │         /predict · /health · /metrics · /explain             │  │
-│  └──────────────────────────────────────────────────────────────┘  │
-│                                                                   │
-│  ┌─────────────────────────────────────────────────────────────┐   │
-│  │              Observability Stack                             │   │
-│  │       Prometheus → Grafana · Alertmanager → PagerDuty        │   │
-│  └─────────────────────────────────────────────────────────────┘   │
-└─────────────────────────────────────────────────────────────────┘
+Solid boxes exist and are tested; dashed boxes are planned.
 
-GCS: Terraform state · DVC data · MLflow artifacts · Feast registry
-Redis (cluster) / SQLite (local): Feast online store
-Secret Manager: credentials · API keys
+```mermaid
+flowchart LR
+    subgraph sources["Data sources"]
+        tep[("Tennessee Eastman<br/>Process dataset")]
+        sim["Physics-based simulator<br/>data/simulation"]
+    end
+
+    subgraph dvc["DVC pipeline"]
+        download[download_tep] --> explore[explore_tep] --> adapt[adapt_tep] --> featurize[featurize]
+        featurize --> feastsrc[feast_source]
+        featurize --> split["split<br/>train / val / test"]
+    end
+
+    subgraph stream["Streaming layer · GKE + Strimzi"]
+        streamer["TEP streamer<br/>Kafka producer"]
+        raw{{"sensor-readings-raw"}}
+        validator["Validation consumer<br/>SensorValidator + Kalman"]
+        validated{{"sensor-validated"}}
+        alerts{{"anomaly-alerts"}}
+        streamer --> raw --> validator
+        validator --> validated
+        validator --> alerts
+    end
+
+    subgraph store["Feature store · Feast"]
+        offline[("Offline store<br/>Parquet")]
+        online[("Online store<br/>Redis · SQLite locally")]
+        offline -- materialize --> online
+    end
+
+    subgraph obs["Observability"]
+        prom[Prometheus] --> grafana["Grafana<br/>data-pipeline dashboard"]
+    end
+
+    subgraph planned["Phases 4-8"]
+        pinn["PINN + MAPIE<br/>uncertainty"]
+        api["FastAPI<br/>/predict · /explain"]
+    end
+
+    tep --> download
+    adapt -- "Parquet / GCS" --> streamer
+    feastsrc --> offline
+    sim -.->|"stage simulate (M6)"| featurize
+    streamer -- metrics --> prom
+    validator -- metrics --> prom
+    split -.-> pinn
+    online -.-> pinn
+    pinn -.-> api
+
+    classDef todo stroke-dasharray: 5 5
+    class pinn,api todo
 ```
+
+Infrastructure as code: Terraform modules for VPC, GKE, Kafka, IAM, security (KMS, Cloud Armor,
+IAP, load balancer) and storage. GCS holds the Terraform state, DVC data and the Feast registry.
 
 ---
 
