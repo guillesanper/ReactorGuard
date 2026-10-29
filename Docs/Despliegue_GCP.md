@@ -1,41 +1,29 @@
-# Prompt de continuacion — ReactorGuard Paso 4 (infraestructura: Kafka, GCP, Feast, Grafana)
+# ReactorGuard — Guia de despliegue en GCP (Kafka, GKE, Feast, Grafana)
 
-Trabajo en ReactorGuard (`c:\Users\guill\Desktop\proyectos\reactorGuard\ReactorGuard`),
-una plataforma de deteccion de anomalias en reactores nucleares. Windows 11, PowerShell 7+.
-La documentacion de fases esta en `Docs/` (Plan_Fases, Fase1_Prompts, Fase2_Prompts,
-Progreso, Guia_Tecnica). El plan completo esta en
-`C:\Users\guill\.claude\plans\compiled-inventing-scroll.md` — leelo primero.
+Guia para desplegar la capa de streaming de ReactorGuard en Google Cloud. Recoge la linea base
+medida antes del despliegue, los hallazgos que condicionan la configuracion, las decisiones de
+diseno ya implementadas y el procedimiento paso a paso (secciones 6 y 7).
 
-Handoffs anteriores, vigentes como contexto heredado y que NO hay que re-investigar:
-`Docs/Handoff_Paso3.md` (Bloque 1) y `Docs/Handoff_Paso3_Bloque3.md` (Bloques 2 y 3).
-Este documento continua a partir de ellos.
+El trabajo local esta terminado: las tareas de la seccion 7 (T3.3, T3.5, T4.3, T4.5, T4.6, T4.7)
+estan implementadas y verificadas en local; lo que queda es el despliegue (secciones 6 y 8) y
+medir los criterios 1 y 3 en el cluster. **El estado vivo esta en
+[ReactorGuard_Progreso.md](ReactorGuard_Progreso.md)** y el diseno, el contrato de mensajes y el
+runbook en [ReactorGuard_Fase2_Streaming.md](ReactorGuard_Fase2_Streaming.md). Las correcciones
+hechas tras contrastar con el codigo real estan marcadas con `[M9]`.
 
-**Los Pasos 0, 1, 2 y 3 estan CERRADOS y verificados.** Todo lo local funciona sin GCP.
-Este Paso 4 es el que despliega infraestructura, y por eso **requiere intervencion humana
-real**: hay que autenticarse en GCP, aplicar Terraform con coste economico asociado, y
-operar un cluster. Las secciones 6 y 7 son la guia paso a paso.
-
-> **ACTUALIZACION M9 (2026-10-11): el trabajo local de este Paso 4 esta HECHO.** Las tareas de la
-> seccion 7 (T3.3, T3.5, T4.3, T4.5, T4.6, T4.7) estan implementadas y verificadas en local; lo que
-> queda es el despliegue (secciones 6 y 10) y medir los criterios 1 y 3 en el cluster. Este documento
-> se conserva como guia de despliegue; **el estado vivo esta en
-> [ReactorGuard_Progreso.md](ReactorGuard_Progreso.md)** y el diseno, el contrato de mensajes y el
-> runbook en [ReactorGuard_Fase2_Streaming.md](ReactorGuard_Fase2_Streaming.md). Las correcciones
-> que se hicieron al leer el codigo real estan marcadas con `[M9]` mas abajo.
->
-> | Tarea | Donde esta |
-> |---|---|
-> | T3.3 streamer | `data/generators/tep_streamer.py`, `tep_streamer_service.py` |
-> | T3.5 consumidor | `data/validation/validation_consumer.py`, `validation_service.py`, `alert_event.py` |
-> | T4.3 Feast | `ml/features/store/` y stage DVC `feast_source` |
-> | T4.5 almacenamiento | `data/storage/` |
-> | T4.6 dashboard | `observability/grafana/dashboards/data-pipeline.json` |
-> | T4.7 verificacion | `infra/scripts/Verify-Phase2.ps1` |
-> | Stack local | `infra/local/Invoke-LocalStack.ps1` |
+| Tarea | Donde esta |
+|---|---|
+| T3.3 streamer | `data/generators/tep_streamer.py`, `tep_streamer_service.py` |
+| T3.5 consumidor | `data/validation/validation_consumer.py`, `validation_service.py`, `alert_event.py` |
+| T4.3 Feast | `ml/features/store/` y stage DVC `feast_source` |
+| T4.5 almacenamiento | `data/storage/` |
+| T4.6 dashboard | `observability/grafana/dashboards/data-pipeline.json` |
+| T4.7 verificacion | `infra/scripts/Verify-Phase2.ps1` |
+| Stack local | `infra/local/Invoke-LocalStack.ps1` |
 
 ---
 
-## 1. Linea base medida al terminar el Paso 3 — punto de partida
+## 1. Linea base medida antes del despliegue
 
 ```
 pytest tests/unit tests/safety --cov --cov-fail-under=70
@@ -102,7 +90,7 @@ Criterios de Fase 2, estado real:
 
 ---
 
-## 3. Hallazgos medidos que condicionan el Paso 4 — NO los re-investigues
+## 3. Hallazgos medidos que condicionan el despliegue
 
 ### A. La cadencia del TEP son 180 s, y eso ha roto ya TRES defaults distintos
 
@@ -118,7 +106,7 @@ SCADA de 1 s ha fallado en silencio al llegar a los 180 s del TEP:
    no contiene NI UNA muestra. Reescritas en MUESTRAS: `window_samples: [10, 20, 60]`.
 
 **Consecuencia para el Paso 4: cualquier umbral, ventana o timeout nuevo se calibra a 180 s
-y se mide, no se hereda de un documento.** El TDD y los prompts de Fase 2 estan escritos
+y se mide, no se hereda de un documento.** El TDD y el plan original de Fase 2 estan escritos
 para 1 s en varios sitios.
 
 ### B. Limitacion medida del detector de deriva (declarada, no pendiente)
@@ -175,7 +163,7 @@ alertas de `anomaly-alerts` en T3.5: a 550.160 lecturas, un 3,59% son ~19.700 al
 
 ---
 
-## 4. Decisiones de diseno tomadas y ya implementadas — NO las re-discutas
+## 4. Decisiones de diseno ya implementadas
 
 1. **`quality` es ortogonal a `fault_type`.** El del TEP describe una perturbacion del
    PROCESO; `quality` describe la fiabilidad del INSTRUMENTO. El adaptador emite `GOOD` para
@@ -193,7 +181,7 @@ alertas de `anomaly-alerts` en T3.5: a 550.160 lecturas, un 3,59% son ~19.700 al
    ingenieria: un umbral absoluto no significa lo mismo en 52 canales heterogeneos.
 7. **`SensorValidator.get_metrics()` devuelve un dict plano, NO registra en Prometheus.**
    Un registro global colisiona entre tests y ata el modulo a un backend. **T3.5 es donde
-   esas cifras se convierten en metricas** — es tuyo ahora.
+   esas cifras se convierten en metricas**.
 8. **El pivot largo->ancho vive en `batch_featurizer`, por particion.** La frontera de
    `fault_type` es la unidad de independencia: cada fichero reinicia el reloj, y rodar una
    ventana a traves de ella contaminaria una clase con la historia de otra. `pipeline.py`
@@ -212,9 +200,9 @@ alertas de `anomaly-alerts` en T3.5: a 550.160 lecturas, un 3,59% son ~19.700 al
 
 ---
 
-## 5. Aviso critico ANTES de tocar nada: incoherencias conocidas que bloquean el despliegue
+## 5. Incoherencias conocidas que bloquean el despliegue
 
-### 5.1 EL PROJECT ID ESTA MAL EN 8 SITIOS — arreglalo lo primero
+### 5.1 EL PROJECT ID ESTA MAL EN 8 SITIOS
 
 El proyecto GCP real es **`sentinel-platform-485714`**. Terraform lo tiene bien
 (`infra/terraform/environments/dev/main.tf:11`, parametrizado via `var.project_id`), pero
@@ -249,8 +237,8 @@ Los bindings de Workload Identity ya estan bien porque usan `${var.project_id}`
 ### 5.2 Aviso heredado del Paso 1
 
 Si ves errores de parseo TOML inexplicables que rompen ruff/mypy/pytest a la vez, **mira la
-cabecera de `pyproject.toml` antes de depurar otra cosa** — se corrompio una vez con texto de
-prompt incrustado.
+cabecera de `pyproject.toml` antes de depurar otra cosa** — se corrompio una vez con texto
+ajeno incrustado.
 
 ### 5.3 `dvc repro` a pelo NO funciona
 
@@ -276,21 +264,20 @@ silencio**.
 
 ---
 
-## 6. GUIA PASO A PASO — que tienes que hacer TU (el humano) y que hago yo
+## 6. Guia paso a paso
 
-Esta es la parte que requiere intervencion humana. Sigue el orden; cada bloque depende del
-anterior. Los bloques marcados **[TU]** los ejecutas tu porque necesitan credenciales,
-aprobacion de gasto o decisiones de cuenta. Los marcados **[IA]** los hago yo.
+Cada bloque depende del anterior. Los bloques 1 a 6 requieren credenciales de GCP,
+aprobacion de gasto o decisiones de cuenta.
 
-### Bloque 0 — Antes de nada, saneamiento **[IA, luego TU verificas]**
+### Bloque 0 — Antes de nada, saneamiento
 
-1. Yo corrijo los 8 sitios del project ID (seccion 5.1).
-2. Yo verifico que la suite sigue verde (`545 passed`).
-3. **[TU]** revisas el diff antes de continuar.
+1. Corregir los 8 sitios del project ID (seccion 5.1).
+2. Verificar que la suite sigue verde (`545 passed`).
+3. Revisar el diff antes de continuar.
 
-### Bloque 1 — Prerrequisitos de tu maquina **[TU]**
+### Bloque 1 — Prerrequisitos de la maquina local
 
-Comprueba que tienes instalado y en el PATH. Yo no puedo instalarlos por ti:
+Herramientas que deben estar instaladas y en el PATH:
 
 ```powershell
 gcloud version          # Google Cloud SDK
@@ -305,7 +292,7 @@ Si falta algo:
 - kubectl: `gcloud components install kubectl`
 - helm: `winget install Helm.Helm`
 
-### Bloque 2 — Autenticacion y proyecto GCP **[TU]**
+### Bloque 2 — Autenticacion y proyecto GCP
 
 ```powershell
 gcloud auth login
@@ -333,7 +320,7 @@ gcloud services enable `
 gcloud billing projects describe sentinel-platform-485714
 ```
 
-### Bloque 3 — Bucket del estado de Terraform **[TU]**
+### Bloque 3 — Bucket del estado de Terraform
 
 `infra/terraform/environments/dev/backend.tf` espera el bucket
 `reactorguard-terraform-state`, que **tiene que existir ANTES del primer `terraform init`**.
@@ -352,7 +339,7 @@ corrompe.
 Existe `infra/scripts/bootstrap.ps1`; **pideme que lo lea antes de ejecutarlo** para
 comprobar si ya hace esto y no duplicarlo.
 
-### Bloque 4 — AVISO DE COSTE, y luego `terraform apply` **[TU decide, IA acompana]**
+### Bloque 4 — AVISO DE COSTE, y luego `terraform apply`
 
 **LEE ESTO ANTES DE APLICAR.** Un cluster GKE con los nodos que declara el modulo, mas
 balanceador, mas KMS, **cuesta dinero real por hora**, este o no en uso. Si lo dejas
@@ -365,8 +352,7 @@ terraform validate
 terraform plan -out=tfplan          # LEE EL PLAN. Cuenta cuantos recursos crea.
 ```
 
-**Parate aqui y dime que dice el plan.** Yo lo reviso contigo antes de aplicar. Cuando lo
-apruebes:
+**Revisar el plan antes de aplicar.** Una vez validado:
 
 ```powershell
 terraform apply tfplan
@@ -379,7 +365,7 @@ Tarda **15-25 minutos**, casi todo creando el cluster GKE.
 > lo que crees) o `terraform destroy`. El estado en GCS sobrevive, asi que puedes recrear todo
 > mañana con otro `apply`.
 
-### Bloque 5 — Credenciales del cluster y verificacion **[TU ejecuta, IA diagnostica]**
+### Bloque 5 — Credenciales del cluster y verificacion
 
 ```powershell
 gcloud container clusters get-credentials <NOMBRE_CLUSTER> --region europe-southwest1
@@ -390,7 +376,7 @@ kubectl get nodes                          # deben aparecer Ready
 El nombre del cluster sale de los outputs de Terraform (`terraform output`). **Cierra los 4
 criterios pendientes de la Fase 1**, que llevan sin medir desde el principio.
 
-### Bloque 6 — Kafka **[TU ejecuta, IA diagnostica]**
+### Bloque 6 — Kafka
 
 ```powershell
 .\infra\scripts\Install-Kafka.ps1          # pideme que lo lea antes
@@ -417,14 +403,13 @@ Los 3 topics ya estan declarados en `k8s/base/kafka/kafka-topics.yaml`:
 Namespaces ya declarados: `reactorguard-ingestion`, `reactorguard-ml`,
 `reactorguard-observability`, `kafka-operator`.
 
-### Bloque 7 en adelante — desarrollo **[IA]**
+### Bloque 7 en adelante — desarrollo
 
-A partir de aqui vuelvo a escribir codigo yo, con el cluster vivo para poder probarlo.
-Ver seccion 7.
+Con el cluster vivo se completan y prueban las tareas de la seccion 7.
 
 ---
 
-## 7. Las tareas del Paso 4, en orden de dependencia
+## 7. Tareas del despliegue, en orden de dependencia
 
 ### T3.3 — TEP Streamer -> Kafka producer
 
@@ -466,7 +451,7 @@ Ver seccion 7.
      congelado necesita **otras 8 muestras = 24 minutos** a cadencia TEP para volver a
      detectarse. Es asumible, pero hay que saberlo y NO confundirlo con un fallo del detector.
      Si esos 24 minutos fuesen inaceptables en operacion, habria que persistir el estado, y eso
-     es un rediseno, no un ajuste: preguntame antes de acometerlo.
+     es un rediseno, no un ajuste.
 
 - Modo "fast" para el benchmark (sin respetar la cadencia real de 3 min) y modo "realtime".
 - **Criterio 1 de la Fase 2 (>50.000 msg/s) se mide aqui**, con
@@ -490,11 +475,11 @@ Ver seccion 7.
 
 - **La salida del featurizer ya es LARGA con `sensor_id` como clave** (decision 10), que es
   justo lo que espera `sensor_entity` con `join_key=sensor_id`. No hay que transformar nada.
-- **El Project ID que aparece en los prompts de Fase 2 para `feature_store.yaml` es
+- **El Project ID que aparece en el plan original de Fase 2 para `feature_store.yaml` es
   `reactorguard-platform`: ESTA MAL.** Usa `sentinel-platform-485714`.
-- **Los TTL del prompt original (1 h, 30 s, 1 min, 5 min) estan pensados para cadencia de 1 s.**
+- **Los TTL del diseno original (1 h, 30 s, 1 min, 5 min) estan pensados para cadencia de 1 s.**
   Un TTL en Feast es cuanto tiempo un valor sigue sirviendose online. Con el de 30 s que el
-  prompt propone para el residual de Kalman, y muestras cada 180 s:
+  diseno original propone para el residual de Kalman, y muestras cada 180 s:
 
   ```
   t=0        llega la lectura, feature escrita, TTL 30 s
@@ -508,7 +493,7 @@ Ver seccion 7.
   ambos casos.
 
   Regla: **TTL > intervalo de muestreo, con margen** (a 180 s, del orden de 360-540 s). Pero
-  el numero se mide contra la cadencia real del stream, no se hereda. Recalibralos y dimelo.
+  el numero se mide contra la cadencia real del stream, no se hereda. Hay que recalibrarlos.
 
   > `[M9]` **Correccion de la premisa.** El razonamiento de arriba da por hecho que "un TTL en Feast es
   > cuanto tiempo un valor sigue sirviendose online". **En Feast 0.64 eso no es asi** (medido): el TTL
@@ -589,50 +574,7 @@ Ver seccion 7.
 
 ---
 
-## 8. Nota de commit
-
-**El arbol acumula tres sesiones sin commitear.** Si te lo pido, agrupa en commits coherentes
-por bloque; **no commitees sin que te lo pida**:
-
-1. Spans por sensor (`configs/`, `data/schemas/sensor_spans.py`, `derive_sensor_spans.py`,
-   `Invoke-Pipeline.ps1`, borrado de `prepare_tep.ps1`) + sus tests.
-2. Kalman (`ml/features/kalman.py`) + tests.
-3. Validador (`data/validation/sensor_fault.py`, `sensor_validator.py`) + tests.
-4. T3.6 (`fault_injector.py`, `test_validator_on_tep.py`, recalibracion del umbral de deriva,
-   `readings_from_frame`).
-5. T4.2 (`feature_params.py`, `pipeline.py`, `batch_featurizer.py`, retirada de
-   `extractor.py`, seccion `features:` de params.yaml).
-6. T4.4 (`train_val_test_split.py`, stage `split`, excepciones de `.gitignore`) +
-   determinismo de `reading_id`.
-
-`Docs/ReactorGuard_Progreso.md` sigue **desactualizado**: declara la Fase 1 cerrada con 4
-criterios sin medir y la Fase 2 vacia cuando esta casi entera. Es el Paso 5 del plan.
-
----
-
-## 9. Como quiero trabajar
-
-**Paso a paso.** Antes de borrar o sobrescribir cualquier archivo, muestrame que contiene y
-por que. Antes de regenerar el parquet o lanzar cualquier cosa que escriba en `data/`, dime
-que va a escribir y donde. **Antes de aplicar o destruir infraestructura en GCP, parate y
-dime exactamente que recursos toca y que coste implica.** Antes de tocar el contrato de datos
-(`data/schemas/sensor_reading.py`) o el significado de `quality`/`is_usable`, preguntame.
-
-Al terminar, dime que encontraste y como quedo la linea base, **con numeros medidos, no
-estimados**.
-
-**Si algo que te he dicho aqui no coincide con lo que ves en el codigo, dimelo en vez de
-adaptarte en silencio.**
-
-Principios obligatorios: sin emojis en codigo, comentarios, logs ni docs. Type hints
-completos. Docstrings con Args/Returns/Raises. Tests unitarios en cada modulo nuevo. Scripts
-de desarrollo local en PowerShell 7+ (.ps1) con arquitectura de 4 capas; .sh solo dentro de
-contenedores o GitHub Actions. La cobertura no debe bajar del 70% y los modulos nuevos entran
-en el alcance medido (no los anadas al `omit` para hacer pasar el gate).
-
----
-
-## 10. Objetivo verificable al terminar el Paso 4
+## 8. Objetivo verificable del despliegue
 
 ```powershell
 ruff check .                                                  # 0 findings
@@ -648,10 +590,8 @@ kubectl get pods -n reactorguard-ingestion                    # streamer + valid
 .\infra\scripts\Verify-Phase2.ps1                             # 4/4 criterios blocking
 ```
 
-Y al acabar, **destruye la infraestructura** para no acumular coste:
+Al acabar, **destruir la infraestructura** para no acumular coste:
 
 ```powershell
 .\infra\scripts\Remove-DevInfra.ps1
 ```
-
-**NO avances a la Fase 3 (simulacion) ni a la Fase 4 (PINN) sin que yo te lo diga.**

@@ -85,9 +85,9 @@ def test_ttl_is_540_seconds_at_the_tep_cadence() -> None:
 
 
 def test_ttl_exceeds_the_sampling_interval_with_slack() -> None:
-    # Por que importa: con el TTL de 30 s del prompt original y una muestra cada
+    # Por que importa: con el TTL de 30 s del diseno original y una muestra cada
     # 180 s, la feature es vigente 30 s y nula los 150 s restantes:
-    #     150 / 180 = 83 % del tiempo nula (Handoff_Paso4.md:463-475).
+    #     150 / 180 = 83 % del tiempo nula (Docs/Despliegue_GCP.md, seccion 7, T4.3).
     # El servicio no fallaria, recibiria nulos. Hace falta TTL > intervalo, y con
     # margen para tolerar al menos una lectura perdida (>= 2 intervalos).
     params = _real()

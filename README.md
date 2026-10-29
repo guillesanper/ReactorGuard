@@ -7,6 +7,18 @@ applies physics-informed machine learning to detect anomalies, and surfaces safe
 alerts with uncertainty-quantified predictions. The platform is built for regulatory
 auditability and operates on Google Kubernetes Engine.
 
+## Highlights
+
+- **Streaming pipeline**: Kafka producer/consumer services that validate every sensor reading
+  (stuck, noise-spike, drift and Kalman-residual detectors) and publish alerts to a dedicated topic.
+- **Reproducible data**: DVC pipeline from the Tennessee Eastman Process dataset to features,
+  Feast offline/online stores and leak-free, time-ordered train/val/test splits, with identical hashes on rebuild.
+- **Physics-based simulation**: ODE reactor model calibrated at equilibrium, energy and mass
+  conservation checks, and eight fault types with severity labels.
+- **Infrastructure as code**: Terraform modules (VPC, GKE, Kafka, IAM, security, storage) and Kustomize overlays.
+- **Quality gates**: ruff, mypy strict, ~2,800 tests with coverage above 99 %, and a
+  verification script that never reports an unmeasured criterion as met.
+
 ---
 
 ## Project status
@@ -17,13 +29,14 @@ DVC reproducibility) and two are **not measured** until they run on the cluster
 (Kafka throughput, feature latency under load). See
 [Docs/ReactorGuard_Progreso.md](Docs/ReactorGuard_Progreso.md) for the verified per-task status,
 [Docs/ReactorGuard_Fase2_Streaming.md](Docs/ReactorGuard_Fase2_Streaming.md) for the streaming
-design and runbook, and [Docs/Handoff_Paso4.md](Docs/Handoff_Paso4.md) for the deployment steps.
+design and runbook, and [Docs/Despliegue_GCP.md](Docs/Despliegue_GCP.md) for the deployment steps.
 
 | Phase | Status |
 |-------|--------|
 | 1. GKE + Kafka | Code complete, not deployed |
 | 2. Data pipeline + sensor validator | Code complete and verified locally: TEP streamer, validation consumer, features, Feast, storage client, DVC pipeline and dashboard. Criteria 1 and 3 need the cluster |
-| 3-8. Simulation, PINN, uncertainty, API, CI/CD, observability | Not started (scaffolding only) |
+| 3. Physics-based simulation | In progress: thermal-hydraulic ODE model, physics constraints, process and instrument fault generation done (milestones M1-M5); DVC `simulate` stage and safety suite pending |
+| 4-8. PINN, uncertainty, API, CI/CD, observability | Not started (scaffolding only) |
 
 ---
 
@@ -151,8 +164,11 @@ measurement is never reported as met.
 
 ### 7. Simulation and model training
 
-Not implemented yet (Phases 3-4). `data/generators/reactor_simulator.py` and
-`ml/training/train.py` are scaffolding.
+The simulation layer (`data/simulation/`, `data/generators/reactor_simulator.py`) generates
+labelled datasets from a deterministic thermal-hydraulic model with injected process and
+instrument faults; its physics constraints are documented in
+[Docs/physics_constraints.md](Docs/physics_constraints.md). Model training (Phase 4,
+`ml/training/train.py`) is still scaffolding.
 
 ### 8. Start API (partial)
 
@@ -178,7 +194,7 @@ pytest tests/integration/ -m integration   # needs the local stack and KAFKA_BOO
 │                        GKE Cluster                               │
 │                                                                   │
 │  ┌──────────────┐    ┌──────────────┐    ┌──────────────────┐   │
-│  │   Reactor    │───▶│    Kafka     │───▶│  Ingestion       │   │
+│  │   Reactor    │───►│    Kafka     │───►│  Ingestion       │   │
 │  │   Sensors    │    │  (Strimzi)   │    │  Service         │   │
 │  └──────────────┘    └──────────────┘    └────────┬─────────┘   │
 │                                                    │             │
@@ -230,7 +246,7 @@ Secret Manager: credentials · API keys
 ├── data/                   # Schemas, generators, validators, streaming, storage
 ├── observability/          # Grafana dashboards (Prometheus rules, Alertmanager: Phase 8)
 ├── tests/                  # unit, integration, safety
-└── docs/runbooks/          # Operational runbooks
+└── Docs/                   # Design docs, progress log, deployment guide, runbooks
 ```
 
 ---

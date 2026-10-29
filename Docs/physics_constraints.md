@@ -267,7 +267,7 @@ seccion 7.3 son las del sigma inicial de 0,30 K.
 | 5 | App. B: "Pearson correlation monitor" (potencia/flujo); 5.4: `abs(P_th - k flux) > umbral` | Una es una caracteristica estadistica, la otra una regla instantanea | Se implementa la de 5.4; la correlacion queda como feature |
 | 6 | App. B: masa "hard rule check on flow sensors"; 5.4 no la lista | Solo hay seis reglas en 5.4 | Septima regla `mass_balance`, solo en cuasi-estacionario |
 | 7 | 5.4: `dT/dt > 10` | Sin valor absoluto ni cadencia | Magnitud; a 180 s inobservable (seccion 5) |
-| 8 | 5.2 indexa `[flux, flow, t_in, t_out, flow_out]` | El orden de columnas condicionara Fase 4 (C9) | Fuera de M2; M7 lo fija en el relevo de Fase 4 |
+| 8 | 5.2 indexa `[flux, flow, t_in, t_out, flow_out]` | El orden de columnas condicionara Fase 4 (C9) | Fuera de M2; M7 lo fija en las notas de arranque de Fase 4 |
 
 ## 9. Matriz de violaciones esperadas
 

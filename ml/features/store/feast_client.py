@@ -4,7 +4,7 @@ POR QUE LA CADUCIDAD SE APLICA AQUI. Medido en Feast 0.64: el `ttl` del FeatureV
 NO caduca nada en la lectura online. Solo acota la ventana de `materialize` y los
 joins historicos; `get_online_features` sirve el ultimo valor escrito aunque tenga
 dias (con un TTL de 540 s, un valor de 2000 s de antiguedad y otro de 26 anos se
-sirvieron igual). Lo contrario de lo que asumia Handoff_Paso4.md: sin esta capa, un
+sirvieron igual). Lo contrario de lo que asumia la guia de despliegue: sin esta capa, un
 sensor cuyo productor se cae seguiria sirviendo su ultima feature indefinidamente,
 que es el fallo silencioso que el TTL debia impedir.
 

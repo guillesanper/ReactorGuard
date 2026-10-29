@@ -3,8 +3,8 @@
 Mismo patron que data/storage/storage_params.py: dataclass inmutable, `_require`
 para claves obligatorias y validacion en la carga.
 
-EL TTL SE CALIBRA A LA CADENCIA DEL TEP, NO A LA DEL PROMPT ORIGINAL. El TTL de
-30 s que proponia el prompt para el residual de Kalman asumia una muestra cada
+EL TTL SE CALIBRA A LA CADENCIA DEL TEP, NO A LA DEL DISENO ORIGINAL. El TTL de
+30 s que proponia el diseno original para el residual de Kalman asumia una muestra cada
 1 s. Con una muestra nueva cada 180 s:
 
     t = 0          llega la lectura y se escribe la feature (TTL 30 s)

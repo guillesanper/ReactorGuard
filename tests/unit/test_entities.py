@@ -23,6 +23,6 @@ def test_sensor_entity_is_keyed_by_string_tags() -> None:
 
 def test_there_is_no_plant_entity() -> None:
     # power_level_pct, hour_of_day y day_of_week ya viajan en cada fila larga
-    # (decision 10 del handoff): una segunda entidad obligaria a enviar dos claves
+    # (decision 10 de Docs/Despliegue_GCP.md): una segunda entidad obligaria a enviar dos claves
     # para recuperar datos que ya estan en la primera.
     assert not hasattr(entities, "plant_entity")

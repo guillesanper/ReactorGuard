@@ -5,7 +5,7 @@ no puedan divergir: un test del dashboard comprueba que cada `reactorguard_*`
 citado en una expresion PromQL esta en METRIC_NAMES.
 
 Cada StreamMetrics crea su propio CollectorRegistry: el registro global de
-prometheus_client colisiona entre tests (decision 7 del handoff) y ataria los
+prometheus_client colisiona entre tests (decision 7 de Docs/Despliegue_GCP.md) y ataria los
 modulos a un backend. Las etiquetas son de baja cardinalidad (nunca sensor_id).
 """
 

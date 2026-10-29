@@ -288,10 +288,10 @@ feature_store:
 
   # TTL del FeatureView = ttl_intervals x tep.sample_interval_minutes x 60 = 540 s.
   #
-  # Por que 3 y no el TTL de 30 s del prompt original: ese valor asumia muestras
+  # Por que 3 y no el TTL de 30 s del diseno original: ese valor asumia muestras
   # cada 1 s. Con una muestra nueva cada 180 s, un TTL de 30 s deja la feature
   # vigente 30 de cada 180 s (17 %) y nula el 83 % restante (150 s muertos por
-  # intervalo; calculo en Docs/Handoff_Paso4.md:463-475). El minimo logico es un
+  # intervalo; calculo en Docs/Despliegue_GCP.md, seccion 7, T4.3). El minimo logico es un
   # intervalo; con exactamente uno, un retraso de un solo segundo en el productor
   # ya cuenta como caducado. 2 intervalos tolera una lectura perdida y 3 tolera
   # dos, el mismo factor que streaming.staleness_seconds. El loader exige >= 2.

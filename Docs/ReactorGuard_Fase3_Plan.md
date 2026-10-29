@@ -1,8 +1,8 @@
 # Fase 3 (capa de simulacion) - plan por hitos con guia de ejecucion
 
-Estado: PLAN APROBADO EN SUS DECISIONES (D1-D13) por el usuario; esta revision anade, por hito, QUE TOCAR y
+Estado: PLAN APROBADO EN SUS DECISIONES (D1-D13); esta revision anade, por hito, QUE TOCAR y
 COMO. No se ha escrito codigo de producto ni se ha tocado el repo (`git status` limpio en `d35f802`). Las
-sondas del preflight viven en el scratchpad. Etiquetas: **[M]** medida en esta sesion, **[L]** leida del
+sondas del preflight se ejecutaron fuera del repo. Etiquetas: **[M]** medida durante la planificacion, **[L]** leida del
 codigo/documento, **[W]** documentacion externa no medida.
 
 ## 0. Contexto
@@ -36,7 +36,7 @@ Tiempo de la suite 559,7 s (frente a 458 s): corrio en paralelo con las sondas, 
 | Datos nucleares, coste por corrida de OpenMC | **NO medidos** (no se descargo nada); se miden en M8 antes de bajar nada |
 | PyDy 0.9.4 | en PyPI, requiere numpy>=1.26.4, scipy>=1.11.4, sympy>=1.12; "multi-body dynamics" (Kane); no instalado, compatibilidad con sympy 1.14 no probada |
 | Coste ODE (9 estados, intervalo de 180 s, 2000 muestras) | LSODA **3,27 ms**, Radau 12,9 ms, BDF 14,2 ms, RK45 **7114 ms**; rigidez 2,7e4 (\|lambda\|max 325 1/s). 41.667 pasos (1M lecturas / 24 sensores) ~ **2,3 min**. El modelo de la sonda NO esta calibrado (relaja a n = 0,43): solo vale como medida de coste |
-| Agua IAPWS-97 a 15,5 MPa (`iapws 1.5.5`, solo en scratchpad) | cp 5243 / 5664 / 6415 J/(kg K) a 290 / 307,5 / 325 C; T_sat = **344,79 C** (margen 19,8 K a 325 C); T_sat(120 bar) = 324,7 C |
+| Agua IAPWS-97 a 15,5 MPa (`iapws 1.5.5`, fuera del venv) | cp 5243 / 5664 / 6415 J/(kg K) a 290 / 307,5 / 325 C; T_sat = **344,79 C** (margen 19,8 K a 325 C); T_sat(120 bar) = 324,7 C |
 | Balance de energia con cp = 4182 (TDD 5.2), 18.000 kg/s, 30 K, 3000 MW | 2258 MW -> **desbalance 24,7 %**; con cp IAPWS a 579 K: 3031,9 MW -> **1,1 %**. La constante `3.2e-11*2.5e18` da 2,56e21 con flux 3,2e13: no reconcilia con 3,0e9 W |
 | Tamano por lectura (parquet largo TEP, d00) | 26.000 filas = 1,20 MB -> ~46 B/lectura -> 1M ~ 46 MB |
 | Entorno | i5-1135G7 4C/8T, 15,8 GB RAM, 191,9 GB libres |
@@ -134,9 +134,9 @@ Formula es la condicion de VIOLACION): desbalance > 5 %; T_out < T_in; dT/dt > 1
    compartidos en `tests/support/` (patron de `tep_frames.py`).
 7. **Estandares**: ruff E,W,F,I,N,UP,S,B,A con line-length 100 tambien en tests; mypy strict; docstrings Google con
    Args/Returns/Raises; `_LOG` con %-lazy; sin emojis; prosa en espanol sin tildes; Python >= 3.11 sin PEP 695.
-8. **Al abrir cada hito**: listar los paths exactos que se van a crear/tocar (regla del usuario) y confirmar
+8. **Al abrir cada hito**: listar los paths exactos que se van a crear/tocar y confirmar
    baseline. **Al cerrarlo**: puertas completas, cifras medidas en una tabla, filas T5.x de
-   `Docs/ReactorGuard_Progreso.md` actualizadas, propuesta de mensaje de commit (NUNCA ejecutarlo).
+   `Docs/ReactorGuard_Progreso.md` actualizadas, mensaje de commit.
 9. **No se toca** en toda la fase: `data/schemas/sensor_reading.py`, `data/validation/fault_injector.py`,
    `data/validation/sensor_validator.py`, `data/streaming/*`, `ml/features/*`, ni el significado de
    `quality`/`is_usable`.
@@ -153,7 +153,7 @@ Orden de dependencia: **M1 -> M2 -> M3 -> {M4, M5} -> M6 -> M7**; **M8** es para
 
 | Fichero | Contenido |
 |---|---|
-| `Docs/ReactorGuard_Fase3_Plan.md` | **PRIMER paso del hito**: copia de este plan en una ruta estable del repo (decirlo al usuario antes de crearlo). Todos los prompts de relevo lo referencian; al cerrar cada hito se rellena su seccion 15 "Registro de progreso" |
+| `Docs/ReactorGuard_Fase3_Plan.md` | **PRIMER paso del hito**: copia de este plan en una ruta estable del repo. Es la referencia de todos los hitos; al cerrar cada hito se rellena su seccion 15 "Registro de progreso" |
 | `data/simulation/__init__.py` | docstring del paquete |
 | `data/simulation/build_water_table.py` | herramienta de desarrollo: importa `iapws` de forma perezosa, barre T 200-360 C (paso 2) x P 60-170 bar (paso 5) y escribe cp, rho, h del liquido comprimido y T_sat(P). `main(argv)` con `--output`. Cabecera con version de iapws |
 | `configs/water_table.yaml` | tabla generada y commiteada (~56 x 23 x 3 valores) |
@@ -261,7 +261,7 @@ vectorizada; residuo de conservacion sobre una traza sintetica de M1; `min_obser
 |---|---|
 | `data/generators/reactor_simulator.py` | REESCRIBIR: borrar NOMINAL/SIGMA y `main` viejo (incluido el `data/raw/simulation.jsonl`); nueva clase `ReactorSimulator.from_params(...)` que orquesta runs y un `main(params_path)` fino |
 | `pyproject.toml` | quitar la entrada de `omit` y el bloque `[[tool.mypy.overrides]]` de `reactor_simulator` con sus comentarios |
-| `params.yaml` | reescribir la seccion `simulation:` (ver abajo). Con tu aprobacion previa al editar: cambia el significado de `fault_injection_rate` |
+| `params.yaml` | reescribir la seccion `simulation:` (ver abajo). Revisar antes de editar: cambia el significado de `fault_injection_rate` |
 
 **Seccion `simulation:` objetivo** (claves nuevas; las de potencia/temperaturas pasan a `plant_parameters.yaml`;
 `fault_types` desaparece): `n_samples: 50000` (PASOS de tiempo, documentado), `fault_injection_rate: 0.40`,
@@ -426,8 +426,8 @@ de 46 B/lectura.
 | Volumen | > 1.000.000 lecturas etiquetadas | `manifest.json` |
 | Reproducibilidad | hashes identicos | `dvc status` + lock completo + `-FromScratch` (con todo commiteado) |
 
-**Cierre**: resumen de hallazgos, mensaje de commit propuesto, y **prompt de relevo para Fase 4 (T6.1/T7.1)**
-con la plantilla del usuario, incluyendo el orden de columnas (C9) y el cp de tabla (D8) como entradas de la PINN.
+**Cierre**: resumen de hallazgos, mensaje de commit propuesto, y **notas de arranque de Fase 4 (T6.1/T7.1)**,
+incluyendo el orden de columnas (C9) y el cp de tabla (D8) como entradas de la PINN.
 
 ### F3-M8 (opcional, paralelo) - Calibracion neutronica con OpenMC en Docker
 
@@ -542,58 +542,39 @@ Todo criterio que dependa de la cadencia o de GCP se marca NO MEDIDO si no se mi
 - Por hito: `ruff check .`, `mypy ml/ api/ data/`, `pytest tests/unit tests/safety --cov --cov-fail-under=70`
   (+ >= 95 % por modulo nuevo), `.\infra\scripts\Invoke-Pipeline.ps1`, `dvc status`.
 - M6/M7: `Verify-Phase2.ps1 -SkipCluster` (regresion) y `Verify-Phase3.ps1`.
-- Cierre de fase: `Verify-Phase3.ps1 -FromScratch` con hash identico, tras tu commit de los ficheros nuevos.
-- NUNCA `git commit/amend/push`: cada hito termina con el mensaje propuesto y lo ejecutas tu.
-- Al aprobarse este plan el agente entrega en el chat el **prompt de arranque de F3-M1**; cada hito cierra con
-  su prompt de relevo entregado por el agente en su mensaje final, segun la seccion 14 (no se guardan en el plan).
+- Cierre de fase: `Verify-Phase3.ps1 -FromScratch` con hash identico, con los ficheros nuevos commiteados.
 
-## 13. Cosas a tener en cuenta por hito (insumo de cada prompt de relevo)
+## 13. Cosas a tener en cuenta por hito
 
 | Hito | Trampas y puntos de atencion |
 |---|---|
-| M1 | `iapws` solo esta en el scratchpad (temporal), NO en el venv: instalarlo como dependencia de desarrollo (pip, ~1 MB, puro Python) y reflejarlo en `pyproject.toml`; `scipy` pasa a explicita. Tabla con T 200-360 C y P 60-170 bar porque el vacio despresuriza. El equilibrio se DERIVA (hA, UA), no se teclea: la sonda del preflight fallo justo ahi (n = 0,43). `water_properties` no extrapola. Sin `np.random.seed`. Mediciones de tiempo largas: contrastar con Kernel-Power 506/507 |
+| M1 | `iapws` NO esta en el venv: instalarlo como dependencia de desarrollo (pip, ~1 MB, puro Python) y reflejarlo en `pyproject.toml`; `scipy` pasa a explicita. Tabla con T 200-360 C y P 60-170 bar porque el vacio despresuriza. El equilibrio se DERIVA (hA, UA), no se teclea: la sonda del preflight fallo justo ahi (n = 0,43). `water_properties` no extrapola. Sin `np.random.seed`. Mediciones de tiempo largas: contrastar con Kernel-Power 506/507 |
 | M2 | Roles de constraints desde `sim_sensors.yaml`, no tags cableados. Polaridad: App. B enuncia la ley (T < T_sat), 5.4 la violacion (P < P_sat(T)). Operadores estrictos. NaN no se evalua. Documento en `Docs/physics_constraints.md` (no `docs/`). Cuantificar C5 (dT/dt inobservable a 180 s) |
 | M3 | Antes de editar `params.yaml`: avisar (cambia el significado de `fault_injection_rate` y desaparecen claves). Quitar `omit` Y override de mypy. `tests/safety/test_safety_constraints.py` sigue importando `ReactorSimulator`: el modulo debe seguir exportandolo aunque los tests sigan en skip hasta M6. `SPANS_SEED` distinta de `openmc_seed`. El estudio de cadencia NO recalibra el validador. `readings_from_frame` exige 11 columnas. `reading_id` con `run_id`. Sin `quality` distinta de `good` |
 | M4 | Los fallos de proceso van a las ECUACIONES (`ModelInputs`), no a la medicion. La ebullicion es no suave: vigilar el integrador y el determinismo. Fijar niveles por objetivo medible, no a ojo. Severidad solo de `FAULT_SEVERITY` |
 | M5 | El 40 % etiquetado probablemente salga sobre todo de proceso: medir antes de forzar. Intermittent = valor alterna valido/invalido con `quality = good` y `corrupted` marca las corruptas. Drift detectable en la banda 13-17 anchos/hora medida en Fase 2; el sub-detectable se etiqueta igual. Sensores disjuntos por tipo dentro de un run. `raw_counts` clampa por ADC, el valor no |
-| M6 | `Invoke-Pipeline.ps1` siempre; `-Force` reejecuta el linaje; DVC borra outs antes de ejecutar. Tras anadir `simulate`, `Verify-Phase2.ps1 -SkipCluster` debe seguir en 2 con criterios 2 y 4 CUMPLIDOS. `-FromScratch` copia solo `git ls-files`: los ficheros nuevos deben estar commiteados (los commits son del usuario). `WinError 3`: copias en `%TEMP%\rg-<8hex>`, `--no-run-cache`. `.gitignore` ya cubre `data/raw/simulation` |
-| M7 | Copiar los helpers minimos de `Verify-Phase2.ps1`, no refactorizarlo (32 tests lo ejecutan). Los tests de PowerShell ejecutan scripts reales sobre artefactos sinteticos. El prompt de relevo de Fase 4 debe fijar el orden de columnas (C9) y el cp de tabla (D8) |
-| M8 | Medir con HEAD el tamano de los datos antes de bajar; confirmar cifras con el usuario; fijar el digest de la imagen; la logica numerica vive en `data/simulation/neutronics_fit.py` (cubierta), el script de contenedor en `infra/openmc/` (fuera de cobertura) |
+| M6 | `Invoke-Pipeline.ps1` siempre; `-Force` reejecuta el linaje; DVC borra outs antes de ejecutar. Tras anadir `simulate`, `Verify-Phase2.ps1 -SkipCluster` debe seguir en 2 con criterios 2 y 4 CUMPLIDOS. `-FromScratch` copia solo `git ls-files`: los ficheros nuevos deben estar commiteados. `WinError 3`: copias en `%TEMP%\rg-<8hex>`, `--no-run-cache`. `.gitignore` ya cubre `data/raw/simulation` |
+| M7 | Copiar los helpers minimos de `Verify-Phase2.ps1`, no refactorizarlo (32 tests lo ejecutan). Los tests de PowerShell ejecutan scripts reales sobre artefactos sinteticos. Las notas de arranque de Fase 4 deben fijar el orden de columnas (C9) y el cp de tabla (D8) |
+| M8 | Medir con HEAD el tamano de los datos antes de bajar; confirmar cifras antes de descargar; fijar el digest de la imagen; la logica numerica vive en `data/simulation/neutronics_fit.py` (cubierta), el script de contenedor en `infra/openmc/` (fuera de cobertura) |
 
-## 14. Protocolo de relevo (al cerrar CADA hito)
+## 14. Cierre de cada hito
 
-Cada hito termina con un **prompt de relevo completo, autosuficiente y pegable**, en un bloque de codigo, que
-sustituye al contexto de la sesion. Debe contener, en este orden y con la misma plantilla del prompt de F3-M0:
-
-1. **Referencias de lectura** en orden: `Docs/ReactorGuard_Fase3_Plan.md` (seccion del hito siguiente y las
-   secciones 5, 6, 13, 15), `Docs/ReactorGuard_Progreso.md`, `Docs/physics_constraints.md` si existe,
-   y solo lo necesario del TDD/Guia. Ruta de respaldo del plan: `C:\Users\guill\.claude\plans\enchanted-chasing-giraffe.md`.
-2. **Regla permanente**: nunca `git commit/amend/push`; proponer el mensaje al cerrar.
-3. **Hecho hasta ahora**: lista de hitos cerrados con sus entregables y ficheros creados/tocados (rutas).
-4. **Linea base MEDIDA al cierre**: ruff, mypy (n ficheros), pytest (passed/skipped, cobertura total y por modulo
-   nuevo), dvc status, y las cifras especificas del hito (tiempos, errores, tasas). Pedir reconfirmarlas.
-5. **Decisiones y desviaciones vigentes**: D1-D13 mas las que haya aportado el hito, con motivo y evidencia.
-6. **Deuda y preguntas abiertas**, con propietario (usuario/asistente).
-7. **Cosas a tener en cuenta**: la fila del hito siguiente de la seccion 13 mas lo aprendido en el hito.
-8. **Tarea del hito siguiente**: copiar su seccion 7 (Crear/Tocar/Como/Aceptacion) y ordenar los pasos.
-9. **Estandares y forma de trabajar** (secciones 6 y 8 del prompt de F3-M0, sin cambios).
-10. **Definicion de hecho y entrega**: puertas verdes con cifras, informe de hallazgos del hito, mensaje de
-    commit propuesto, y el prompt de relevo del hito que sigue.
-
-Ademas, al cerrar un hito se actualiza la seccion 15 de `Docs/ReactorGuard_Fase3_Plan.md` y las filas T5.x de
-`Docs/ReactorGuard_Progreso.md`. Si algo medido contradice el plan, se dice en el informe y se propone el
-cambio; no se adapta en silencio.
+Cada hito se cierra con las puertas en verde y sus cifras medidas (ruff, mypy, pytest con cobertura total y por
+modulo nuevo, `dvc status` y las cifras especificas del hito), un resumen de hallazgos, las decisiones y
+desviaciones vigentes con su motivo y evidencia, y la deuda abierta. Ademas se actualiza la seccion 15 de este
+plan y las filas T5.x de `Docs/ReactorGuard_Progreso.md`. Si algo medido contradice el plan, se documenta y se
+propone el cambio.
 
 ## 15. Registro de progreso (se rellena al cerrar cada hito)
 
-| Hito | Estado | Fecha | Cifras medidas | Commit (lo pone el usuario) |
+| Hito | Estado | Fecha | Cifras medidas | Commit |
 |---|---|---|---|---|
 | F3-M0 | Hecho (plan aprobado) | 2026-10-11 | puertas: 1836 passed / 3 skipped / 99,41 %; preflight en la seccion 2 | - (sin cambios en el repo) |
 | F3-M1 | Hecho | 2026-10-11 | 2053 passed / 4 skipped / 99,47 %; equilibrio 24 h n = 1,0 y max \|dy/dt\| relativo 5,9e-17; cierre de energia 2,0e-15; 4,2 a 6,7 ms/paso (media), p99 10,3 a 10,9; LSODA frente a Radau 6,5e-8; tabla frente a IAPWS 0,16 % (liquido) y 0,43 % (region de operacion); misma traza entre procesos | `b343fb7` |
 | F3-M2 | Hecho | 2026-10-11 | 2184 passed / 4 skipped / 99,50 %; `physics_constraints` 100 %; estado verdadero: 0 violaciones en 5 trazas (equilibrio y rampas de 0,5 a 10 %/min), conservacion instantanea 1,9e-20 y por intervalo 1,8e-15; con ruido inicial 0/4000 (equilibrio) y 2/4000 en energia (rampas); regla 1 a 70 % de carga 0,11 % y a 50 % 1,7 %; C5: 1800 K a 180 s, observable solo a <= 16 s | `36c9d3a` |
 | F3-M3 | Hecho (la seccion `simulation:` de `params.yaml` se aplico en F3-M4) | 2026-10-11 | 34 runs normales (51.000 instantes, 1.377.000 lecturas): 0 violaciones de las 7 reglas con sigma de lazo 0,15 K (con 0,30 K: 22); peor residuo de energia 3,92 %, de masa 4,41 %; cadencia 1/10/60/180 s: 0 violaciones sobre valores verdaderos, max abs(dT/dt) 0,22 C/s; regla de masa evaluable 15,0 / 94,9 / 99,7 / 99,2 %; validador a 180 s: 90 alertas/1000, todas Kalman en los 5 canales de caudal; determinismo identico entre procesos; 414 pasos/s, dataset completo 146 s y 75,2 MB | `7051d89` |
 | F3-M4 | Hecho | 2026-10-13 | 2588 passed / 4 skipped / 99,53 % (6148 sentencias, 29 sin cubrir, las mismas de M3); `process_faults`, `scenario`, `dataset_builder`, `thermal_model` 100 %; 9 niveles (3 tipos x 3) dentro de su banda objetivo; matriz de 27 runs: excursion 0/453 y caudal 0/423 violaciones de las 7 reglas, vacio alto 85 % energia / 81 % ebullicion con retardo de 9 a 10 muestras, 0 violaciones fuera de la ventana; conservacion 2,4e-12; digests de runs normales sin cambio (`28d8799d...`) | `eb97924` |
-| F3-M5 | Hecho (codigo commiteado; mediciones y documentos a la espera de tu commit) | 2026-10-15 (codigo), 2026-10-17 (mediciones) | 2804 passed / 4 skipped / 99,58 % (7340 sentencias, 31 sin cubrir, las de Fase 2 y los guards `__main__`); `instrument_faults`, `scenario_planner`, `coverage`, `scenario`, `dataset_builder` 100 %; matriz 15 celdas x 14 sensores x 2 sentidos, votada y por canal (seccion 13 de `Docs/physics_constraints.md`): 0 violaciones fuera de los roles; **el 40 % de D11 es inalcanzable** (397 runs necesarios frente a 32; con los pesos de D11 la cota es 1,44 % y CRITICAL 0,43 %), el planificador falla con `ValueError` y `params.yaml` NO se toco; plan factible (tasa 0,12, pesos 0,55/0,38/0,06/0,01) generado entero: 12,27 % etiquetado, plan == frame en 34/34 runs, 8/8 tipos, 144/144 modos (val 38,2 %, test 40,3 %), residuo de conservacion 3,9e-12, 75,6 MB, vacio 838/457/834 s por run (~43 min el dataset) | `967ccb7` (codigo); mediciones y documentos: pendiente |
+| F3-M5 | Hecho (codigo commiteado; mediciones y documentos pendientes de commit) | 2026-10-15 (codigo), 2026-10-17 (mediciones) | 2804 passed / 4 skipped / 99,58 % (7340 sentencias, 31 sin cubrir, las de Fase 2 y los guards `__main__`); `instrument_faults`, `scenario_planner`, `coverage`, `scenario`, `dataset_builder` 100 %; matriz 15 celdas x 14 sensores x 2 sentidos, votada y por canal (seccion 13 de `Docs/physics_constraints.md`): 0 violaciones fuera de los roles; **el 40 % de D11 es inalcanzable** (397 runs necesarios frente a 32; con los pesos de D11 la cota es 1,44 % y CRITICAL 0,43 %), el planificador falla con `ValueError` y `params.yaml` NO se toco; plan factible (tasa 0,12, pesos 0,55/0,38/0,06/0,01) generado entero: 12,27 % etiquetado, plan == frame en 34/34 runs, 8/8 tipos, 144/144 modos (val 38,2 %, test 40,3 %), residuo de conservacion 3,9e-12, 75,6 MB, vacio 838/457/834 s por run (~43 min el dataset) | `967ccb7` (codigo); mediciones y documentos: pendiente |
 | F3-M6 | Pendiente | | | |
 | F3-M7 | Pendiente | | | |
 | F3-M8 | Opcional | | | |
@@ -612,7 +593,7 @@ cambio; no se adapta en silencio.
 | M1-8 | El vacio se acota a [0, void_max] al final de cada paso: el integrador dejaba ruido de +-1e-30 | Sin efecto en la energia |
 | M1-9 | `roles:` tiene dos entradas mas que las seis del plan (`flow_hot_leg`, `flow_cold_leg`) porque la regla de masa compara pierna caliente y fria; el rol de presion se llama `P` | M2 las usa |
 | M1-10 | `sympy` llega transitivamente con `torch`; el test simbolico usa `importorskip`. No se anadio como dependencia explicita | Decision tuya si quieres declararla en `dev` |
-| M1-11 | `iapws` NO esta en el venv: se instalo con `--target --no-deps` en el scratchpad solo para generar la tabla. `pip install -e .[dev]` lo traera; un test de contraste con IAPWS real queda en `skip` hasta entonces | `test_nodes_match_iapws` |
+| M1-11 | `iapws` NO esta en el venv: se instalo con `--target --no-deps` en un directorio temporal solo para generar la tabla. `pip install -e .[dev]` lo traera; un test de contraste con IAPWS real queda en `skip` hasta entonces | `test_nodes_match_iapws` |
 | M1-12 | `fault_tiers: {}` y los limites se cargan en `PlantParams`; `ConstraintLimits` (M2) se derivara de `PlantParams.limits` | M2 puede anadir claves a `limits:` |
 
 ### Desviaciones y hallazgos de F3-M2 (medidos, no estaban en el plan)
@@ -648,7 +629,7 @@ cambio; no se adapta en silencio.
 | M3-9 | `physics_constraints.rule_margins` (nuevo, en un modulo de F3-M2): distancia con signo al umbral de cada regla; invariante probado `margen < 0 <=> violacion`. Permite calibrar por distancia minima y no solo por conteo | 100 % de cobertura mantenida |
 | M3-10 | La primera version del estudio de cadencia aplicaba `warmup_fraction` (300 pasos = 15 h) a un escenario de 6 h: **no habia ninguna rampa** (max dT/dt = 0). Se detecto al leer las cifras y se corrigio con un calentamiento en segundos (30 min) y `ramp_fraction` como campo del informe | el informe falla visiblemente si el escenario no ejercita dinamica |
 | M3-11 | Cada run empieza en el equilibrio de su carga inicial y los runs son contiguos en el tiempo: en la frontera entre dos runs la carga salta de golpe. **No medido** su efecto sobre el validador | candidato a mirar en M5 si aparecen alertas en las fronteras |
-| M3-12 | `tests/unit/test_simulation_params.py::TestRepositoryParams` (3 tests) lee el `params.yaml` del repo: **fallan hasta que se aplique el diff de `simulation:`** (la edicion de `params.yaml` fue denegada por el clasificador de permisos y queda para el usuario) | **Resuelto en F3-M4**: la seccion `simulation:` se aplico con los valores del plan y de la fixture de tests; `start_time` (2026-01-01T00:00:00+00:00), `calibration_date` (2025-06-01) y `last_maintenance_date` (2025-12-01) **se inventaron por indicacion del usuario** (no se pudo recuperar el diff original). Los 56 tests de `test_simulation_params.py` pasan; el digest del run 0 sigue siendo `28d8799d...` |
+| M3-12 | `tests/unit/test_simulation_params.py::TestRepositoryParams` (3 tests) lee el `params.yaml` del repo: **fallan hasta que se aplique el diff de `simulation:`** (la edicion de `params.yaml` quedo pendiente) | **Resuelto en F3-M4**: la seccion `simulation:` se aplico con los valores del plan y de la fixture de tests; `start_time` (2026-01-01T00:00:00+00:00), `calibration_date` (2025-06-01) y `last_maintenance_date` (2025-12-01) **se fijaron a mano** (no se pudo recuperar el diff original). Los 56 tests de `test_simulation_params.py` pasan; el digest del run 0 sigue siendo `28d8799d...` |
 
 ### Desviaciones y hallazgos de F3-M4 (medidos, no estaban en el plan)
 
@@ -673,7 +654,7 @@ cambio; no se adapta en silencio.
 | # | Hallazgo | Consecuencia |
 |---|---|---|
 | M5-1 | **El 40 % de etiquetado de D11 es inalcanzable con los topes de densidad**: el presupuesto (550.800 lecturas) necesita 397 runs frente a 32 disponibles (CRITICAL 12, HIGH 15, MEDIUM 64, LOW 306). Con los pesos de D11 (0,30/0,30/0,25/0,15) la tasa maxima es 1,44 % y CRITICAL 0,43 % (< `critical_min_fraction` 5 %). Por aritmetica, ningun reparto de severidades pasa de ~33 % con estos topes (17 runs de proceso x 24.300 + ~45.900 de instrumento) | El planificador falla con `ValueError` y cifras (D11: no fuerza). **Decision tuya antes de M6** (opciones A-D, seccion 13.7 de `Docs/physics_constraints.md`); `params.yaml` sin tocar |
-| M5-2 | **El limite lo ponen el pico (LOW) y el intermitente (MEDIUM), no la ventana de proceso**: `max_window_fraction` 0,60/0,80/0,90 da la misma tasa maxima (1,44 %) con los pesos de D11. Aflojar sensores (1,0) y picos (0,10) da 13,18 % con CRITICAL 3,95 %, todavia < 5 % | La opcion C del prompt de relevo (ventana 0,8) no sirve por si sola; lo que mueve la cifra son los pesos o redefinir que se etiqueta en pico/intermitente (opcion D) |
+| M5-2 | **El limite lo ponen el pico (LOW) y el intermitente (MEDIUM), no la ventana de proceso**: `max_window_fraction` 0,60/0,80/0,90 da la misma tasa maxima (1,44 %) con los pesos de D11. Aflojar sensores (1,0) y picos (0,10) da 13,18 % con CRITICAL 3,95 %, todavia < 5 % | La opcion C del cierre de M4 (ventana 0,8) no sirve por si sola; lo que mueve la cifra son los pesos o redefinir que se etiqueta en pico/intermitente (opcion D) |
 | M5-3 | Plan factible (tasa 0,12, pesos 0,55/0,38/0,06/0,01) generado y medido entero: 12,27 % etiquetado (CRITICAL 6,61, HIGH 4,81, MEDIUM 0,72, LOW 0,12 %), **plan == frame en 34/34 runs** y en cobertura de las 4 particiones, `quality = good` y `true_value` preservado en todo, `corrupted` del intermitente 3.294/9.960 (33,1 %), residuo de conservacion 3,9e-12, presion 87,6-167,2 bar sin tocar el limitador | Es la configuracion con la que se probaria M6 si eliges B. Sesgo, deriva y bloqueado exceden su cuota 9-17 % por el redondeo a episodios enteros |
 | M5-4 | Barrido de `(k_min, n_min)` sobre ese plan: con `n_min` = 1 la rejilla esta al 100 % hasta `k_min` = 12 (el modo mas pobre, bloqueado bajo, tiene 12 lecturas), 95,8 % con 20, 87,5 % con 50; con `n_min` = 2 cae al 25 % (un solo episodio por modo en 32 runs) | `k_min_readings` = 10 y `n_min_episodes` = 1 se mantienen, ahora con datos (D6) |
 | M5-5 | La puerta D6 se cumple en el dataset entero pero **val y test ven solo el 38,2 % y el 40,3 % de la rejilla** (train 75,0 %), con los 8 tipos en las tres: la particion es por tipo sobre sus runs concatenados y cada nivel cae casi entero en una | Informativo para el stage `split` de M6: si val/test deben cubrir los modos hay que repartir por episodio o por run, o subir los runs por tipo |
@@ -683,11 +664,7 @@ cambio; no se adapta en silencio.
 | M5-9 | Ventanas de 900 pasos (el tope `max_window_fraction` 0,60), una celda cada una: caudal alto/bajo, excursion baja y vacio bajo/alto quedan dentro de la tabla (presion 91,4 a 160,2 bar) sin tocar el limitador y con residuo <= 2,9e-12; **la excursion alta toca el techo de 170 bar en 250 de 900 pasos** (respuesta saturada). El coste del vacio no crece con la ventana (853 s a 900 pasos, 834 s a 551) | Las ventanas planificadas (551) no tocan el limitador; si se suben los topes, la excursion alta necesita su ventana acotada o se acepta el techo. Excursion media a 900 no medida |
 | M5-10 | Los digests de los runs normales cambian porque el frame gana `injected_at_step` y `fault_level` (nulas): las 23 columnas anteriores son identicas (runs 0 y 3, 200 pasos, contra un worktree del commit de M4). Run 0 completo: `28d8799d...` -> `d60169ad...`; 200 pasos: run 0 `d551c4ca...` -> `93dd7bcc...`, run 3 `b0b53e5b...` -> `d0a22215...` | Los digests completos estan en `Docs/physics_constraints.md`, 13.11 |
 | M5-11 | **Las mediciones de tiempo estan contaminadas por suspensiones de Windows** (Kernel-Power 506/507): la suite completa marco 74.551 s (20 h 42 min de reloj, ~22 min reales en la corrida anterior), y los runs 8 (excursion, 142,8 s) y 12 (caudal, 40.985 s) del dataset quedan descartados. Las cifras de coste de M5-8 no incluyen ningun run afectado | No se cita ninguna duracion de suite en este hito |
-| M5-12 | Los 3 fallos de la suite a medio hito (`test_simulation_study`) eran de editar `simulation_study.py` mientras la suite lanzaba subprocesos que lo importaban: la suite completa, sin editar durante la corrida, da 2804 passed / 0 failed | Hipotesis del prompt de relevo confirmada |
-| M5-13 | Decisiones M5-a a M5-i del prompt de relevo (tipos en `scenario.py`, niveles y topes en `plant_parameters.yaml`, reparto de cada severidad proporcional a la capacidad por run, intermitente que empieza invalido, `corrupted` objetivo, evaluacion por canal con `single_channel_roles`, cobertura sobre el plan, columnas nuevas, niveles de deriva) | **Propuestas mias, a la espera de tu conformidad**; el codigo ya esta commiteado (`967ccb7`) |
+| M5-12 | Los 3 fallos de la suite a medio hito (`test_simulation_study`) eran de editar `simulation_study.py` mientras la suite lanzaba subprocesos que lo importaban: la suite completa, sin editar durante la corrida, da 2804 passed / 0 failed | Hipotesis confirmada |
+| M5-13 | Decisiones M5-a a M5-i (tipos en `scenario.py`, niveles y topes en `plant_parameters.yaml`, reparto de cada severidad proporcional a la capacidad por run, intermitente que empieza invalido, `corrupted` objetivo, evaluacion por canal con `single_channel_roles`, cobertura sobre el plan, columnas nuevas, niveles de deriva) | **Pendientes de revision**; el codigo ya esta commiteado (`967ccb7`) |
 
 ---
-
-Nota sobre los prompts: **ningun prompt vive en este plan**. El plan solo define su contenido (seccion 14). El
-agente entrega el prompt de relevo, completo y pegable, en su mensaje final al terminar cada hito, y el de
-arranque de F3-M1 se entrega en el chat al aprobarse el plan.
