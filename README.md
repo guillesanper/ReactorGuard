@@ -194,7 +194,7 @@ pytest tests/integration/ -m integration   # needs the local stack and KAFKA_BOO
 │                        GKE Cluster                               │
 │                                                                   │
 │  ┌──────────────┐    ┌──────────────┐    ┌──────────────────┐   │
-│  │   Reactor    │───▶│    Kafka     │───▶│  Ingestion       │   │
+│  │   Reactor    │───►│    Kafka     │───►│  Ingestion       │   │
 │  │   Sensors    │    │  (Strimzi)   │    │  Service         │   │
 │  └──────────────┘    └──────────────┘    └────────┬─────────┘   │
 │                                                    │             │
