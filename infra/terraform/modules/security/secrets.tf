@@ -42,6 +42,8 @@ resource "google_secret_manager_secret_version" "scada_credentials_placeholder" 
   secret = google_secret_manager_secret.scada_credentials.id
   secret_data = jsonencode({
     username = "REPLACE_ME"
+    # Valor de relleno: el real se carga a mano en Secret Manager.
+    # nosemgrep: hashicorp-tf-password
     password = "REPLACE_ME"
     endpoint = "REPLACE_ME"
   })

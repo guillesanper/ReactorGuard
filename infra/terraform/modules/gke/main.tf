@@ -8,6 +8,12 @@
 # ---------------------------------------------------------------------------
 # Cluster GKE regional (alta disponibilidad multi-zona)
 # ---------------------------------------------------------------------------
+# tfsec:ignore justificado: PodSecurityPolicy se elimino en Kubernetes 1.25 y
+# GKE ya no la admite (el canal REGULAR sirve versiones >= 1.25), asi que el
+# bloque pod_security_policy_config no puede activarse. Su sustituto es Pod
+# Security Admission, que se configura con labels en los namespaces (k8s/), no
+# en Terraform.
+#tfsec:ignore:google-gke-enforce-pod-security-policy
 resource "google_container_cluster" "main" {
   name     = var.cluster_name
   project  = var.project_id
@@ -124,6 +130,33 @@ resource "google_container_cluster" "main" {
 }
 
 # ---------------------------------------------------------------------------
+# Service account de los nodos
+# Sin service_account en node_config, GKE usa la SA por defecto de Compute
+# Engine, que tiene rol Editor sobre todo el proyecto. Esta SA solo puede
+# escribir logs y metricas y leer imagenes del registro. Las cargas no usan
+# esta identidad: se autentican por Workload Identity (modo GKE_METADATA).
+# ---------------------------------------------------------------------------
+resource "google_service_account" "gke_nodes" {
+  project      = var.project_id
+  account_id   = "${var.cluster_name}-nodes"
+  display_name = "Nodos GKE de ${var.cluster_name}"
+}
+
+resource "google_project_iam_member" "gke_nodes" {
+  for_each = toset([
+    "roles/logging.logWriter",
+    "roles/monitoring.metricWriter",
+    "roles/monitoring.viewer",
+    "roles/stackdriver.resourceMetadata.writer",
+    "roles/artifactregistry.reader", # gcr.io lo sirve Artifact Registry
+  ])
+
+  project = var.project_id
+  role    = each.value
+  member  = "serviceAccount:${google_service_account.gke_nodes.email}"
+}
+
+# ---------------------------------------------------------------------------
 # Node Pool 1: platform
 # Para cargas generales: API, ingestion, Kafka brokers, observabilidad.
 # Preemptible = SÍ → ahorro de ~80% de coste en dev; en prod considerar standard.
@@ -142,6 +175,15 @@ resource "google_container_node_pool" "platform" {
   node_config {
     machine_type = var.platform_machine_type
     preemptible  = true # Preemptible para reducir coste en cargas tolerantes a interrupciones
+
+    service_account = google_service_account.gke_nodes.email
+    image_type      = "COS_CONTAINERD"
+
+    # Desactiva los endpoints legacy (v0.1/v1beta1) del servidor de metadatos,
+    # que no exigen la cabecera Metadata-Flavor y facilitan ataques SSRF.
+    metadata = {
+      disable-legacy-endpoints = true
+    }
 
     # Workload Identity en el node pool
     workload_metadata_config {
@@ -200,6 +242,15 @@ resource "google_container_node_pool" "ml_serving" {
   node_config {
     machine_type = var.ml_machine_type
     preemptible  = false # NO preemptible — safety-critical serving
+
+    service_account = google_service_account.gke_nodes.email
+    image_type      = "COS_CONTAINERD"
+
+    # Desactiva los endpoints legacy (v0.1/v1beta1) del servidor de metadatos,
+    # que no exigen la cabecera Metadata-Flavor y facilitan ataques SSRF.
+    metadata = {
+      disable-legacy-endpoints = true
+    }
 
     workload_metadata_config {
       mode = "GKE_METADATA"
