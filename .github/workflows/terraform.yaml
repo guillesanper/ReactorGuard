@@ -25,7 +25,9 @@ on:
       - ".github/workflows/terraform.yaml"
 
 env:
-  TF_VERSION: "1.6.0"
+  # 1.6.0 ya no puede instalar providers: falla al verificar sus firmas con
+  # "openpgp: key expired". versions.tf sigue exigiendo solo >= 1.6.0.
+  TF_VERSION: "1.16.7"
   TF_WORKING_DIR: infra/terraform/environments/dev
   # Terraform reads this variable to authenticate with GCP. Un secreto que no
   # existe se expande a cadena vacia; los pasos del plan lo comprueban.
