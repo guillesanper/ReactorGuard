@@ -17,6 +17,9 @@ on:
 env:
   PYTHON_VERSION: "3.11"
   REGISTRY: gcr.io
+  # Indice de ruedas CPU de PyTorch: sin el, pip descarga torch con CUDA (varios
+  # GB de librerias nvidia) que ningun job de CI usa.
+  PIP_EXTRA_INDEX_URL: https://download.pytorch.org/whl/cpu
 
 jobs:
   # ---------------------------------------------------------------------------
@@ -39,8 +42,11 @@ jobs:
           python-version: ${{ env.PYTHON_VERSION }}
           cache: pip
 
-      - name: Install linting tools
-        run: pip install ruff mypy
+      # mypy necesita el proyecto y sus dependencias instaladas: sin numpy,
+      # pandas o pyarrow los trata como Any y los alias de tipos que se apoyan
+      # en ellos dejan de ser validos. ruff y mypy van fijados en el extra dev.
+      - name: Install project and dev tools
+        run: pip install -e ".[dev]"
 
       # ruff: sin --select, para heredar el select de [tool.ruff.lint] en
       # pyproject.toml. Una sola fuente de verdad: CI no puede ser mas laxo que
@@ -48,9 +54,11 @@ jobs:
       - name: Run ruff
         run: ruff check .
 
-      # mypy: static type analysis — critical for catching type errors in ML/physics code
+      # mypy: static type analysis — critical for catching type errors in ML/physics code.
+      # Sin flags: strict e ignore_missing_imports salen de [tool.mypy] en
+      # pyproject.toml, la misma configuracion que se usa en local.
       - name: Run mypy
-        run: mypy ml/ api/ data/ --ignore-missing-imports
+        run: mypy ml/ api/ data/
 
   # ---------------------------------------------------------------------------
   # Job 2: Unit Tests
@@ -115,20 +123,8 @@ jobs:
           # Full history required for Gitleaks to scan all commits
           fetch-depth: 0
 
-      # Semgrep: static analysis with curated Python and secrets rulesets.
-      # Pin por SHA completo (zero-trust supply chain): un tag/rama mutable
-      # dejaría que un compromiso upstream se ejecutase con los secretos del
-      # pipeline. SHA = tag v1 de returntocorp/semgrep-action. NOTA: ese repo
-      # está archivado; migrar a semgrep/semgrep-action es deuda pendiente.
-      # dependabot mantiene el pin actualizado.
-      - name: Run Semgrep
-        uses: returntocorp/semgrep-action@713efdd345f3035192eaa63f56867b88e63e4e5d # v1
-        with:
-          config: >-
-            p/python
-            p/secrets
-
-      # Gitleaks: scans the entire git history for accidentally committed secrets
+      # Gitleaks: scans the entire git history for accidentally committed secrets.
+      # Lee .gitleaks.toml (reglas por defecto + falsos positivos justificados).
       - name: Run Gitleaks
         uses: gitleaks/gitleaks-action@v2
         env:
@@ -140,48 +136,101 @@ jobs:
           python-version: ${{ env.PYTHON_VERSION }}
           cache: pip
 
-      # pip-audit: checks all installed packages against OSV/PyPI advisory database
+      # Semgrep: static analysis with curated Python and secrets rulesets.
+      # Se ejecuta la CLI fijada por version en lugar de returntocorp/semgrep-action,
+      # que esta archivado; pipx la aisla para que sus dependencias no entren en
+      # el entorno que audita pip-audit. --error falla con cualquier hallazgo.
+      # Los falsos positivos puntuales llevan `# nosemgrep: <regla>` en linea,
+      # junto a su justificacion. Regla excluida entera:
+      #   is-function-without-parentheses: heuristica por nombre (is_*) que no
+      #     distingue @property, atributos ni callbacks pasados a proposito
+      #     (liveness=heartbeat.is_alive). El fallo real que busca (una funcion
+      #     usada como booleano) ya lo detecta mypy strict con truthy-function.
+      - name: Run Semgrep
+        run: |
+          pipx run semgrep==1.183.0 scan --error --metrics=off \
+            --config p/python \
+            --config p/secrets \
+            --exclude-rule python.lang.maintainability.is-function-without-parentheses.is-function-without-parentheses
+
+      # pip-audit audita el entorno en el que corre: hay que instalar antes el
+      # proyecto para que revise las dependencias reales y no el Python vacio
+      # del runner. --skip-editable omite el propio paquete reactorguard, que no
+      # esta publicado en PyPI.
+      # Vulnerabilidad ignorada, con justificacion:
+      #   PYSEC-2026-2447 (CVE-2025-69872, diskcache <= 5.6.3): diskcache
+      #     deserializa con pickle, asi que quien pueda escribir en el directorio
+      #     de cache puede ejecutar codigo. No hay version corregida. Solo llega
+      #     como dependencia de dvc (dvc-data), que lo usa en la cache local del
+      #     repositorio (.dvc/tmp) de la maquina del desarrollador; ningun servicio
+      #     de la imagen lo importa. Revisar cuando diskcache publique un parche.
+      # pip tambien entra en la auditoria: se actualiza para no arrastrar los
+      # CVE de la version que trae el runner.
+      - name: Install project
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev]"
+
       - name: Run pip-audit
         run: |
           pip install pip-audit
-          pip-audit
+          pip-audit --skip-editable --ignore-vuln PYSEC-2026-2447
 
   # ---------------------------------------------------------------------------
   # Job 4: Build & Push
-  # Only runs on push to main or version tags — never on feature branches.
-  # Trivy scans the built image; push is skipped if any *fixable* CRITICAL CVE
-  # is found (ignore-unfixed=true). This enforces that no fixable critical
-  # vulnerability reaches GCR and eventually GKE.
+  # Builds the image and scans it with Trivy on pull requests to main and on
+  # pushes to main or version tags. It is only pushed to GCR from main or a
+  # version tag, and only when the GCP secrets exist: without them (no
+  # infrastructure deployed yet) the job builds and scans the local image and
+  # stops there, so the Dockerfile and the Trivy gate are still checked.
+  # Trivy blocks the push if any *fixable* CRITICAL CVE is found
+  # (ignore-unfixed=true), so no fixable critical vulnerability reaches GCR and
+  # eventually GKE.
   # ---------------------------------------------------------------------------
   build-and-push:
     name: Build & Push
     runs-on: ubuntu-latest
     needs: [unit-tests, security-scan]
-    # Only publish from main branch or semantic version tags
     if: |
-      github.event_name == 'push' &&
-      (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v'))
+      github.event_name == 'pull_request' ||
+      (github.event_name == 'push' &&
+       (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v')))
+
+    # Los secretos no pueden usarse en un `if:`; copiados a env si. Un secreto
+    # que no existe se expande a cadena vacia.
+    env:
+      GCP_SA_KEY: ${{ secrets.GCP_SA_KEY }}
+      GCP_PROJECT_ID: ${{ secrets.GCP_PROJECT_ID }}
+      LOCAL_IMAGE: reactorguard-api:${{ github.sha }}
+      PUBLISH: ${{ github.event_name == 'push' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v')) }}
 
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
 
+      - name: Report publishing mode
+        run: |
+          if [ "$PUBLISH" = "true" ] && [ -n "$GCP_SA_KEY" ] && [ -n "$GCP_PROJECT_ID" ]; then
+            echo "The image will be pushed to $REGISTRY after the Trivy scan."
+          else
+            echo "::notice::Build and scan only: the image is not pushed (not main/tag, or GCP_SA_KEY / GCP_PROJECT_ID are not set)."
+          fi
+
       # Authenticate to Google Container Registry using the CI service account key
       - name: Authenticate to GCR
+        if: env.PUBLISH == 'true' && env.GCP_SA_KEY != '' && env.GCP_PROJECT_ID != ''
         uses: google-github-actions/auth@v2
         with:
-          credentials_json: ${{ secrets.GCP_SA_KEY }}
+          credentials_json: ${{ env.GCP_SA_KEY }}
 
       - name: Configure Docker for GCR
+        if: env.PUBLISH == 'true' && env.GCP_SA_KEY != '' && env.GCP_PROJECT_ID != ''
         run: gcloud auth configure-docker gcr.io --quiet
 
+      # Se construye con una etiqueta local; las etiquetas de GCR se anaden
+      # justo antes del push, que es el unico paso que necesita el proyecto.
       - name: Build Docker image
-        run: |
-          docker build \
-            -t gcr.io/${{ secrets.GCP_PROJECT_ID }}/reactorguard-api:${{ github.sha }} \
-            -t gcr.io/${{ secrets.GCP_PROJECT_ID }}/reactorguard-api:latest \
-            -f api/Dockerfile \
-            .
+        run: docker build -t "$LOCAL_IMAGE" -f api/Dockerfile .
 
       # Trivy: container vulnerability scanner — blocks push if CRITICAL CVEs found.
       # A container with known critical vulnerabilities must never run in a
@@ -192,7 +241,7 @@ jobs:
       - name: Scan image with Trivy
         uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:
-          image-ref: gcr.io/${{ secrets.GCP_PROJECT_ID }}/reactorguard-api:${{ github.sha }}
+          image-ref: ${{ env.LOCAL_IMAGE }}
           format: table
           exit-code: "1"
           severity: CRITICAL
@@ -200,6 +249,10 @@ jobs:
 
       # Push only after Trivy passes — guarantee: every image in GCR is clean
       - name: Push Docker image to GCR
+        if: env.PUBLISH == 'true' && env.GCP_SA_KEY != '' && env.GCP_PROJECT_ID != ''
         run: |
-          docker push gcr.io/${{ secrets.GCP_PROJECT_ID }}/reactorguard-api:${{ github.sha }}
-          docker push gcr.io/${{ secrets.GCP_PROJECT_ID }}/reactorguard-api:latest
+          image="$REGISTRY/$GCP_PROJECT_ID/reactorguard-api"
+          docker tag "$LOCAL_IMAGE" "$image:${{ github.sha }}"
+          docker tag "$LOCAL_IMAGE" "$image:latest"
+          docker push "$image:${{ github.sha }}"
+          docker push "$image:latest"

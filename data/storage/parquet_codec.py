@@ -202,7 +202,7 @@ def table_to_bytes(table: pa.Table) -> bytes:
         The complete Parquet file.
     """
     sink = pa.BufferOutputStream()
-    pq.write_table(table, sink, compression=COMPRESSION)  # type: ignore[no-untyped-call]
+    pq.write_table(table, sink, compression=COMPRESSION)
     return sink.getvalue().to_pybytes()  # type: ignore[no-any-return]
 
 
@@ -219,4 +219,4 @@ def bytes_to_table(data: bytes) -> pa.Table:
         ValueError: If the bytes are not a valid Parquet file (pyarrow raises
             ArrowInvalid, a ValueError subclass).
     """
-    return pq.read_table(pa.BufferReader(data))  # type: ignore[no-untyped-call]
+    return pq.read_table(pa.BufferReader(data))

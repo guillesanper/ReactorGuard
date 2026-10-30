@@ -606,13 +606,16 @@ def max_feasible_rate(
 
 def _infeasible_message(budget: Budget, max_rate: float, rate: float) -> str:
     """Return the ValueError text of an unreachable quota, with the numbers."""
-    lines = [
+    lines: list[str] = []
+    lines.append(
         f"scenario planner: the label budget is unreachable under the density caps "
-        f"(fault_injection_rate={rate:.3f}).",
+        f"(fault_injection_rate={rate:.3f})."
+    )
+    lines.append(
         f"  readings: {budget.total_readings} in {budget.n_runs} runs; target "
         f"{budget.target_readings:.0f} labelled; runs available for faults "
-        f"{budget.runs_available}, needed {budget.runs_needed}.",
-    ]
+        f"{budget.runs_available}, needed {budget.runs_needed}."
+    )
     for s in budget.severities:
         kinds = ", ".join(k.value for k in s.kinds)
         lines.append(

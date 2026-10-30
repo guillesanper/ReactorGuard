@@ -31,6 +31,14 @@ resource "google_compute_subnetwork" "gke_nodes" {
   # acceder a APIs de GCP (GCR, Artifact Registry, Secret Manager…)
   private_ip_google_access = true
 
+  # VPC flow logs para auditoria del trafico de los nodos. Muestreo del 50 % y
+  # agregacion de 5 min para acotar el coste de Cloud Logging en dev.
+  log_config {
+    aggregation_interval = "INTERVAL_5_MIN"
+    flow_sampling        = 0.5
+    metadata             = "INCLUDE_ALL_METADATA"
+  }
+
   secondary_ip_range {
     range_name    = "gke-pods"
     ip_cidr_range = var.pods_cidr

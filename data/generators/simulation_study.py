@@ -1667,6 +1667,9 @@ def subprocess_digest(params_path: str | Path, run_index: int, n_steps: int | No
     ]
     if n_steps is not None:
         command += ["--steps", str(n_steps)]
+    # argv fijo y sin shell, construido con nuestros propios argumentos
+    # (sys.executable, la ruta de params y enteros): no hay entrada externa.
+    # nosemgrep: dangerous-subprocess-use-audit
     completed = subprocess.run(  # noqa: S603 - fixed argv built from our own arguments
         command, capture_output=True, text=True, cwd=_REPO_ROOT, check=False
     )

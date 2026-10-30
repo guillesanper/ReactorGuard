@@ -25,6 +25,6 @@ variable "iap_support_email" {
     con acceso al proyecto GCP. Se muestra a los usuarios cuando IAP les pide
     autenticarse antes de acceder a la aplicación.
   EOT
-  type    = string
-  default = "admin@reactorguard.internal"
+  type        = string
+  default     = "admin@reactorguard.internal"
 }

@@ -1,8 +1,13 @@
 # Terraform CI — ReactorGuard
-# Triggered on any change inside infra/terraform/.
+# Triggered on any change inside infra/terraform/ (or to this workflow).
 #
 # Pipeline:
-#   fmt-check → validate → tfsec → plan
+#   fmt-check → init (sin backend) → validate → tfsec → [init con backend → plan]
+#
+# fmt, validate y tfsec no necesitan GCP y se ejecutan siempre. El plan lee el
+# estado remoto (backend "gcs") y necesita credenciales: solo corre si existe el
+# secreto GCP_SA_KEY. Mientras no haya infraestructura desplegada ese secreto no
+# existe y el plan se omite con un aviso.
 #
 # In pull requests the plan output is posted as a PR comment so reviewers
 # can approve infrastructure changes before they are applied.
@@ -13,14 +18,19 @@ on:
   push:
     paths:
       - "infra/terraform/**"
+      - ".github/workflows/terraform.yaml"
   pull_request:
     paths:
       - "infra/terraform/**"
+      - ".github/workflows/terraform.yaml"
 
 env:
-  TF_VERSION: "1.6.0"
+  # 1.6.0 ya no puede instalar providers: falla al verificar sus firmas con
+  # "openpgp: key expired". versions.tf sigue exigiendo solo >= 1.6.0.
+  TF_VERSION: "1.16.7"
   TF_WORKING_DIR: infra/terraform/environments/dev
-  # Terraform reads this variable to authenticate with GCP
+  # Terraform reads this variable to authenticate with GCP. Un secreto que no
+  # existe se expande a cadena vacia; los pasos del plan lo comprueban.
   GOOGLE_CREDENTIALS: ${{ secrets.GCP_SA_KEY }}
 
 jobs:
@@ -54,8 +64,10 @@ jobs:
         run: terraform fmt -check -recursive
         working-directory: infra/terraform
 
-      - name: Terraform Init
-        run: terraform init -input=false
+      # -backend=false: descarga providers y modulos sin tocar el bucket de estado,
+      # asi validate no necesita credenciales.
+      - name: Terraform Init (no backend)
+        run: terraform init -input=false -backend=false
 
       # ---------------------------------------------------------------------------
       # Step: validate
@@ -70,12 +82,21 @@ jobs:
       # Static security analysis for Terraform — checks for misconfigurations
       # such as overly permissive IAM, unencrypted storage, or public GKE clusters.
       # Critical for a platform that handles safety-critical nuclear sensor data.
+      # Las excepciones van en linea (#tfsec:ignore) junto a su justificacion.
       # ---------------------------------------------------------------------------
       - name: Run tfsec
         uses: aquasecurity/tfsec-action@v1.0.0
         with:
           working_directory: ${{ env.TF_WORKING_DIR }}
           soft_fail: false
+
+      - name: Skip plan without GCP credentials
+        if: env.GOOGLE_CREDENTIALS == ''
+        run: echo "::notice::GCP_SA_KEY is not set; terraform plan was skipped (fmt, validate and tfsec ran)."
+
+      - name: Terraform Init (GCS backend)
+        if: env.GOOGLE_CREDENTIALS != ''
+        run: terraform init -input=false -reconfigure
 
       # ---------------------------------------------------------------------------
       # Step: plan
@@ -84,24 +105,32 @@ jobs:
       # ---------------------------------------------------------------------------
       - name: Terraform Plan
         id: plan
+        if: env.GOOGLE_CREDENTIALS != ''
         run: terraform plan -input=false -no-color -out=tfplan
         continue-on-error: true
 
       # Post the plan as a PR comment so reviewers can approve infra changes
-      # without needing local access to GCP credentials.
+      # without needing local access to GCP credentials. La salida del plan se
+      # pasa por env y no interpolada en el script: un backtick en el plan
+      # romperia (o inyectaria codigo en) el literal de JavaScript.
       - name: Post plan comment on PR
         uses: actions/github-script@v7
-        if: github.event_name == 'pull_request'
+        if: github.event_name == 'pull_request' && env.GOOGLE_CREDENTIALS != ''
+        env:
+          PLAN_STDOUT: ${{ steps.plan.outputs.stdout }}
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           script: |
-            const output = `#### Terraform Plan 📋
-            \`\`\`
-            ${{ steps.plan.outputs.stdout }}
-            \`\`\`
-            *Pushed by: @${{ github.actor }}, Action: \`${{ github.event_name }}\`*`;
+            const fence = '```';
+            const output = [
+              '#### Terraform Plan',
+              fence,
+              process.env.PLAN_STDOUT,
+              fence,
+              `*Pushed by: @${context.actor}, Action: \`${context.eventName}\`*`,
+            ].join('\n');
 
-            github.rest.issues.createComment({
+            await github.rest.issues.createComment({
               issue_number: context.issue.number,
               owner: context.repo.owner,
               repo: context.repo.repo,

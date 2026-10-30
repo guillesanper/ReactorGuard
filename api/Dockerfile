@@ -39,7 +39,11 @@ RUN mkdir -p api ml data
 
 # Install runtime dependencies only (no [dev] extras) into a prefix directory
 # so we can copy the whole tree cleanly in stage 2.
-RUN pip install --no-cache-dir --prefix=/install .
+# CPU wheels of torch: the GKE node pools have no GPUs, and the default PyPI
+# wheel drags several GB of CUDA libraries into the image.
+RUN pip install --no-cache-dir --prefix=/install \
+        --extra-index-url https://download.pytorch.org/whl/cpu \
+        .
 
 
 # ── Stage 2: runtime ─────────────────────────────────────────────────────────
