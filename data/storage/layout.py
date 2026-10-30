@@ -123,6 +123,9 @@ def part_id(first_reading_id: str, last_reading_id: str, count: int) -> str:
     Returns:
         The first 12 hexadecimal characters of the SHA-1 of the three values.
     """
+    # SHA-1 como identificador de contenido, no como uso criptografico
+    # (usedforsecurity=False); cambiarlo renombraria las partes ya escritas.
+    # nosemgrep: insecure-hash-algorithm-sha1
     digest = hashlib.sha1(
         f"{first_reading_id}|{last_reading_id}|{count}".encode(),
         usedforsecurity=False,

@@ -22,7 +22,7 @@ logger = logging.getLogger(__name__)
 
 
 def load_params(path: str | Path) -> dict[str, Any]:
-    with open(path) as f:
+    with open(path, encoding="utf-8") as f:
         result: dict[str, Any] = yaml.safe_load(f)
         return result
 

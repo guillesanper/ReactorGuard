@@ -1,0 +1,15 @@
+# Configuracion de Gitleaks — ReactorGuard
+# Hereda las reglas por defecto y solo anade excepciones justificadas.
+
+[extend]
+useDefault = true
+
+[allowlist]
+description = "Falsos positivos justificados"
+# infra/terraform/modules/security/secrets.tf crea la primera version del secreto
+# SCADA con valores de relleno (username/password/endpoint = "REPLACE_ME") que se
+# sustituyen a mano en Secret Manager; lifecycle.ignore_changes evita que
+# Terraform los pise. La regla hashicorp-tf-password marca el literal, que no es
+# una credencial. Solo se admite ese marcador exacto.
+regexTarget = "match"
+regexes = ['''password\s*=\s*"REPLACE_ME"''']
