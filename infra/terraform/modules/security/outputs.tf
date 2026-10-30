@@ -45,7 +45,7 @@ output "lb_ip" {
     Usar para configurar el registro DNS: api.reactorguard.internal → esta IP.
     La IP es persistente aunque se destruya y recree el forwarding rule.
   EOT
-  value = google_compute_global_address.lb_ip.address
+  value       = google_compute_global_address.lb_ip.address
 }
 
 output "waf_policy_id" {
@@ -54,7 +54,7 @@ output "waf_policy_id" {
     Formato: projects/PROJECT/global/securityPolicies/NAME
     Se puede referenciar desde otros backend services para reutilizar la misma policy.
   EOT
-  value = google_compute_security_policy.reactorguard_waf.id
+  value       = google_compute_security_policy.reactorguard_waf.id
 }
 
 output "iap_client_id" {
@@ -64,7 +64,7 @@ output "iap_client_id" {
       spec.iap.oauthclientCredentials.secretName
     También necesario para configurar el consent screen de OAuth.
   EOT
-  value = google_iap_client.reactorguard_iap_client.client_id
+  value       = google_iap_client.reactorguard_iap_client.client_id
 }
 
 output "iap_client_secret" {
@@ -73,6 +73,6 @@ output "iap_client_secret" {
     Almacenar en Secret Manager con Load-Secrets.ps1 tras el primer apply.
     El GKE Ingress lo necesita en un Secret de Kubernetes referenciado por BackendConfig.
   EOT
-  value     = google_iap_client.reactorguard_iap_client.secret
-  sensitive = true
+  value       = google_iap_client.reactorguard_iap_client.secret
+  sensitive   = true
 }

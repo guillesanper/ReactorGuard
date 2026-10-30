@@ -115,8 +115,8 @@ resource "google_storage_bucket" "data_processed" {
       type = "Delete"
     }
     condition {
-      age                = 30
-      with_state         = "ARCHIVED" # Solo aplica a versiones no-current
+      age        = 30
+      with_state = "ARCHIVED" # Solo aplica a versiones no-current
     }
   }
 
