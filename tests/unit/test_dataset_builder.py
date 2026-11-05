@@ -3,11 +3,16 @@
 Cubren la cadena observables -> ruido -> cuentas ADC -> filas: orden y tipos de
 las columnas, identificadores deterministas con run_id, escalado con el span, y
 que el frame se reconstruya como SensorReading con el mismo codigo del TEP (H12).
+La parte 2 (F3-M6) cubre el resumen de cada run, el agregado del dataset, el
+manifiesto y las metricas; la suite de seguridad (tests/safety) los ejerce sobre
+un dataset planificado entero.
 """
 
 from __future__ import annotations
 
 import dataclasses
+import hashlib
+import json
 import uuid
 from datetime import UTC, datetime
 from pathlib import Path
@@ -21,12 +26,20 @@ from data.schemas.sensor_reading import QualityFlag, SensorReading
 from data.schemas.sensor_spans import SensorSpan, load_sensor_spans
 from data.simulation.dataset_builder import (
     CONTRACT_COLUMNS,
+    EXPECTED_TRUE_STATE_VIOLATIONS,
     LABEL_COLUMNS,
     LONG_COLUMNS,
+    MANIFEST_NAME,
     NO_FAULT,
+    RunOutput,
+    RunRecord,
     RunSimulation,
+    SimulatedDataset,
     assemble_long_frame,
+    build_dataset,
     build_run_frame,
+    file_sha256,
+    labelled_mask,
     measure,
     noise_sigmas,
     raw_counts_matrix,
@@ -35,8 +48,13 @@ from data.simulation.dataset_builder import (
     simulate_run,
     wide_frame_from_long,
     wide_frame_from_matrix,
+    write_dataset,
+    write_metrics,
+    write_run_output,
     write_run_parquet,
 )
+from data.simulation.physics_constraints import RULE_NAMES, ConstraintLimits
+from data.simulation.plant_params import load_plant_params
 from data.simulation.scenario import (
     FaultLevel,
     InstrumentEpisode,
@@ -50,9 +68,11 @@ from data.simulation.sensor_catalog import SensorCatalog
 from data.simulation.simulation_params import SimulationParams, load_simulation_params
 from data.simulation.thermal_model import ModelInputs, ReactorModel
 from tests.support.sim_frames import (
+    CONFIGS,
     SIM_SPANS_PATH,
     build_catalog,
     build_model,
+    build_table,
     write_sim_params,
 )
 
@@ -594,3 +614,242 @@ class TestParquet:
         a = write_run_parquet(frame, tmp_path / "a.parquet").read_bytes()
         b = write_run_parquet(frame, tmp_path / "b.parquet").read_bytes()
         assert a == b
+
+
+# ----------------------------------------------------------------------
+# Parte 2 (F3-M6): resumen por run, dataset, manifiesto y metricas
+# ----------------------------------------------------------------------
+
+LIMITS = ConstraintLimits.from_plant(load_plant_params(CONFIGS / "plant_parameters.yaml"))
+
+
+def _write(
+    sim: RunSimulation,
+    catalog: SensorCatalog,
+    spans: dict[str, SensorSpan],
+    root: Path,
+) -> RunOutput:
+    frame = build_run_frame(sim, catalog, spans, PLANT, np.random.default_rng(11))
+    return write_run_output(
+        sim, frame, root, 7, catalog=catalog, table=build_table(), limits=LIMITS
+    )
+
+
+def _renamed(sim: RunSimulation, run_id: str) -> RunSimulation:
+    return dataclasses.replace(sim, plan=dataclasses.replace(sim.plan, run_id=run_id))
+
+
+PROCESS_SPEC = ProcessFaultSpec(
+    level=FaultLevel.HIGH, injected_step=10, onset_steps=2, hold_steps=5, recovery_steps=3
+)
+
+
+class TestRunOutput:
+    """`write_run_output` writes the parquet and summarises the run."""
+
+    def test_labelled_mask(self, frame: pd.DataFrame, sim: RunSimulation) -> None:
+        """No label in normal operation; every sensor of the window in a process run."""
+        assert not labelled_mask(frame).any()
+        relabelled = assemble_long_frame(
+            _process_sim(sim, ScenarioKind.CORE_TEMP_EXCURSION, PROCESS_SPEC),
+            sim.true_values,
+            build_catalog(),
+            load_sensor_spans(SIM_SPANS_PATH),
+            PLANT,
+        )
+        assert int(labelled_mask(relabelled).sum()) == 11 * 27
+
+    def test_file_sha256(self, tmp_path: Path) -> None:
+        """The digest is the SHA-256 of the bytes."""
+        path = tmp_path / "f.bin"
+        path.write_bytes(b"reactor" * 1000)
+        assert file_sha256(path) == hashlib.sha256(b"reactor" * 1000).hexdigest()
+
+    def test_normal_run(
+        self,
+        sim: RunSimulation,
+        catalog: SensorCatalog,
+        spans: dict[str, SensorSpan],
+        tmp_path: Path,
+    ) -> None:
+        """Relative layout path, digest of the file, no labels and no violations."""
+        output = _write(sim, catalog, spans, tmp_path)
+        record = output.record
+        assert record.path == "fault_type=normal/seed=7/sim_run_001.parquet"
+        assert record.sha256 == file_sha256(tmp_path / record.path)
+        assert (record.rows, record.n_steps) == (30 * 27, 30)
+        assert record.labelled == record.planned_labelled == 0
+        assert record.by_severity == {"CRITICAL": 0, "HIGH": 0, "MEDIUM": 0, "LOW": 0}
+        assert (record.episodes, record.corrupted) == (0, 0)
+        assert record.fault_level == {}
+        assert record.conservation_failures == 0
+        assert record.max_interval_residual < LIMITS.conservation_tolerance
+        assert set(record.violations_true) == set(RULE_NAMES)
+        assert sum(record.violations_true.values()) == 0
+        assert record.violations_true_outside_window == 0
+        assert record.unexpected_violations == {}
+        assert output.coverage.n_runs == 1
+
+    def test_process_run(
+        self,
+        sim: RunSimulation,
+        catalog: SensorCatalog,
+        spans: dict[str, SensorSpan],
+        tmp_path: Path,
+    ) -> None:
+        """A process window labels every sensor with the static severity of its type."""
+        labelled_sim = _process_sim(sim, ScenarioKind.COOLANT_FLOW_REDUCTION, PROCESS_SPEC)
+        record = _write(labelled_sim, catalog, spans, tmp_path).record
+        assert record.path.startswith("fault_type=coolant_flow_reduction/")
+        assert record.labelled == record.planned_labelled == 11 * 27
+        assert record.by_severity["HIGH"] == 11 * 27
+        assert record.fault_level == {"high": 11 * 27}
+        assert record.episodes == 1
+        entry = record.to_dict()
+        assert entry["violations_true_outside_window"] == 0
+        assert json.loads(json.dumps(entry)) == entry
+
+
+class TestUnexpectedViolations:
+    """The expected-violation matrix is per scenario and per fault window."""
+
+    @pytest.fixture()
+    def record(
+        self,
+        sim: RunSimulation,
+        catalog: SensorCatalog,
+        spans: dict[str, SensorSpan],
+        tmp_path: Path,
+    ) -> RunRecord:
+        return _write(sim, catalog, spans, tmp_path).record
+
+    def test_normal_admits_nothing(self, record: RunRecord) -> None:
+        """Any true-state violation of a normal run is unexpected."""
+        counts = {**record.violations_true, "boiling": 2}
+        bad = dataclasses.replace(record, violations_true=counts)
+        assert bad.unexpected_violations == {"boiling": 2}
+
+    def test_void_admits_its_rules(self, record: RunRecord) -> None:
+        """Void formation may violate its five rules, never the dT/dt bound."""
+        allowed = EXPECTED_TRUE_STATE_VIOLATIONS[ScenarioKind.VOID_FORMATION]
+        assert allowed == {
+            "energy_balance",
+            "power_flux",
+            "boiling",
+            "flow_range",
+            "mass_balance",
+        }
+        counts = dict.fromkeys(RULE_NAMES, 0) | dict.fromkeys(allowed, 5)
+        void = dataclasses.replace(record, scenario="void_formation", violations_true=counts)
+        assert void.unexpected_violations == {}
+        worse = dataclasses.replace(void, violations_true={**counts, "max_dt_dt": 1})
+        assert worse.unexpected_violations == {"max_dt_dt": 1}
+
+    def test_outside_the_window_is_unexpected(self, record: RunRecord) -> None:
+        """Even an allowed rule may not fire while no process fault is active."""
+        void = dataclasses.replace(
+            record, scenario="void_formation", violations_true_outside_window=3
+        )
+        assert void.unexpected_violations == {"outside_window": 3}
+
+
+@pytest.fixture()
+def dataset_outputs(
+    sim: RunSimulation,
+    catalog: SensorCatalog,
+    spans: dict[str, SensorSpan],
+    tmp_path: Path,
+) -> list[RunOutput]:
+    """Return three written runs, out of order: run 10 (process), run 2 (normal), run 1."""
+    process = _process_sim(_renamed(sim, "sim_run_010"), ScenarioKind.VOID_FORMATION, PROCESS_SPEC)
+    return [
+        _write(process, catalog, spans, tmp_path),
+        _write(_renamed(sim, "sim_run_002"), catalog, spans, tmp_path),
+        _write(sim, catalog, spans, tmp_path),
+    ]
+
+
+def _build(outputs: list[RunOutput], params: SimulationParams) -> SimulatedDataset:
+    return build_dataset(
+        outputs,
+        params,
+        n_sensors=27,
+        k_min_readings=10,
+        n_min_episodes=1,
+        coverage_gate=0.95,
+        conservation_tolerance=LIMITS.conservation_tolerance,
+    )
+
+
+class TestSimulatedDataset:
+    """`build_dataset` aggregates the runs; the JSON documents are stable."""
+
+    def test_runs_in_numeric_order(
+        self, dataset_outputs: list[RunOutput], params: SimulationParams
+    ) -> None:
+        """Records come back in run order whatever the arrival order."""
+        dataset = _build(dataset_outputs, params)
+        ids = [r.run_id for r in dataset.records]
+        assert ids == ["sim_run_001", "sim_run_002", "sim_run_010"]
+
+    def test_totals(self, dataset_outputs: list[RunOutput], params: SimulationParams) -> None:
+        """Readings, labels, severities and the D7 summaries add up over the runs."""
+        dataset = _build(dataset_outputs, params)
+        assert dataset.total_readings == 3 * 30 * 27
+        assert dataset.labelled_readings == 11 * 27
+        assert dataset.labelled_fraction == pytest.approx(11 / 90)
+        assert dataset.readings_by_severity()["CRITICAL"] == 11 * 27
+        assert dataset.critical_fraction == pytest.approx(11 / 90)
+        assert dataset.plan_matches_frames
+        assert dataset.conservation_compliant
+        assert dataset.violations_as_expected
+        assert dataset.unexpected_violations() == {}
+        assert dataset.coverage.overall.types_present == ("void_formation",)
+
+    def test_manifest_and_metrics(
+        self, dataset_outputs: list[RunOutput], params: SimulationParams
+    ) -> None:
+        """No absolute path, sorted runs, and every scenario aggregated."""
+        dataset = _build(dataset_outputs, params)
+        manifest = dataset.manifest()
+        assert manifest["n_runs"] == 3
+        assert manifest["seed"] == params.openmc_seed
+        assert all(not Path(run["path"]).is_absolute() for run in manifest["runs"])
+        metrics = dataset.metrics()
+        assert metrics["by_scenario"]["normal"] == {
+            "runs": 2,
+            "readings": 2 * 30 * 27,
+            "labelled": 0,
+            "episodes": 0,
+        }
+        assert metrics["by_scenario"]["void_formation"]["episodes"] == 1
+        assert set(metrics["coverage"]["partitions"]) == {"train", "val", "test"}
+        assert metrics["coverage"]["n_fault_types"] == 8
+        assert metrics["compliance"]["conservation_compliant"]
+        assert metrics["compliance"]["expected_true_state_violations"]["void_formation"] == sorted(
+            EXPECTED_TRUE_STATE_VIOLATIONS[ScenarioKind.VOID_FORMATION]
+        )
+        assert set(metrics["compliance"]["rule_violations_true"]) == {"normal", "void_formation"}
+
+    def test_json_files_are_reproducible(
+        self, dataset_outputs: list[RunOutput], params: SimulationParams, tmp_path: Path
+    ) -> None:
+        """Two writes give the same bytes: sorted keys, LF and a trailing newline."""
+        dataset = _build(dataset_outputs, params)
+        a = write_dataset(dataset, tmp_path / "a")
+        b = write_dataset(dataset, tmp_path / "b")
+        assert a.name == MANIFEST_NAME
+        assert a.read_bytes() == b.read_bytes()
+        assert a.read_bytes().endswith(b"}\n")
+        assert b"\r" not in a.read_bytes()
+        m1 = write_metrics(dataset, tmp_path / "m" / "metrics.json")
+        document = json.loads(m1.read_text(encoding="utf-8"))
+        assert list(document) == sorted(document)
+        assert document["labelled_readings"] == 11 * 27
+
+    def test_errors(self, dataset_outputs: list[RunOutput], params: SimulationParams) -> None:
+        """No runs, or the same run twice, is refused."""
+        with pytest.raises(ValueError, match="at least one run"):
+            _build([], params)
+        with pytest.raises(ValueError, match="already added"):
+            _build([dataset_outputs[0], dataset_outputs[0]], params)

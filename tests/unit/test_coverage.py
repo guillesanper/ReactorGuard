@@ -314,6 +314,43 @@ class TestCollector:
         assert ModeStats() == ModeStats(readings=0, episodes=0, runs=0, corrupted=0)
 
 
+class TestMerge:
+    """One collector per worker process, merged in any order (F3-M6)."""
+
+    FRAMES = (
+        ("sim_run_001", "stuck", [Ep("stuck", "low", 90, 10, "TC-A", corrupted_every=2)]),
+        ("sim_run_002", "stuck", [Ep("stuck", "high", 0, 10, "FT-A")]),
+        ("sim_run_003", "normal", []),
+        ("sim_run_004", "void_formation", [Ep("void_formation", "medium", 5, 20, axis="process")]),
+    )
+
+    def _frames(self) -> list[pd.DataFrame]:
+        return [synth_frame(run, scenario, 100, eps) for run, scenario, eps in self.FRAMES]
+
+    def test_merge_equals_a_single_collector(self) -> None:
+        """Merging per-run collectors, in reverse order, gives the same report."""
+        single = CoverageCollector()
+        for frame in self._frames():
+            single.add_frame(frame)
+        merged = CoverageCollector()
+        for frame in reversed(self._frames()):
+            part = CoverageCollector()
+            part.add_frame(frame)
+            merged.merge(part)
+        assert merged.n_runs == single.n_runs == 4
+        assert merged.report(1, 1, 0.5) == single.report(1, 1, 0.5)
+
+    def test_merge_rejects_repeated_runs(self) -> None:
+        """A run present in both collectors is an error, and nothing is merged."""
+        frame = self._frames()[0]
+        a, b = CoverageCollector(), CoverageCollector()
+        a.add_frame(frame)
+        b.add_frame(frame)
+        with pytest.raises(ValueError, match="sim_run_001 were already added"):
+            a.merge(b)
+        assert a.n_runs == 1
+
+
 @pytest.fixture(scope="module")
 def simulator(tmp_path_factory: pytest.TempPathFactory) -> ReactorSimulator:
     """Return a simulator over 30-step runs."""

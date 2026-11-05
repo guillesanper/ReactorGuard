@@ -13,6 +13,7 @@ import ast
 import dataclasses
 import json
 from pathlib import Path
+from types import SimpleNamespace
 
 import numpy as np
 import pandas as pd
@@ -20,14 +21,25 @@ import pytest
 import yaml
 
 import data.generators.reactor_simulator as simulator_module
-from data.generators.reactor_simulator import ReactorSimulator, cli, main
+from data.generators.reactor_simulator import ReactorSimulator, cli, main, resolve_workers
 from data.generators.tep_adapter import readings_from_frame
 from data.schemas.sensor_reading import SensorReading
-from data.simulation.dataset_builder import LONG_COLUMNS, wide_frame_from_long
+from data.simulation.dataset_builder import (
+    LONG_COLUMNS,
+    MANIFEST_NAME,
+    SimulatedDataset,
+    file_sha256,
+    wide_frame_from_long,
+)
 from data.simulation.physics_constraints import RULE_NAMES, ConstraintLimits, evaluate_rules
 from data.simulation.scenario import ScenarioKind
 from data.simulation.simulation_params import load_simulation_params
-from tests.support.sim_frames import build_simulator, write_sim_params
+from tests.support.sim_frames import (
+    SMALL_DATASET_RATE,
+    build_simulator,
+    write_sim_params,
+    write_small_dataset_params,
+)
 
 
 @pytest.fixture(scope="module")
@@ -189,18 +201,27 @@ class TestWrite:
         paths = sim.write()
         assert all(str(p).startswith(str(sim.params.output_dir)) for p in paths)
 
-    def test_main_writes_the_dataset(self, tmp_path: Path) -> None:
-        """main(params_path) is the stage entry point."""
+    def test_main_refuses_an_unreachable_budget(self, tmp_path: Path) -> None:
+        """The stage fails (no dataset) when the planner refuses the D11 budget."""
         params_path = write_sim_params(tmp_path)
-        paths = main(params_path)
-        params = load_simulation_params(params_path)
-        assert len(paths) == params.n_runs
-        assert all(p.exists() for p in paths)
+        with pytest.raises(ValueError):
+            main(params_path, workers=1)
+        assert not (tmp_path / "out" / MANIFEST_NAME).exists()
 
-    def test_cli_parses_params(self, tmp_path: Path) -> None:
-        """The command line takes --params."""
-        params_path = write_sim_params(tmp_path)
-        assert len(cli(["--params", str(params_path)])) == 3
+    def test_cli_parses_params_and_workers(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The command line takes --params and --workers (0 = one per CPU by default)."""
+        calls: list[tuple[str, int]] = []
+
+        def fake_main(params_path: str, *, workers: int) -> str:
+            calls.append((params_path, workers))
+            return "dataset"
+
+        monkeypatch.setattr(simulator_module, "main", fake_main)
+        assert cli(["--params", "p.yaml", "--workers", "3"]) == "dataset"
+        assert cli(["--params", "q.yaml"]) == "dataset"
+        assert calls == [("p.yaml", 3), ("q.yaml", 0)]
 
     def test_main_missing_params(self, tmp_path: Path) -> None:
         """A missing params file fails clearly."""
@@ -297,3 +318,99 @@ class TestPlannedDataset:
         assert len(labelled) == 20
         assert labelled["corrupted"].all()
         assert (labelled["sensor_id"] == "PT-PRZ-01").all()
+
+
+# ----------------------------------------------------------------------
+# F3-M6: el stage simulate escribe el dataset planificado
+# ----------------------------------------------------------------------
+
+
+@dataclasses.dataclass(frozen=True)
+class StageRun:
+    """Lo que deja `main` sobre la configuracion pequena."""
+
+    root: Path
+    metrics_path: Path
+    dataset: SimulatedDataset
+
+
+@pytest.fixture(scope="module")
+def stage_run(tmp_path_factory: pytest.TempPathFactory) -> StageRun:
+    """Run the stage entry point once (34 runs of 60 steps, in this process)."""
+    work = tmp_path_factory.mktemp("stage")
+    params_path = write_small_dataset_params(work)
+    params = load_simulation_params(params_path)
+    dataset = main(params_path, workers=1)
+    return StageRun(root=params.output_dir, metrics_path=params.metrics_path, dataset=dataset)
+
+
+class TestStage:
+    """`main` writes parquets, manifest and metrics of the planned dataset."""
+
+    def test_layout_and_manifest(self, stage_run: StageRun) -> None:
+        """One parquet per run under its scenario, each one hashed in the manifest."""
+        manifest = json.loads((stage_run.root / MANIFEST_NAME).read_text(encoding="utf-8"))
+        assert manifest["n_runs"] == 34 == len(manifest["runs"])
+        parquets = sorted(p.relative_to(stage_run.root).as_posix()
+                          for p in stage_run.root.rglob("*.parquet"))
+        assert parquets == sorted(run["path"] for run in manifest["runs"])
+        for run in manifest["runs"]:
+            assert run["path"] == f"fault_type={run['scenario']}/seed=42/{run['run_id']}.parquet"
+            assert file_sha256(stage_run.root / run["path"]) == run["sha256"]
+        assert {run["scenario"] for run in manifest["runs"]} == {k.value for k in ScenarioKind}
+
+    def test_metrics(self, stage_run: StageRun) -> None:
+        """The metrics file is the dataset summary, written next to nothing else."""
+        metrics = json.loads(stage_run.metrics_path.read_text(encoding="utf-8"))
+        assert metrics == json.loads(json.dumps(stage_run.dataset.metrics()))
+        assert metrics["fault_injection_rate"] == SMALL_DATASET_RATE
+        assert metrics["n_runs"] == 34
+        assert metrics["coverage"]["types_ok"]
+        assert metrics["compliance"]["conservation_compliant"]
+        assert metrics["compliance"]["violations_as_expected"]
+        assert metrics["plan_matches_frames"]
+
+    def test_negative_workers_is_refused(self, tmp_path: Path) -> None:
+        """workers < 0 is a usage error."""
+        sim = ReactorSimulator.from_params(
+            load_simulation_params(write_small_dataset_params(tmp_path))
+        )
+        with pytest.raises(ValueError, match="workers"):
+            sim.build_dataset(tmp_path / "ds", workers=-1)
+
+    def test_limits_are_parsed_once(self, simulator: ReactorSimulator) -> None:
+        """The rule thresholds come from plant_parameters.yaml and are cached."""
+        assert simulator.limits is simulator.limits
+        assert simulator.limits.conservation_tolerance == 1.0e-6
+
+
+class TestWorkers:
+    """Worker count and submission order of the parallel stage."""
+
+    def test_resolve_workers(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """0 means one per CPU; never more workers than runs, never fewer than one."""
+        monkeypatch.setattr(simulator_module.os, "cpu_count", lambda: 8)
+        assert resolve_workers(0, 34) == 8
+        assert resolve_workers(0, 3) == 3
+        assert resolve_workers(4, 34) == 4
+        assert resolve_workers(1, 0) == 1
+        monkeypatch.setattr(simulator_module.os, "cpu_count", lambda: None)
+        assert resolve_workers(0, 34) == 1
+
+    def test_slow_runs_are_submitted_first(self) -> None:
+        """Void first, then the other process faults, instrument faults and normal runs."""
+        plans = [
+            SimpleNamespace(run_id="sim_run_004", scenario=ScenarioKind.NORMAL),
+            SimpleNamespace(run_id="sim_run_003", scenario=ScenarioKind.BIAS),
+            SimpleNamespace(run_id="sim_run_002", scenario=ScenarioKind.COOLANT_FLOW_REDUCTION),
+            SimpleNamespace(run_id="sim_run_005", scenario=ScenarioKind.CORE_TEMP_EXCURSION),
+            SimpleNamespace(run_id="sim_run_001", scenario=ScenarioKind.VOID_FORMATION),
+        ]
+        ordered = sorted(plans, key=simulator_module._cost_key)  # type: ignore[arg-type]
+        assert [p.run_id for p in ordered] == [
+            "sim_run_001",
+            "sim_run_002",
+            "sim_run_005",
+            "sim_run_003",
+            "sim_run_004",
+        ]

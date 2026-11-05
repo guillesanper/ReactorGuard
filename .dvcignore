@@ -1,3 +1,8 @@
 # Add patterns of files dvc should ignore, which could improve
 # the performance. Learn more at
 # https://dvc.org/doc/user-guide/dvcignore
+
+# Bytecode de Python: el stage simulate declara el directorio data/simulation como
+# dep y su hash no debe depender del interprete ni de la maquina que lo compilo.
+__pycache__/
+*.pyc

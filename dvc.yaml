@@ -1,5 +1,5 @@
 # =============================================================================
-# ReactorGuard - Pipeline de datos TEP
+# ReactorGuard - Pipeline de datos: TEP (Fase 2) y simulacion (Fase 3)
 #
 # Cada stage declara params explicitos y granulares: cambiar tep.plant_id debe
 # invalidar adapt_tep pero no download_tep. Todos los parametros listados aqui
@@ -8,6 +8,10 @@
 #
 # data/processed/tep vive fuera de data/raw/tep a proposito: anidar el out de
 # adapt_tep dentro del out de download_tep es una colision que DVC rechaza.
+#
+# simulate (F3-M6) es una rama independiente: no lee nada del TEP y escribe
+# data/raw/simulation, hermano de data/raw/tep (sin anidar outs). No cablea
+# featurize/split/streamer (D13): eso es de Fase 4.
 # =============================================================================
 
 stages:
@@ -136,4 +140,59 @@ stages:
       # cache: false lo saca de la cache de DVC y lo deja en git, que es la
       # condicion para que `dvc metrics diff` pueda comparar dos commits.
       - metrics/split_metrics.json:
+          cache: false
+
+  simulate:
+    # --workers 0 = un proceso por CPU. La salida no depende del numero de
+    # procesos (cada run cuelga de su semilla; test de determinismo en
+    # tests/safety), asi que no es un param. El vacio domina el coste
+    # (Docs/physics_constraints.md, 14.1).
+    cmd: python data/generators/reactor_simulator.py --workers 0
+    deps:
+      - data/generators/reactor_simulator.py
+      # Directorio de codigo: modelo, fallos, planificador, cobertura y escritura.
+      - data/simulation
+      - data/schemas/sensor_reading.py
+      - data/schemas/sensor_spans.py
+      # READING_ID_NAMESPACE y el contrato de readings_from_frame.
+      - data/generators/tep_adapter.py
+      # Contenido de las tablas como dep (como configs/sensor_spans.yaml en
+      # adapt_tep); solo sus rutas viajan por params.
+      - configs/sim_sensors.yaml
+      - configs/sim_sensor_spans.yaml
+      - configs/plant_parameters.yaml
+      - configs/neutronics_coefficients.yaml
+      - configs/water_table.yaml
+    params:
+      - simulation.n_samples
+      - simulation.fault_injection_rate
+      - simulation.critical_min_fraction
+      - simulation.severity_weights
+      - simulation.openmc_seed
+      - simulation.dt_seconds
+      - simulation.run_length_steps
+      - simulation.warmup_fraction
+      - simulation.start_time
+      - simulation.plant_id
+      - simulation.load_min_fraction
+      - simulation.load_max_fraction
+      - simulation.max_ramp_percent_per_min
+      - simulation.load_hold_minutes_min
+      - simulation.load_hold_minutes_max
+      - simulation.output_dir
+      - simulation.metrics_path
+      - simulation.plant_parameters_path
+      - simulation.neutronics_path
+      - simulation.sensors_path
+      - simulation.spans_path
+      - simulation.water_table_path
+      - simulation.calibration_date
+      - simulation.last_maintenance_date
+      - simulation.drift_coefficient
+    outs:
+      # Un parquet por run (fault_type=<escenario>/seed=<n>/sim_run_<NNN>.parquet,
+      # TDD 4.4) y manifest.json con el sha256 de cada uno.
+      - data/raw/simulation
+    metrics:
+      - metrics/simulation_metrics.json:
           cache: false
