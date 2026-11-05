@@ -457,11 +457,19 @@ def _process_labels(sim: RunSimulation) -> _StepLabels:
         process_fault=process_fault,
         severity=severity,
         episode=episode,
-        injected_at=pd.DatetimeIndex(pd.to_datetime(injected, utc=True)),
+        injected_at=pd.DatetimeIndex(pd.to_datetime(injected, utc=True)).as_unit(TIME_UNIT),
         injected_step=injected_step,
         level=level,
     )
 
+
+TIME_UNIT = "ns"
+"""Resolucion de las columnas de tiempo del frame (`timestamp`, `injected_at`).
+
+Explicita: pandas 2 crea los indices de fechas en ns y pandas 3 en us. Fijarla
+mantiene el esquema del parquet entre versiones y, sobre todo, da sentido a los
+enteros de `_instrument_labels`: con la resolucion implicita, pandas 3 devolvia
+microsegundos que luego se leian como nanosegundos y `injected_at` caia en 1970."""
 
 _NAT_NS = int(np.iinfo(np.int64).min)
 """Representacion entera de NaT (ns desde la epoca)."""
@@ -514,7 +522,7 @@ def _instrument_labels(sim: RunSimulation, catalog: SensorCatalog) -> _ReadingLa
     injected_at = np.full(shape, _NAT_NS, dtype=np.int64)
     injected_step = np.full(shape, -1, dtype=np.int64)
     column = {tag: j for j, tag in enumerate(catalog.tags)}
-    stamps = pd.DatetimeIndex(sim.timestamps).asi8
+    stamps = pd.DatetimeIndex(sim.timestamps).as_unit(TIME_UNIT).asi8
     for episode in sim.plan.instrument_faults:
         if episode.sensor_id not in column:
             raise KeyError(
@@ -608,7 +616,9 @@ def assemble_long_frame(
         level = readings.level.reshape(-1)
         injected_step = readings.injected_step.reshape(-1)
         injected_ns = readings.injected_at.reshape(-1)
-        injected_at = pd.Series(pd.to_datetime(injected_ns, unit="ns", utc=True))
+        injected_at = pd.Series(
+            pd.to_datetime(injected_ns, unit=TIME_UNIT, utc=True).as_unit(TIME_UNIT)
+        )
         injected_at[injected_ns == _NAT_NS] = pd.NaT
     else:
         episode = np.repeat(labels.episode, n_sensors)
@@ -619,7 +629,9 @@ def assemble_long_frame(
         injected_at = pd.Series(labels.injected_at.repeat(n_sensors))
     columns = {
         "reading_id": reading_ids,
-        "timestamp": pd.Series(pd.DatetimeIndex(sim.timestamps).repeat(n_sensors)),
+        "timestamp": pd.Series(
+            pd.DatetimeIndex(sim.timestamps).as_unit(TIME_UNIT).repeat(n_sensors)
+        ),
         "plant_id": np.full(n_rows, plant_id, dtype=object),
         "sensor_id": np.tile(np.array([s.tag for s in sensors], dtype=object), n_steps),
         "sensor_type": np.tile(

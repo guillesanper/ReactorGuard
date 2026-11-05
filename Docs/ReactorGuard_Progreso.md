@@ -134,6 +134,21 @@ necesarios frente a 32, tasa maxima 1,44 % con CRITICAL 0,43 % con los pesos de 
 pesos 0,55/0,38/0,06/0,01) generado entero: 12,27 % etiquetado, plan == frame en 34/34 runs, 8/8 tipos, 144/144
 modos, 75,6 MB, vacio 838/457/834 s por run.
 
+### Compatibilidad con pandas 3 (2026-11-05, rama `feat/compat-pandas-3`)
+
+`pandas 3` no se puede instalar con el proyecto: **feast 0.67 (la ultima) declara `pandas<3`**. El codigo ya es
+compatible: con pandas 3 la resolucion implicita de fechas (us) corrompia `injected_at` de los fallos de
+instrumento (fechas de 1970, sin error); se fijo `TIME_UNIT = "ns"` en `dataset_builder`, sin cambiar un solo
+byte con pandas 2. Medido en Linux:
+
+```
+pandas 2.3.3 (lo que resuelve pip)   2769 passed, 66 skipped, cobertura 99,55 %   (falta torch: test_pinn_forward)
+pandas 3.0.5 (forzado, con feast)    2704 passed sin feast; los 211 de feast y features tambien pasan forzando pandas 3
+                                     -W error::FutureWarning: 0 avisos de deprecacion de pandas
+```
+
+El job `unit-tests-pandas3` de CI repite la segunda corrida en cada push.
+
 ### Linea base al cierre de F3-M6 (2026-11-05, rama `feat/stage-simulate`, contenedor Linux)
 
 ```

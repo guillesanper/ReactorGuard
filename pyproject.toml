@@ -47,6 +47,9 @@ dependencies = [
 
     # Data / Numerics
     "numpy>=1.26.0",
+    # Sin techo propio: lo pone feast (<= 0.67 declara pandas<3), asi que pip resuelve
+    # pandas 2. El codigo ya es compatible con pandas 3 (job unit-tests-pandas3 de CI);
+    # pasar a 3 cambia los bytes de todos los parquet y exige regenerar dvc.lock.
     "pandas>=2.2.0",
     "scikit-learn>=1.4.0",
     "pyarrow>=15.0.0",         # engine parquet para pandas (data/generators/tep_*.py)

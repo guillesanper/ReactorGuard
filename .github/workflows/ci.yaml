@@ -4,6 +4,7 @@
 #
 # Job order:
 #   lint-and-typecheck → unit-tests ──┐
+#                     → unit-tests-pandas3 (informa, no bloquea build-and-push)
 #                     → security-scan ┴→ build-and-push
 
 name: CI
@@ -100,6 +101,39 @@ jobs:
           name: unit-test-results
           path: test-results.xml
           retention-days: 30
+
+  # ---------------------------------------------------------------------------
+  # Job 2b: Unit Tests con pandas 3
+  # feast (<= 0.67) declara pandas<3, asi que `pip install -e ".[dev]"` resuelve
+  # pandas 2 y el job anterior prueba esa combinacion. Este fuerza pandas 3 por
+  # encima (--no-deps) para que el codigo siga listo para el cambio: con la
+  # resolucion temporal implicita, pandas 3 corrompia `injected_at` sin error.
+  # Sin cobertura: el gate lo aplica el job anterior.
+  # ---------------------------------------------------------------------------
+  unit-tests-pandas3:
+    name: Unit Tests (pandas 3)
+    runs-on: ubuntu-latest
+    needs: lint-and-typecheck
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python ${{ env.PYTHON_VERSION }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+
+      - name: Install dependencies and force pandas 3
+        run: |
+          pip install -e ".[dev]"
+          pip install --no-deps "pandas>=3,<4"
+          python -c "import pandas; assert pandas.__version__.startswith('3.'), pandas.__version__"
+
+      # -W error::FutureWarning: un aviso de pandas 3 es una rotura en pandas 4.
+      - name: Run unit and safety tests
+        run: pytest tests/unit/ tests/safety/ --tb=short -W error::FutureWarning
 
   # ---------------------------------------------------------------------------
   # Job 3: Security Scan
