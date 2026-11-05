@@ -316,7 +316,14 @@ class TestRepositoryParams:
         """params.yaml carries every key the loader requires."""
         params = load_simulation_params(REPO_ROOT / DEFAULT_PARAMS_PATH)
         assert params.dt_seconds == 180.0
-        assert params.fault_injection_rate == 0.40
+        # Opcion B de D11 (F3-M6): el 0,40 original es inalcanzable con los topes.
+        assert params.fault_injection_rate == 0.12
+        assert params.severity_weights == {
+            "critical": 0.55,
+            "high": 0.38,
+            "medium": 0.06,
+            "low": 0.01,
+        }
         assert params.n_runs == math.ceil(params.n_samples / params.run_length_steps)
 
     def test_repository_paths_point_at_existing_files(self) -> None:

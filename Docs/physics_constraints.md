@@ -1,4 +1,4 @@
-# Constraints fisicos de ReactorGuard (F3-M2, calibrado en F3-M3, matriz de F3-M4)
+# Constraints fisicos de ReactorGuard (F3-M2, calibrado en F3-M3, matriz de F3-M4, dataset de F3-M6)
 
 Implementacion: `data/simulation/physics_constraints.py`. Tests:
 `tests/unit/test_physics_constraints.py`. Modelo contra el que se verifican:
@@ -995,3 +995,93 @@ parquet cambian.
 | 0 (1500 pasos) | `28d8799d90c9e1d77d9daffbda1e943836c7436bcbc2fa1d30e8d973a23934e0` | `d60169ad0a229ec86a7d4a13bad0a4398fd29fd150d47cf7acfbda344554be8f` |
 | 0 (200 pasos) | `d551c4cad15c01040bc784e32168be15b0fc3c58f5c72441674abb840fcf37cd` | `93dd7bccef83859c3272d5c7242f7b59499baddfd62407dbd68c66edac7da5a2` |
 | 3 (200 pasos) | `b0b53e5b01c91ef962f26ff6173253a1464024cfcce5c1bb5df81000a9f90b6e` | `d0a222158483feb057e6bba824fd2ee61386cc333216519f66b8f671a7f02693` |
+
+## 14. Mediciones de F3-M6: dataset del stage `simulate`
+
+Implementacion: `ReactorSimulator.build_dataset` y `main` (`data/generators/reactor_simulator.py`),
+parte 2 de `data/simulation/dataset_builder.py` (`RunRecord`, `write_run_output`,
+`build_dataset`, `write_dataset`, `write_metrics`) y el stage `simulate` de `dvc.yaml`.
+Configuracion: `params.yaml` con la **opcion B de D11** (13.7): `fault_injection_rate`
+0,12 y pesos 0,55/0,38/0,06/0,01, semilla 42, 34 runs de 1500 pasos a 180 s.
+
+### 14.1 Dataset medido
+
+Generado entero con `python data/generators/reactor_simulator.py --workers 4`
+(contenedor Linux de 4 CPU, Python 3.13, `pandas 2.3.3`, `pyarrow 26.0.1`; ver 14.4):
+
+| Magnitud | Valor |
+|---|---|
+| Runs / lecturas | 34 / 1.377.000 (27 sensores x 51.000 pasos) |
+| Etiquetadas | **168.958 (12,27 %)**, identico al plan de F3-M5 (13.8); plan == frame en 34/34 runs |
+| CRITICAL / HIGH / MEDIUM / LOW | 91.062 / 66.283 / 9.960 / 1.653 (6,61 / 4,81 / 0,72 / 0,12 %); CRITICAL >= `critical_min_fraction` 5 % |
+| Runs por tipo | sesgo 3, caudal 3, excursion 3, deriva 3, intermitente 5, pico 7, bloqueado 3, vacio 3, normal 4 |
+| Cobertura D6 (k_min 10, n_min 1) | 8/8 tipos, **144/144 modos (100 %)**; train 75,0 %, val 38,2 %, test 40,3 % (los de F3-M5) |
+| Conservacion (D7) | 0 fallos; peor cierre por intervalo 3,87e-12, instantaneo 6,1e-16 (tolerancia 1e-6) |
+| Lecturas `corrupted` | 30.964 (todas en runs de instrumento) |
+| Tamano en disco | 75,6 MB (34 parquet + `manifest.json`) |
+| Tiempo de pared | **2 min 9 s con 4 procesos** (7 min 23 s de CPU); 2 min 47 s con 3 |
+
+**Coste**: F3-M5 midio el vacio planificado en 838 / 457 / 834 s por run en Windows y
+presupuesto ~43 min para el stage. Aqui el dataset entero cuesta 7 min 23 s de CPU.
+La diferencia no esta explicada: puede ser la maquina, la pila numerica (scipy, BLAS) o
+suspensiones de Windows no detectadas (M5-11). **Se mide en Windows con
+`Invoke-Pipeline.ps1 -Stage simulate`** antes de citar un coste del stage.
+
+### 14.2 Matriz de violaciones sobre el estado verdadero (dataset entero)
+
+Pasos con violacion por escenario (`metrics/simulation_metrics.json`,
+`compliance.rule_violations_true`). Todas las celdas no listadas valen 0.
+
+| Run | Nivel | 1 energia | 4 caudal | 5 pot./flujo | 6 ebullicion | 7 masa |
+|---|---|---|---|---|---|---|
+| vacio (`sim_run_024`) | bajo | 411 | 0 | 377 | 0 | 0 |
+| vacio (`sim_run_017`) | medio | 507 | 195 | 501 | 189 | 357 |
+| vacio (`sim_run_025`) | alto | 517 | 99 | 518 | 521 | 268 |
+
+- Excursion, reduccion de caudal, los 5 tipos de instrumento y la operacion normal: **0
+  violaciones de las 7 reglas** sobre el estado verdadero.
+- El vacio viola exactamente las reglas de la matriz de F3-M4 (12.3): energia y potencia/
+  flujo en los tres niveles; ebullicion, rango de caudal y masa solo con ebullicion franca
+  (medio y alto). El rango de caudal se viola porque el vacio expulsa refrigerante: el caudal
+  masico de rama caliente sube a 5.264 kg/s (medio) y 5.528 kg/s (alto) por lazo frente al
+  tope de bomba de 4.950, mientras la rama fria sigue en 4.500.
+- **0 violaciones fuera de la ventana del fallo** en los 34 runs (`violations_true_outside_window`).
+
+Es la matriz que exige la suite de seguridad (`EXPECTED_TRUE_STATE_VIOLATIONS`). Las
+violaciones sobre el valor MEDIDO (`rule_violations_measured`) se informan y no se exigen:
+0 en operacion normal y en excursion; 8 de masa en caudal (ruido); los fallos de
+instrumento violan energia, caudal, potencia/flujo y masa segun el sensor (13.4).
+
+### 14.3 Configuracion pequena de la suite de seguridad
+
+`tests/support/sim_frames.write_small_dataset_params`: 34 runs de 60 pasos con la tasa y
+los pesos de la opcion B sobre una copia de `plant_parameters.yaml` con ventanas cortas
+(4 pasos a magnitud plena), 2 runs por tipo y picos hasta 0,05. Plan: 12,65 % etiquetado,
+CRITICAL 6,98 %, 8/8 tipos; ~14 s por construccion en un proceso. Al acortar las rampas
+se midieron dos artefactos que NO existen con las de produccion, y por eso la copia
+conserva la entrada de 30 min y la recuperacion del vacio (20 pasos):
+
+| Rampa acortada | Efecto sobre el estado verdadero |
+|---|---|
+| Entrada de 6 min o retirada en 1 paso (excursion alta, 600 pcm) | 1-3 pasos de potencia/flujo: el flujo cae antes que la potencia termica |
+| Recuperacion del vacio alto en 5 pasos | 1 paso de potencia/flujo DESPUES de cerrar la ventana |
+
+La invariante "ninguna violacion del estado verdadero fuera de la ventana" detecta el
+segundo: un fallo cuya planta no se ha asentado al cerrar la ventana deja lecturas
+anormales sin etiqueta.
+
+### 14.4 Determinismo
+
+| Comprobacion | Resultado |
+|---|---|
+| Dataset pequeno en un proceso frente a 2 procesos `spawn` (suite de seguridad) | `manifest.json`, metricas y los 34 parquet identicos byte a byte |
+| Dataset de produccion con 3 y con 4 procesos | sha256 de los 34 parquet identicos |
+| Entre plataformas (Linux frente al Windows de F3-M5, ambos con `pyarrow 24.0.0` y `pandas 2.3.3`) | runs normales 0 y 3 con 200 pasos: **sha256 identicos** a los de 13.11; run 0 con 1500 pasos: **distinto** (`4f71a56f...` frente a `d60169ad...`) |
+
+Los bytes del parquet llevan la version de `pyarrow` en los metadatos (`created_by`), de modo
+que solo son comparables con la misma version (con `pyarrow 26.0.1` difieren los tres). Con la
+misma version, los runs cortos coinciden entre plataformas y el largo no: la explicacion mas
+probable es una deriva de redondeo entre plataformas (LSODA, libm) que se acumula a lo largo
+del run. **No se ha localizado el paso en que divergen** (haria falta el frame de Windows).
+Consecuencia: la reproducibilidad bit a bit vale dentro de una plataforma y una version de
+`pyarrow`; la entrada `simulate` de `dvc.lock` se genera y se verifica en Windows.

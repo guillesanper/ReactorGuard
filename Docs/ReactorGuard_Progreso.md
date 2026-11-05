@@ -1,6 +1,6 @@
 # ReactorGuard — Registro de Progreso
 **Nuclear Reactor Anomaly Detection Platform**
-*Actualizado: 2026-10-17 — Fase 2 verificada contra el commit `d35f802`; Fase 3: F3-M1 (`b343fb7`), F3-M2 (`36c9d3a`), F3-M3 (`7051d89`), F3-M4 (`eb97924`) y el codigo de F3-M5 (`967ccb7`) commiteados; mediciones y documentos de F3-M5 sin commitear*
+*Actualizado: 2026-11-05 — Fase 2 verificada contra el commit `d35f802`; Fase 3: F3-M1 (`b343fb7`), F3-M2 (`36c9d3a`), F3-M3 (`7051d89`), F3-M4 (`eb97924`), F3-M5 (`967ccb7` y `2b1305e`) y F3-M6 (rama `feat/stage-simulate`) commiteados; la entrada `simulate` de `dvc.lock` se genera en Windows*
 
 Este documento distingue tres cosas que antes se confundian: **codigo escrito**, **verificado en local**
 y **criterio medido en el entorno real**. Una tarea puede estar completada como codigo y aun asi no
@@ -14,7 +14,7 @@ tener su criterio de exito medido.
 |------|--------|---------|--------|
 | 1 | Foundation – GKE + Kafka | 1–2 | Codigo completo, **sin desplegar**; criterios sin medir |
 | 2 | Data Pipeline + Sensor Validator | 3–4 | **Codigo completo y verificado en local**; criterios 2 y 4 CUMPLIDOS, 1 y 3 NO MEDIDOS hasta medir en el cluster |
-| 3 | Simulation Layer (OpenMC + PyDy) | 5 | **En curso**: F3-M1 (modelo termico, tabla de agua, catalogo), F3-M2 (constraints fisicos), F3-M3 (simulador en operacion normal, spans y estudio de cadencia), F3-M4 (fallos de proceso) y F3-M5 (fallos de instrumento, planificador y cobertura) hechos; **el 40 % de etiquetado de D11 es inalcanzable y esta pendiente de decision**; F3-M6 y F3-M7 pendientes. Plan en `ReactorGuard_Fase3_Plan.md` |
+| 3 | Simulation Layer (OpenMC + PyDy) | 5 | **En curso**: F3-M1 a F3-M5 hechos; **F3-M6 hecho** (opcion B de D11 aplicada: tasa 0,12, pesos 0,55/0,38/0,06/0,01; stage `simulate`, manifiesto, metricas y suite de seguridad activa); falta generar la entrada `simulate` de `dvc.lock` en Windows; F3-M7 pendiente. Plan en `ReactorGuard_Fase3_Plan.md` |
 | 4 | ML Core – PINN Training | 6–7 | No iniciada (solo andamiaje) |
 | 5 | Uncertainty – BNN + Conformal Prediction | 8 | No iniciada |
 | 6 | API + K8s Serving | 9–10 | No iniciada (solo andamiaje, 2 de 4 endpoints devuelven 501) |
@@ -133,6 +133,34 @@ y sesgo bajo invisibles (0/10), pico 3/100, 68/100 y 100/100 por nivel; **D11 in
 necesarios frente a 32, tasa maxima 1,44 % con CRITICAL 0,43 % con los pesos de D11; plan factible (tasa 0,12,
 pesos 0,55/0,38/0,06/0,01) generado entero: 12,27 % etiquetado, plan == frame en 34/34 runs, 8/8 tipos, 144/144
 modos, 75,6 MB, vacio 838/457/834 s por run.
+
+### Linea base al cierre de F3-M6 (2026-11-05, rama `feat/stage-simulate`, contenedor Linux)
+
+```
+pytest tests/unit tests/safety --cov --cov-fail-under=70
+  2397 passed, 28 skipped, 1 failed (corregido despues), 13 errores de recogida
+                               (modulos que importan torch, feast, kafka o pwsh, ausentes)
+ruff check .                   All checks passed
+```
+
+Medida en un contenedor Linux (Python 3.13, `pandas 2.3.3`, sin `torch`, `feast` ni Docker): los modulos de
+test que importan esas dependencias no se recogen y la cifra total NO es comparable con las de Windows. **Hay
+que repetir la linea base en Windows** (`Verify-Phase2.ps1 -SkipCluster`, que ademas debe seguir saliendo con 2:
+hasta generar la entrada `simulate` de `dvc.lock` con `Invoke-Pipeline.ps1 -Stage simulate`, el criterio 4
+saldra FALLADO por "dvc.lock no registra las etapas: simulate"). `mypy` en este contenedor da los mismos 132
+errores con y sin los cambios de F3-M6 (stubs de `numpy`/dependencias ausentes); ninguno en los ficheros
+tocados.
+
+El fallo era `test_repository_section_resolves`, que asertaba el 0,40 antiguo; se actualizo a la opcion B y
+pasa. La cobertura TOTAL de esa corrida (90 %) no es comparable por los modulos no recogidos; con los tests
+propios, `reactor_simulator` 97 % (las 2 lineas que solo corren en los procesos `spawn` y el guard `__main__`),
+`dataset_builder` 99 % y `coverage` 100 %. La suite de seguridad tarda ~25 s (dos construcciones).
+
+Mediciones de F3-M6 (detalle en `Docs/physics_constraints.md`, seccion 14): dataset entero de 34 runs,
+1.377.000 lecturas, **168.958 etiquetadas (12,27 %)**, CRITICAL 6,61 %, plan == frame en 34/34, 8/8 tipos y
+144/144 modos (val 38,2 %, test 40,3 %), conservacion 3,87e-12, 0 violaciones del estado verdadero fuera de la
+matriz y 0 fuera de ventana; 75,6 MB; 2 min 9 s con 4 procesos (7 min 23 s de CPU) en Linux frente a los ~43
+min presupuestados con las cifras de Windows de F3-M5: **por medir en Windows**.
 
 ---
 
@@ -294,7 +322,7 @@ positivos en otros sensores.
 
 ## Fase 3 — Simulation Layer: OpenMC + PyDy
 **Semana 5** · En curso. Plan aprobado por hitos en [ReactorGuard_Fase3_Plan.md](ReactorGuard_Fase3_Plan.md)
-(decisiones D1-D13 y registro de progreso en su seccion 15). F3-M0 (preflight), F3-M1, F3-M2, F3-M3, F3-M4 y F3-M5 hechos.
+(decisiones D1-D13 y registro de progreso en su seccion 15). F3-M0 (preflight), F3-M1, F3-M2, F3-M3, F3-M4, F3-M5 y F3-M6 hechos.
 
 `data/generators/reactor_simulator.py` estaba roto contra el schema canonico; **F3-M3 lo reescribio** y ya cuenta en mypy y en la cobertura.
 
@@ -321,14 +349,16 @@ dT/dt exige un salto de 1800 K entre muestras (C5): no es un detector a esa cade
 
 **F3-M5 (fallos de instrumento, planificador y cobertura)** aporta `data/simulation/instrument_faults.py` (deriva, bloqueado, pico, sesgo e intermitente como funciones puras sobre la serie MEDIDA tras el ruido, con `true_value` preservado, `quality = good` y 3 niveles cada uno en `instrument_faults:` de `configs/plant_parameters.yaml`), `data/simulation/scenario_planner.py` (presupuesto por tasa y severidad de D11, con topes de densidad en `scenario_planner:`; falla con `ValueError` y cifras si la cuota no cabe), `data/simulation/coverage.py` (rejilla de 144 modos y particiones 70/15/15), las etiquetas `injected_at_step` y `fault_level` en el frame, y los subcomandos `instrument` y `plan` de `simulation_study.py`. **Hallazgo principal: el 40 % de etiquetado de D11 es inalcanzable** con los topes (397 runs necesarios frente a 32; con los pesos de D11 la tasa maxima es 1,44 % y CRITICAL 0,43 %); lo limitan el pico y el intermitente, no la ventana de proceso. `params.yaml` no se toco: la decision de tasa y pesos es tuya antes de F3-M6 (opciones en `Docs/physics_constraints.md`, 13.7). Con tasa 0,12 y pesos 0,55/0,38/0,06/0,01 el plan generado entero da 12,27 % etiquetado, plan == frame en 34/34 runs y 144/144 modos, pero val y test ven solo el 38-40 % de la rejilla. **Coste**: el vacio con la ventana planificada tarda 838 / 457 / 834 s por run (~43 min el dataset). **Matriz**: votada, el flujo neutronico queda oculto y los termopares llegan a la mitad; por canal se ven (verdad-terreno del Rule Engine de Fase 4).
 
+**F3-M6 (dataset, stage `simulate` y suite de seguridad)** aplica la **opcion B de D11** en `params.yaml` (tasa 0,12, pesos 0,55/0,38/0,06/0,01) y aporta la parte 2 de `data/simulation/dataset_builder.py` (`RunRecord` por run con filas, etiquetas por severidad, episodios, conservacion, violaciones de regla sobre valor verdadero y medido y `sha256`; `build_dataset`, `write_dataset` -> `data/raw/simulation/manifest.json`, `write_metrics` -> `metrics/simulation_metrics.json`, ambos sin reloj ni rutas absolutas), `ReactorSimulator.build_dataset` con reparto de runs entre procesos `spawn` (`--workers`, 0 = uno por CPU; la salida no depende del numero), `CoverageCollector.merge`, el stage `simulate` en `dvc.yaml`, `__pycache__`/`*.pyc` en `.dvcignore` (el directorio `data/simulation` es dep), el preflight y el resumen de la simulacion en `Invoke-Pipeline.ps1` y la suite `tests/safety` reescrita (13 tests, sin `skip`) sobre una configuracion pequena de 34 runs de 60 pasos. **Dataset medido**: 12,27 % etiquetado, identico al plan de F3-M5; matriz del estado verdadero = la de F3-M4 (el vacio viola energia, potencia/flujo, ebullicion, rango de caudal y masa; el resto, ninguna) y 0 violaciones fuera de ventana. **Pendiente en Windows**: `Invoke-Pipeline.ps1 -Stage simulate` (genera la entrada de `dvc.lock`: los md5 del lock son de ficheros con CRLF y no se pueden generar en Linux) y medir el coste real del stage.
+
 | ID | Tarea | Estado |
 |----|-------|--------|
 | T5.1 | OpenMC configurado: modelo PWR simplificado | Pendiente (F3-M8, opcional, corre en Docker; no esta en PyPI ni en conda-forge win-64) |
 | T5.2 | Modelo termodinamico: ODEs coolant/core | **Completado en F3-M1** (scipy LSODA, no PyDy); `data/simulation/thermal_model.py` |
 | T5.3 | `reactor_simulator.py`: neutronica + termica integradas | **Completado en F3-M3** en operacion normal (modelo ODE, 34 runs, 1.377.000 lecturas, determinista entre procesos, 414 pasos/s); los fallos de proceso llegaron en F3-M4 y los de instrumento en F3-M5 (`ReactorSimulator.planned` compone el dataset con fallos; generado entero con el plan factible: 75,6 MB, vacio 838 s por run) |
-| T5.4 | `fault_injector.py`: drift, stuck, noise spike, bias + 4 tipos adicionales | **Completado en F3-M5 (los 8 tipos del TDD 2.2)**: 3 de proceso (F3-M4, `process_faults.py`) y 5 de instrumento (F3-M5, `instrument_faults.py`, 3 niveles cada uno) con etiquetas de severidad solo de `FAULT_SEVERITY`; sobre TEP ya los cubre `data/validation/fault_injector.py` (T3.6). Pendiente de decision: tasa y pesos de D11 |
-| T5.5 | DVC stage `simulate` con labels | Pendiente (F3-M6); `ReactorSimulator.write` y `main` ya escriben el layout del TDD 4.4 |
-| T5.6 | Validacion de constraints fisicos (Appendix B TDD) | **Matriz completa medida**: reglas y conservacion (F3-M2), fallos de proceso (F3-M4, seccion 12) y los 5 de instrumento, votada y por canal (F3-M5, secciones 9 y 13 de `Docs/physics_constraints.md`). Pendiente: la suite de `tests/safety`, que sigue en `skip` hasta F3-M6 |
+| T5.4 | `fault_injector.py`: drift, stuck, noise spike, bias + 4 tipos adicionales | **Completado en F3-M5 (los 8 tipos del TDD 2.2)**: 3 de proceso (F3-M4, `process_faults.py`) y 5 de instrumento (F3-M5, `instrument_faults.py`, 3 niveles cada uno) con etiquetas de severidad solo de `FAULT_SEVERITY`; sobre TEP ya los cubre `data/validation/fault_injector.py` (T3.6). Tasa y pesos de D11 decididos antes de F3-M6 (opcion B) |
+| T5.5 | DVC stage `simulate` con labels | **Completado en F3-M6** (codigo y medicion en Linux): stage en `dvc.yaml`, 34 parquet con el layout del TDD 4.4 + `manifest.json` + `metrics/simulation_metrics.json`; 168.958 lecturas etiquetadas (12,27 %), 75,6 MB. Pendiente: la entrada de `dvc.lock`, que se genera en Windows con `Invoke-Pipeline.ps1 -Stage simulate` |
+| T5.6 | Validacion de constraints fisicos (Appendix B TDD) | **Matriz completa medida**: reglas y conservacion (F3-M2), fallos de proceso (F3-M4, seccion 12) y los 5 de instrumento, votada y por canal (F3-M5, secciones 9 y 13 de `Docs/physics_constraints.md`). **Suite de `tests/safety` activa desde F3-M6** (13 tests: tasa +-2 pp, etiquetas por eje, severidad estatica, 8/8 tipos, CRITICAL >= minimo, conservacion, matriz esperada y fuera de ventana, manifiesto, plan == frame y determinismo entre procesos) |
 
 ---
 
