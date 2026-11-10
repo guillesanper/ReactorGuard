@@ -97,6 +97,9 @@ kubeconfig
 # MLflow artifacts
 mlruns/
 mlartifacts/
+# Store sqlite por defecto de MLflow 3.x en el directorio de trabajo (H3 de Fase 4).
+# La URI del proyecto apunta bajo mlruns/ (D4-14); esto cubre una ejecucion sin ella.
+mlflow.db
 
 # Model checkpoints and large binaries
 *.pt

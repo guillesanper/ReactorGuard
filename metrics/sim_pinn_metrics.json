@@ -1,0 +1,46 @@
+{
+  "coverage": {
+    "grid_size": 144,
+    "k_min_readings": 10,
+    "n_min_episodes": 1
+  },
+  "critical_kinds": [
+    "stuck",
+    "core_temp_excursion",
+    "void_formation"
+  ],
+  "n_sensors": 27,
+  "splits": {
+    "test": {
+      "coverage_fraction": 0.4236111111111111,
+      "covered_modes": 61,
+      "critical_instants": 1813,
+      "critical_readings": 30546,
+      "instants": 13500,
+      "labelled_instants": 5654,
+      "runs": 9,
+      "trainable_pairs": 7645
+    },
+    "train": {
+      "coverage_fraction": 0.5,
+      "covered_modes": 72,
+      "critical_instants": 1474,
+      "critical_readings": 30126,
+      "instants": 24000,
+      "labelled_instants": 7957,
+      "runs": 16,
+      "trainable_pairs": 15105
+    },
+    "val": {
+      "coverage_fraction": 0.4166666666666667,
+      "covered_modes": 60,
+      "critical_instants": 1446,
+      "critical_readings": 30390,
+      "instants": 13500,
+      "labelled_instants": 5228,
+      "runs": 9,
+      "trainable_pairs": 8071
+    }
+  },
+  "version": 1
+}

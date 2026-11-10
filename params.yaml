@@ -379,6 +379,33 @@ training:
   seed: 42
 
 # -----------------------------------------------------------------------------
+# PINN parameters  (ml/training/, Fase 4)
+#
+# Leidos via ml/training/pinn_params.py. Solo llevan las claves que algun stage
+# lee de verdad (D4-9): F4-M1 resuelve las del stage prepare_sim; los
+# hiperparametros del modelo y del entrenamiento entran con su consumidor
+# (F4-M2/M3), y entonces se retiran de training: las claves del andamiaje.
+#
+# prepare_sim lee el dataset de simulation.output_dir y el catalogo de
+# simulation.sensors_path; aqui no se repiten.
+# -----------------------------------------------------------------------------
+pinn:
+  # Out de prepare_sim: {train,val,test}.parquet (una fila por instante, un par de
+  # columnas value:/true: por sensor en el orden del catalogo) y assignment.json.
+  data_dir: data/processed/sim_pinn
+  # Fuera de data_dir: son outs distintos y DVC no admite anidarlos.
+  metrics_path: metrics/sim_pinn_metrics.json
+
+  # Reparto POR RUN estratificado por escenario (D4-7): dentro de cada escenario,
+  # por run_id, los ultimos test_runs_per_scenario runs van a test, los
+  # val_runs_per_scenario anteriores a val y el resto a train. Un run entero cae en
+  # una sola particion: sin fuga temporal ni de episodio. Con 1/1 sobre los 34 runs
+  # (3 por tipo de fallo, 4 normales) quedan 16/9/9 runs y 1.474/1.446/1.813
+  # instantes CRITICAL (medido en F4-M1).
+  val_runs_per_scenario: 1
+  test_runs_per_scenario: 1
+
+# -----------------------------------------------------------------------------
 # Serving / inference parameters  (ml/serving/)
 # -----------------------------------------------------------------------------
 serving:

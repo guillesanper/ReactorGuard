@@ -1,6 +1,6 @@
 # ReactorGuard — Registro de Progreso
 **Nuclear Reactor Anomaly Detection Platform**
-*Actualizado: 2026-11-10 — Fase 2 verificada contra el commit `d35f802`; **Fase 3 cerrada en local** (F3-M7: `Verify-Phase3.ps1 -FromScratch` con los 4 criterios CUMPLIDOS); F3-M1 a F3-M7 commiteados (rama `feat/stage-simulate`, `afa5e85`); **Fase 4: plan propuesto (F4-M0) en `ReactorGuard_Fase4_Plan.md`, pendiente de aprobacion** (rama `feat/fase4-plan`)*
+*Actualizado: 2026-11-10 — Fase 2 verificada contra el commit `d35f802`; **Fase 3 cerrada en local** (F3-M7: `Verify-Phase3.ps1 -FromScratch` con los 4 criterios CUMPLIDOS); F3-M1 a F3-M7 commiteados (rama `feat/stage-simulate`, `afa5e85`); **Fase 4: plan aprobado; F4-M1 hecho (stage `prepare_sim`)** (rama `feat/fase4-plan`)*
 
 Este documento distingue tres cosas que antes se confundian: **codigo escrito**, **verificado en local**
 y **criterio medido en el entorno real**. Una tarea puede estar completada como codigo y aun asi no
@@ -15,7 +15,7 @@ tener su criterio de exito medido.
 | 1 | Foundation – GKE + Kafka | 1–2 | Codigo completo, **sin desplegar**; criterios sin medir |
 | 2 | Data Pipeline + Sensor Validator | 3–4 | **Codigo completo y verificado en local**; criterios 2 y 4 CUMPLIDOS, 1 y 3 NO MEDIDOS hasta medir en el cluster |
 | 3 | Simulation Layer (OpenMC + PyDy) | 5 | **Cerrada en local (F3-M7)**: los 4 criterios CUMPLIDOS con `Verify-Phase3.ps1 -FromScratch` (salida 0): 8/8 tipos y 144/144 modos, conservacion 100 % y matriz esperada, 1.377.000 lecturas con verdad-terreno (168.958 con fallo, opcion B de D11), stage `simulate` reproducible bit a bit. F3-M8 (OpenMC) opcional y pendiente. Referencia en `ReactorGuard_Fase3_Simulacion.md`; plan en `ReactorGuard_Fase3_Plan.md` |
-| 4 | ML Core – PINN Training | 6–7 | **Plan propuesto (F4-M0), pendiente de aprobacion**: preflight medido y decisiones D4-1 a D4-16 en `ReactorGuard_Fase4_Plan.md`; sin codigo de producto (solo andamiaje) |
+| 4 | ML Core – PINN Training | 6–7 | **En curso**: plan aprobado (D4-1 a D4-16); F4-M1 hecho (stage `prepare_sim`, datos de la PINN repartidos por run); modelo, entrenamiento y validacion pendientes (M2-M8) |
 | 5 | Uncertainty – BNN + Conformal Prediction | 8 | No iniciada |
 | 6 | API + K8s Serving | 9–10 | No iniciada (solo andamiaje, 2 de 4 endpoints devuelven 501) |
 | 7 | CI/CD + Security Gates | 11 | Solo esqueleto (`ci.yaml`, `terraform.yaml`, `dependabot.yml`) |
@@ -202,6 +202,18 @@ Engine existente detecta 1.727 de 4.733 instantes CRITICAL (36,5 %; excursion 0/
 32.161 normales; 108 de 144 modos tienen un solo episodio; `predictor.py` no importa con `mapie 1.4.1`; MLflow 3.14
 rechaza el backend de ficheros y por defecto crea `mlflow.db` sin ignorar; SHAP `GradientExplainer` 787 ms por
 muestra.
+
+### Linea base al cierre de F4-M1 (2026-11-10, Windows, rama `feat/fase4-plan` sobre `82ea0fa`, sin commitear)
+
+```
+ruff check .                   All checks passed
+mypy ml/ api/ data/            los mismos 2 errores de entorno en data/storage/parquet_codec.py
+pytest tests/unit tests/safety --cov --cov-fail-under=70
+  2976 passed, 1 skipped, TOTAL 99,57 % (7928 sentencias, 34 sin cubrir), 812 s sin suspensiones
+  ml/training: pinn_params 100 %, sim_dataset 100 %, prepare_sim 100 % (train.py en omit hasta M3)
+dvc status                     Data and pipelines are up to date (prepare_sim en dvc.lock, generado en Windows)
+Verify-Phase2.ps1 -SkipCluster salida 2 (2 y 4 CUMPLIDOS)      Verify-Phase3.ps1 salida 0 (4/4)
+```
 
 ---
 
@@ -404,9 +416,18 @@ dT/dt exige un salto de 1800 K entre muestras (C5): no es un detector a esa cade
 ---
 
 ## Fase 4 — ML Core: PINN Training
-**Semanas 6–7** · Plan propuesto (F4-M0), pendiente de aprobacion: [ReactorGuard_Fase4_Plan.md](ReactorGuard_Fase4_Plan.md)
-(preflight medido, choques C1-C9, decisiones D4-1 a D4-16, hitos F4-M1 a F4-M8, stages `prepare_sim`, `train` y
-`evaluate`, `Verify-Phase4.ps1`)
+**Semanas 6–7** · Plan **aprobado** (2026-11-10, D4-1 a D4-16 tal como se proponen; la retirada de claves de
+`training:` de D4-9 pasa a M3): [ReactorGuard_Fase4_Plan.md](ReactorGuard_Fase4_Plan.md) (preflight medido, choques
+C1-C9, hitos F4-M1 a F4-M8, stages `prepare_sim`, `train` y `evaluate`, `Verify-Phase4.ps1`). **F4-M1 hecho**: stage
+`prepare_sim` (seccion 15 del plan).
+
+**F4-M1 (datos de entrenamiento)** aporta `ml/training/pinn_params.py` (loader de la seccion nueva `pinn:`),
+`ml/training/sim_dataset.py` (manifiesto con verificacion de `sha256`, reparto por run estratificado de D4-7, frame
+ancho por instante con columnas `value:<tag>` y `true:<tag>` en el orden del catalogo, etiquetas agregadas, pares de
+entrenamiento de D4-6, z-score de train) y `ml/training/prepare_sim.py`, mas el stage `prepare_sim` en `dvc.yaml`. Sobre
+los 34 runs reproduce el preflight: 16/9/9 runs, **1.474 / 1.446 / 1.813 instantes CRITICAL** y rejilla 50,0 / 41,7 /
+42,4 %; 15.105 / 8.071 / 7.645 pares entrenables. Hallazgo: 8.160 instantes tienen mas de un episodio activo (los de
+instrumento se solapan en sensores distintos), por eso se guardan todos los `episode_ids` del instante.
 
 Existe `ml/models/pinn.py`, `ml/training/train.py` y `ml/serving/predictor.py`, pero:
 `ReactorPINN` es un LSTM y no el MLP del TDD 5.2, `physics_residual` **no implementa la fisica que documenta**,
@@ -420,7 +441,7 @@ ya no existe en la API 1.x).
 | T6.3 | Integracion MLflow | Pendiente |
 | T6.4 | DVC stage `train` | Pendiente |
 | T6.5 | `ml/validation/physics_check.py` | Pendiente |
-| T7.1 | Reentrenamiento con dataset de simulacion | Pendiente |
+| T7.1 | Reentrenamiento con dataset de simulacion | En curso: datos preparados (F4-M1, stage `prepare_sim`, `data/processed/sim_pinn`); el entrenamiento llega en M3 |
 | T7.2 | Grid search lambda_energy y lambda_mass | Pendiente |
 | T7.3 | `ml/models/rules.py`: 6 constraints del TDD | Pendiente |
 | T7.4 | Fusion PINN + Rules | Pendiente |
@@ -521,8 +542,8 @@ Lo que impide dar por cerrada la Fase 2 en el cluster y que **no** se resuelve e
 2. Antes del despliegue, decidir: persistencia del estado de los detectores, DLQ, y que hacer con las
    100.934 alertas (hallazgo 9).
 3. Fase 3 cerrada en local (F3-M8, calibracion con OpenMC en Docker, es opcional).
-4. **Fase 4: revisar y aprobar las decisiones D4-1 a D4-16** de `ReactorGuard_Fase4_Plan.md` (seccion 5; las marcadas
-   "criterio" cambian la lectura de Plan_Fases) y, con ellas aprobadas, ejecutar F4-M1 (stage `prepare_sim`).
+4. **Fase 4: F4-M2** (modelo y perdidas fisicas, T6.1) cuando el usuario lo indique; el plan esta aprobado y F4-M1
+   (stage `prepare_sim`) entregado.
 
 Referencia tecnica del camino de streaming (invariantes, contrato de mensajes, commit, rebalanceo, metricas y
 runbook): [ReactorGuard_Fase2_Streaming.md](ReactorGuard_Fase2_Streaming.md).

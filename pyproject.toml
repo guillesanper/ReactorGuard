@@ -146,7 +146,11 @@ markers = [
 # ml/features entro al escribirse kalman.py (T4.1), que es codigo de Fase 2 con
 # tests propios, no andamiaje: dejarlo fuera del alcance seria medir el gate
 # contra menos codigo del que la fase realmente entrega.
-source = ["data", "ml/features"]
+source = ["data", "ml/features", "ml/training"]
+# ml/training entro en F4-M1 con pinn_params.py, sim_dataset.py y prepare_sim.py
+# (stage prepare_sim, tests propios). train.py sigue siendo el andamiaje sin loop
+# hasta que F4-M3 lo reescriba: hasta entonces queda fuera del alcance medido.
+omit = ["ml/training/train.py"]
 # data/generators/reactor_simulator.py salio de este omit (y del override de mypy)
 # al REESCRIBIRSE en F3-M3 (T5.3): ya construye SensorReading canonicos y tiene
 # tests propios. Ya no queda ninguna exclusion de cobertura.

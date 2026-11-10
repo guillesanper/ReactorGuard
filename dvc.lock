@@ -345,3 +345,55 @@ stages:
       hash: md5
       md5: a0678572342713d5740b9de733dd090f
       size: 16914
+  prepare_sim:
+    cmd: python ml/training/prepare_sim.py
+    deps:
+    - path: configs/plant_parameters.yaml
+      hash: md5
+      md5: 403500ad29b8586a7b5b9ae1bb2351d1
+      size: 10971
+    - path: configs/sim_sensors.yaml
+      hash: md5
+      md5: d276e3983b158f0c6c81f2e63ae9838d
+      size: 6867
+    - path: data/raw/simulation
+      hash: md5
+      md5: 32802fa8a5aaa7725c6faf316d492d99.dir
+      size: 75598846
+      nfiles: 35
+    - path: data/simulation
+      hash: md5
+      md5: 6ac3b6084426682300594b2454eb85d4.dir
+      size: 328850
+      nfiles: 14
+    - path: ml/training/pinn_params.py
+      hash: md5
+      md5: 8e4dde0e1fc5ca676d4c983ab496abdc
+      size: 5490
+    - path: ml/training/prepare_sim.py
+      hash: md5
+      md5: 259097338007f9e138e1f3e7d3dc18fd
+      size: 2969
+    - path: ml/training/sim_dataset.py
+      hash: md5
+      md5: 00b9934062f7e693b246d906731f749f
+      size: 29566
+    params:
+      params.yaml:
+        pinn.data_dir: data/processed/sim_pinn
+        pinn.metrics_path: metrics/sim_pinn_metrics.json
+        pinn.test_runs_per_scenario: 1
+        pinn.val_runs_per_scenario: 1
+        simulation.output_dir: data/raw/simulation
+        simulation.plant_parameters_path: configs/plant_parameters.yaml
+        simulation.sensors_path: configs/sim_sensors.yaml
+    outs:
+    - path: data/processed/sim_pinn
+      hash: md5
+      md5: 1a1e10232063d73b5c08c685056bb793.dir
+      size: 20429224
+      nfiles: 4
+    - path: metrics/sim_pinn_metrics.json
+      hash: md5
+      md5: 21be50f4251fc986ccd4bdaff35dc219
+      size: 1025

@@ -1,8 +1,8 @@
 # Fase 4 (ML Core: PINN) - plan por hitos con guia de ejecucion
 
-Estado: **PROPUESTO, PENDIENTE DE APROBACION** (F4-M0, 2026-11-10). No se ha escrito codigo de producto: el
-unico cambio en el repo es este documento y la actualizacion de `Docs/ReactorGuard_Progreso.md`. Las sondas del
-preflight se ejecutaron fuera del repo (scratchpad), leyendo `data/raw/simulation` sin modificarlo. Etiquetas:
+Estado: **APROBADO** (2026-11-10: D4-1 a D4-16 tal como se proponen, con un unico ajuste de calendario en D4-9:
+la retirada de claves de `training:` pasa de M1 a M3). Plan redactado en F4-M0; **F4-M1 hecho** (seccion 15). Las
+sondas del preflight se ejecutaron fuera del repo (scratchpad), leyendo `data/raw/simulation` sin modificarlo. Etiquetas:
 **[M]** medida durante la planificacion, **[L]** leida del codigo o de un documento, **[W]** documentacion externa
 no medida, **[C]** calculada a partir de cifras [M] (aritmetica, no medicion). Prosa sin tildes, como el resto del
 repositorio.
@@ -150,9 +150,13 @@ etiquetadas, 5.202 / 18.839 (27,6 %); caudal 8 / 1.558.
 | C8 | Latencia "< 50 ms" sin definir el camino medido; SHAP no cabe en el (H11) |
 | C9 | Stage `train` del TDD con deps en `data/processed/features/` (TEP, 52 sensores); la PINN de este plan entrena sobre la simulacion |
 
-## 5. Decisiones propuestas (D4-1 a D4-16) - PENDIENTES DE APROBACION
+## 5. Decisiones (D4-1 a D4-16) - APROBADAS el 2026-11-10
 
-Cada una con la recomendacion primero. Las que cambian criterios de Plan_Fases van marcadas **(criterio)**.
+Cada una con la recomendacion primero; el usuario aprobo la recomendada en las 16, incluidas las cuatro marcadas
+**(criterio)**, que cambian la lectura de Plan_Fases. Unico ajuste (F4-M1): en D4-9 la retirada de claves de
+`training:` se hace en M3 y no en M1, porque el andamiaje `ml/training/train.py` lee seis de ellas (`hidden_size`,
+`n_layers`, `dropout`, `learning_rate`, `weight_decay`, `physics_lambda`) y retirarlas antes de reescribirlo lo dejaria
+roto dos hitos.
 
 | # | Decision | Propuesta (recomendada) | Alternativas |
 |---|---|---|---|
@@ -164,7 +168,7 @@ Cada una con la recomendacion primero. Las que cambian criterios de Plan_Fases v
 | D4-6 | Que se entrena | Solo pares (t, t+1) **sin etiqueta en ninguno de los dos instantes** (normales de todos los runs, incluidos los tramos sanos de runs con fallo); objetivo = `value` medido de t+1; z-score por sensor con estadisticos de train guardados en el checkpoint | Objetivo `true_value` (denoising); entrenar tambien con fallos y cabeza de clasificacion |
 | D4-7 | Particiones (C9, H8) | **Por run, estratificado** (reparto b): ultimo run de cada escenario a test, penultimo a val, resto a train (normal 2/1/1). Sin fuga entre particiones dentro de un run; CRITICAL equilibrado (1.474 / 1.446 / 1.813) [M]. La cobertura de la rejilla en val/test (~42 %) se informa, no es criterio de F4 | (c) temporal por run (val/test con solo 780/189 CRITICAL); (a) el actual |
 | D4-8 | Cableado (H9, C9) | Stage nuevo `prepare_sim` que lee `data/raw/simulation` y escribe la matriz ancha por run, etiquetas por instante y la asignacion de particion; **`featurize`, `split` y el TEP no se tocan**. La primera ejecucion con TEP de Plan_Fases (C1) se marca **NO APLICA** | Cablear la simulacion a `featurize` (exige generalizar los 52 sensores); smoke con TEP y lambda = 0 |
-| D4-9 | Parametros (H10) | Seccion nueva **`pinn:`** en `params.yaml`; se retiran de `training:` las claves sin consumidor (`learning_rate`, `weight_decay`, `optimizer`, `batch_size`, `max_epochs`, `early_stopping_patience`, `physics_lambda`, `hidden_size`, `n_layers`, `dropout`); las del stage `split` quedan intactas (no lo invalida) | Ampliar `training:` |
+| D4-9 | Parametros (H10) | Seccion nueva **`pinn:`** en `params.yaml` (M1, solo con las claves que algun stage lee); se retiran de `training:` las claves sin consumidor real (`learning_rate`, `weight_decay`, `optimizer`, `batch_size`, `max_epochs`, `early_stopping_patience`, `physics_lambda`, `hidden_size`, `n_layers`, `dropout`) **en M3, junto con la reescritura de `train.py`**; las del stage `split` quedan intactas (no lo invalida) | Ampliar `training:` |
 | D4-10 | Conjunto CRITICAL **(criterio)** (C2) | Tabla estatica TDD 2.2 (D10): **bloqueado, excursion y vacio** | La lista de Plan_Fases/TDD 9.2 (bloqueado, deriva, excursion) |
 | D4-11 | Unidad y certificacion del recall **(criterio)** (C3) | Recall por **instante** CRITICAL del test con el umbral calibrado en val; se informa ademas la cota de Clopper-Pearson al 95 % y el recall por episodio. CUMPLIDO si la estimacion puntual > 99,9 %; la cota se publica y no decide | Exigir la cota (no alcanzable sin mas datos CRITICAL: decision de Fase 3); evaluar sobre val+test (sesgo por calibrar en val) |
 | D4-12 | Satisfaccion fisica **(criterio)** (C6, C7) | Fraccion de instantes de **test (todos)** cuyo estado **predicho** desnormalizado no viola ninguna de las 7 reglas evaluables (dT/dt incluida aunque a 180 s no dispare); se informa aparte el subconjunto normal. Referencia: la medicion normal viola 0/32.161 [M] | Solo instantes normales; solo energia y masa |
@@ -214,12 +218,19 @@ Orden: **M1 -> M2 -> M3 -> M4 -> M5 -> M6 -> M7 -> M8**. M7 (SHAP y latencia) pu
 
 **Crear**: `ml/training/pinn_params.py` (loader de `pinn:`), `ml/training/sim_dataset.py` (lee parquet ->
 matriz ancha por run en el orden del catalogo, etiquetas por instante: `labelled`, severidad maxima, tipo por eje,
-`episode_id`; asignacion de particion D4-7; pares validos D4-6; estadisticos z de train), `ml/training/prepare_sim.py`
+episodios activos; asignacion de particion D4-7; pares validos D4-6; estadisticos z de train), `ml/training/prepare_sim.py`
 (`main()` fino), tests de los tres.
-**Tocar**: `params.yaml` (seccion `pinn:` y retirada de D4-9, avisando antes), `dvc.yaml` (stage, seccion 8),
+**Tocar**: `params.yaml` (seccion `pinn:`; la retirada de D4-9 pasa a M3), `dvc.yaml` (stage, seccion 8),
 `pyproject.toml` (cobertura), `.gitignore` (`mlflow.db`), `Invoke-Pipeline.ps1` (resumen de `data/processed/sim_pinn`).
 **Salida**: `data/processed/sim_pinn/{train,val,test}.parquet` (ancho, una fila por instante, con `run_id`, `timestep`
-y etiquetas) + `metrics/sim_pinn_metrics.json` (pares por particion, CRITICAL por particion, cobertura informativa).
+y etiquetas) + `assignment.json` (run -> escenario y particion, orden de sensores) + `metrics/sim_pinn_metrics.json`
+(pares por particion, CRITICAL por particion, cobertura informativa).
+**Hecho (2026-11-10)**: ver seccion 15. Desviaciones respecto a lo escrito arriba, todas por evidencia del hito:
+(1) los episodios de instrumento se SOLAPAN (8.160 instantes con mas de uno activo [M]), asi que en lugar de un
+`episode_id` por instante se guardan `episode_ids` (todos, ordenados, unidos por `|`) y `n_episodes`; (2) el reparto se
+parametriza con `pinn.val_runs_per_scenario` y `pinn.test_runs_per_scenario` en vez de `pinn.split_strategy` (una sola
+estrategia no es un parametro) y `pinn.seed` no se declara (el reparto es determinista, sin aleatoriedad); (3) la
+retirada de `training:` pasa a M3 (seccion 5).
 **Medir**: que reproduce las cifras de 2.2 (1.474 / 1.446 / 1.813 CRITICAL), tiempo del stage, bytes, y que dos
 ejecuciones dan el mismo hash. **Verificar**: `Verify-Phase2 -SkipCluster` = 2 y `Verify-Phase3` = 0 (el stage nuevo
 entra en `dvc.lock`: el criterio 4 de Fase 2 compara todas las etapas, H13 de F3).
@@ -235,7 +246,8 @@ estado de 5 componentes por mediana) y `ml/models/physics_loss.py` (`energy_bala
 
 ### F4-M3 - Loop de entrenamiento y MLflow (T6.2, T6.3, T6.4)
 
-**Reescribir** `ml/training/train.py`: Adam, `ReduceLROnPlateau`, parada temprana por perdida de val, curriculum
+**Retirar** de `training:` las diez claves de D4-9 (avisando antes) y sacar `ml/training/train.py` del `omit` de
+cobertura de `pyproject.toml`. **Reescribir** `ml/training/train.py`: Adam, `ReduceLROnPlateau`, parada temprana por perdida de val, curriculum
 lambda 0 -> objetivo en `pinn.curriculum_epochs` (50 por defecto, riesgo de Plan_Fases), registro por epoca (`data`,
 `energy`, `mass`, `total`, `val_*`, `lr`) y params en MLflow (D4-14), checkpoint y `model_card.json`. Stage `train`
 (seccion 8). **Medir**: convergencia (curva), epocas hasta parar, tiempo del stage, **bytes de `model.pt` entre dos
@@ -282,12 +294,12 @@ normales de train; medir coste frente a `nsamples`) y `ml/validation/latency_ben
 ## 8. Stages DVC
 
 ```
-prepare_sim:
+prepare_sim:                                               # HECHO en F4-M1, tal cual en dvc.yaml
   cmd: python ml/training/prepare_sim.py                  # siempre via Invoke-Pipeline.ps1
   deps: [ml/training/prepare_sim.py, ml/training/sim_dataset.py, ml/training/pinn_params.py,
-         data/simulation/dataset_builder.py, data/simulation/scenario.py, configs/sim_sensors.yaml,
-         data/raw/simulation]
-  params: [pinn.data_dir, pinn.split_strategy, pinn.seed, simulation.output_dir]
+         data/simulation, configs/sim_sensors.yaml, configs/plant_parameters.yaml, data/raw/simulation]
+  params: [pinn.data_dir, pinn.metrics_path, pinn.val_runs_per_scenario, pinn.test_runs_per_scenario,
+           simulation.output_dir, simulation.sensors_path, simulation.plant_parameters_path]
   outs: [data/processed/sim_pinn]
   metrics: [metrics/sim_pinn_metrics.json: {cache: false}]
 
@@ -363,7 +375,7 @@ Todo lo no medido se marca NO MEDIDO; no se estima.
 |---|---|
 | M1 | Avisar antes de editar `params.yaml` (retira claves de `training:`); comprobar con grep que ningun test lee las claves retiradas. El stage nuevo entra en `dvc.lock`: generar en Windows con `Invoke-Pipeline.ps1 -Stage prepare_sim` y rehacer los guardias. Leer solo las columnas necesarias (H12). El orden de sensores sale del catalogo, no del parquet |
 | M2 | La perdida en unidades de ingenieria (convencion 6). cp fuera de rejilla -> fila sin perdida, nunca extrapolar. Flujo por canal = total / `n_loops`. Q_gen del flujo, no de `P_th` (M2-8 de F3). Test: perdida ~0 sobre `true_value` estacionario |
-| M3 | MLflow solo con URI explicita en `mlruns/`; nunca crear `mlflow.db` en la raiz. Medir bytes de `model.pt` entre dos procesos. `weights_only=True` al cargar. No dejar el reloj en el checkpoint |
+| M3 | Avisar antes de retirar las claves de `training:` (D4-9, movido desde M1) y comprobar con grep que solo `train.py` las leia. MLflow solo con URI explicita en `mlruns/`; nunca crear `mlflow.db` en la raiz. Medir bytes de `model.pt` entre dos procesos. `weights_only=True` al cargar. No dejar el reloj en el checkpoint |
 | M4 | `evaluate_rules_detailed` exige `DatetimeIndex` y un unico run por frame: evaluar por run. dT/dt no dispara a 180 s (no es un fallo del modelo) |
 | M5 | La rejilla no se vuelve a ejecutar en CI; el ganador se fija a mano en `params.yaml` |
 | M6 | Calibrar umbral y `tau` SOLO en val; test una vez. Reportar falsos positivos en normales. Override de reglas: una violacion es CRITICAL aunque el score sea bajo |
@@ -380,7 +392,7 @@ actualizada, filas T6.x/T7.x de Progreso y mensaje de commit (sin linea Co-Autho
 | Hito | Estado | Fecha | Cifras medidas | Commit |
 |---|---|---|---|---|
 | F4-M0 | Hecho (plan propuesto, pendiente de aprobacion) | 2026-11-10 | puertas: 2867 passed / 1 skipped / 99,55 % (817 s); V2 = 2, V3 = 0; preflight en la seccion 2 | - |
-| F4-M1 | Pendiente | | | |
+| F4-M1 | Hecho (stage `prepare_sim`) | 2026-11-10 | 16/9/9 runs; CRITICAL 1.474 / 1.446 / 1.813 instantes y 30.126 / 30.390 / 30.546 lecturas (91.062); pares entrenables 15.105 / 8.071 / 7.645; rejilla 50,0 / 41,7 / 42,4 %; 8.160 instantes con >1 episodio; salidas 9,57 / 5,43 / 5,43 MB; stage 7,2-7,7 s via DVC (6,4 s el script); mismos md5 en 6 ejecuciones; puertas: ruff limpio, mypy con los 2 errores de entorno, 2976 passed / 1 skipped / 99,57 % (812 s, sin 506/507), 100 % en los 3 modulos nuevos, `dvc status` limpio, V2 = 2, V3 = 0. Nota: `dvc repro --force prepare_sim` rehace tambien `simulate` (~4 min, lock identico) | - |
 | F4-M2 | Pendiente | | | |
 | F4-M3 | Pendiente | | | |
 | F4-M4 | Pendiente | | | |
