@@ -11,6 +11,8 @@ configuracion pequena (runs de unas decenas de pasos): `write_sim_params` y
 
 from __future__ import annotations
 
+import json
+from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -21,7 +23,16 @@ import yaml
 from numpy.typing import NDArray
 
 from data.generators.reactor_simulator import ReactorSimulator
+from data.simulation.dataset_builder import (
+    MANIFEST_NAME,
+    MANIFEST_VERSION,
+    NO_FAULT,
+    file_sha256,
+    run_parquet_path,
+    write_run_parquet,
+)
 from data.simulation.plant_params import load_neutronics, load_plant_params
+from data.simulation.scenario import FaultAxis, ScenarioKind
 from data.simulation.sensor_catalog import SensorCatalog, load_sensor_catalog
 from data.simulation.simulation_params import load_simulation_params
 from data.simulation.thermal_model import Diagnostics, ModelInputs, ReactorModel, StepResult
@@ -329,3 +340,148 @@ def write_small_dataset_params(work_dir: Path, **overrides: Any) -> Path:
     }
     section.update(overrides)
     return write_sim_params(work_dir, **section)
+
+
+# ----------------------------------------------------------------------
+# F4-M1: frames largos sinteticos y dataset en disco (stage prepare_sim)
+# ----------------------------------------------------------------------
+
+SYNTHETIC_SEED = 42
+"""Semilla del directorio `seed=<n>` del dataset sintetico."""
+
+
+@dataclass(frozen=True)
+class LabelSpan:
+    """Ventana etiquetada de un run sintetico.
+
+    Attributes:
+        first_step: Primer paso etiquetado.
+        last_step: Ultimo paso etiquetado (incluido).
+        level: Nivel de magnitud (`low`, `medium`, `high`).
+        tags: Sensores etiquetados; None etiqueta todos (fallo de proceso).
+        episode: Sufijo del `episode_id` (`<run_id>:<episode>`).
+    """
+
+    first_step: int
+    last_step: int
+    level: str = "high"
+    tags: tuple[str, ...] | None = None
+    episode: str = "ep0"
+
+
+def synthetic_value(sensor_index: int, step: int) -> float:
+    """Return the measured value of a synthetic reading (distinct per sensor and step)."""
+    return 100.0 + 10.0 * sensor_index + 0.1 * step
+
+
+TRUE_OFFSET = 0.05
+"""`value - true_value` de toda lectura sintetica."""
+
+
+def long_run_frame(
+    catalog: SensorCatalog,
+    run_id: str,
+    scenario: ScenarioKind,
+    n_steps: int,
+    spans: Sequence[LabelSpan] = (),
+    start: str = "2026-01-01T00:00:00+00:00",
+) -> pd.DataFrame:
+    """Return a synthetic long frame of one run with the columns prepare_sim reads.
+
+    Filas por paso y, dentro de cada paso, en el orden del catalogo, como el stage
+    `simulate`. El valor medido es `synthetic_value` y el verdadero el medido menos
+    `TRUE_OFFSET`. Las etiquetas siguen el eje y la severidad estatica del escenario:
+    un fallo de proceso etiqueta `process_*` y uno de instrumento `instrument_*` (con
+    `corrupted`). Las columnas de severidad, episodio y nivel son `string`, como en
+    el parquet real.
+
+    Args:
+        catalog: Catalogo de sensores.
+        run_id: Identificador del run.
+        scenario: Escenario del run.
+        n_steps: Pasos del run.
+        spans: Ventanas etiquetadas (solo para escenarios con fallo).
+        start: Instante del paso 0 (cadencia de 180 s).
+
+    Returns:
+        The long frame.
+    """
+    tags = catalog.tags
+    types = [sensor.sensor_type.value for sensor in catalog.sensors]
+    n_rows = n_steps * len(tags)
+    steps = np.repeat(np.arange(n_steps), len(tags))
+    sensor_index = np.tile(np.arange(len(tags)), n_steps)
+    value = np.array(
+        [synthetic_value(int(i), int(s)) for i, s in zip(sensor_index, steps, strict=True)]
+    )
+    fault = np.full(n_rows, NO_FAULT, dtype=object)
+    severity: list[str | None] = [None] * n_rows
+    episode: list[str | None] = [None] * n_rows
+    level: list[str | None] = [None] * n_rows
+    for span in spans:
+        chosen = set(tags if span.tags is None else span.tags)
+        for row in range(n_rows):
+            in_window = span.first_step <= steps[row] <= span.last_step
+            if in_window and tags[sensor_index[row]] in chosen:
+                fault[row] = scenario.value
+                severity[row] = None if scenario.severity is None else scenario.severity.value
+                episode[row] = f"{run_id}:{span.episode}"
+                level[row] = span.level
+    labelled = fault != NO_FAULT
+    none = np.full(n_rows, NO_FAULT, dtype=object)
+    empty: list[str | None] = [None] * n_rows
+    on_process = scenario.axis is FaultAxis.PROCESS
+    timestamps = pd.Timestamp(start) + pd.to_timedelta(steps * 180, unit="s")
+    return pd.DataFrame(
+        {
+            "timestamp": pd.DatetimeIndex(timestamps).tz_convert("UTC"),
+            "sensor_id": np.array([tags[i] for i in sensor_index], dtype=object),
+            "sensor_type": np.array([types[i] for i in sensor_index], dtype=object),
+            "value": value,
+            "timestep": steps.astype(np.int64),
+            "run_id": np.full(n_rows, run_id, dtype=object),
+            "scenario": np.full(n_rows, scenario.value, dtype=object),
+            "true_value": value - TRUE_OFFSET,
+            "corrupted": labelled & (scenario.axis is FaultAxis.INSTRUMENT),
+            "process_fault": fault if on_process else none,
+            "process_severity": pd.array(severity if on_process else empty, dtype="string"),
+            "instrument_fault": none if on_process else fault,
+            "instrument_severity": pd.array(empty if on_process else severity, dtype="string"),
+            "episode_id": pd.array(episode, dtype="string"),
+            "fault_level": pd.array(level, dtype="string"),
+        }
+    )
+
+
+def write_long_dataset(root: Path, frames: Sequence[pd.DataFrame]) -> Path:
+    """Write run frames in the `simulate` layout with a manifest.
+
+    Cada frame va a `fault_type=<escenario>/seed=42/<run_id>.parquet` y el
+    manifiesto lista `run_id`, `scenario`, `path` relativa y `sha256`, como el de
+    `dataset_builder.write_dataset` (solo los campos que prepare_sim lee).
+
+    Args:
+        root: Raiz del dataset.
+        frames: Un frame largo por run.
+
+    Returns:
+        The manifest path.
+    """
+    entries: list[dict[str, str]] = []
+    for frame in frames:
+        run_id = str(frame["run_id"].iloc[0])
+        scenario = ScenarioKind(str(frame["scenario"].iloc[0]))
+        path = write_run_parquet(frame, run_parquet_path(root, scenario, SYNTHETIC_SEED, run_id))
+        entries.append(
+            {
+                "run_id": run_id,
+                "scenario": scenario.value,
+                "path": path.relative_to(root).as_posix(),
+                "sha256": file_sha256(path),
+            }
+        )
+    manifest = root / MANIFEST_NAME
+    manifest.write_text(
+        json.dumps({"version": MANIFEST_VERSION, "runs": entries}, indent=2), encoding="utf-8"
+    )
+    return manifest

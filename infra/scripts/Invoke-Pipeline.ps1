@@ -29,6 +29,9 @@
     (F3-M5 midio ~840 s por run en Windows; Docs/physics_constraints.md, 14.1).
     Reparte los runs entre un proceso por CPU; el resultado no depende de cuantos.
 
+    El stage `prepare_sim` (F4-M1) cuelga de `simulate` y escribe los datos de la
+    PINN repartidos por run en data/processed/sim_pinn (segundos).
+
 .PARAMETER Stage
     Reproduce only this stage and its dependencies. Defaults to the whole graph.
 
@@ -40,6 +43,7 @@
     .\infra\scripts\Invoke-Pipeline.ps1 -Stage adapt_tep
     .\infra\scripts\Invoke-Pipeline.ps1 -Stage adapt_tep -Force
     .\infra\scripts\Invoke-Pipeline.ps1 -Stage simulate
+    .\infra\scripts\Invoke-Pipeline.ps1 -Stage prepare_sim
 #>
 
 [CmdletBinding()]
@@ -112,9 +116,10 @@ if (-not (Test-Path $spansPath)) {
 }
 Write-Host "  spans        : configs/sensor_spans.yaml presente"
 
-# Las tablas de la simulacion solo se exigen si el stage simulate va a correr
-# (grafo entero o -Stage simulate): reproducir solo la rama TEP no las necesita.
-if (-not $Stage -or $Stage -eq "simulate") {
+# Las tablas de la simulacion solo se exigen si el stage simulate puede correr
+# (grafo entero, -Stage simulate o -Stage prepare_sim, que depende de el y lee el
+# catalogo y plant_parameters.yaml): reproducir solo la rama TEP no las necesita.
+if (-not $Stage -or $Stage -in @("simulate", "prepare_sim")) {
     $simConfigs = @(
         @{ Path = "configs\sim_sensors.yaml";            Hint = "catalogo de sensores (F3-M1), versionado en git" },
         @{ Path = "configs\sim_sensor_spans.yaml";       Hint = "python data/generators/derive_sim_spans.py" },
@@ -206,6 +211,23 @@ share = 100.0 * labelled / total if total else 0.0
 print(f"    {'TOTAL':<35}: {len(runs):>3} runs, {total:>9,} lecturas, {labelled:>9,} etiquetadas ({share:.2f} %)")
 if not manifest.exists():
     print('    (sin manifest.json: el stage simulate no termino)')
+"@
+    if ($LASTEXITCODE -eq 0) { $summary | ForEach-Object { Write-Host $_ } }
+}
+
+$simPinnMetrics = Join-Path $ProjectRoot "metrics\sim_pinn_metrics.json"
+if (Test-Path $simPinnMetrics) {
+    Write-Host ""
+    Write-Host "  Datos de la PINN en data/processed/sim_pinn (reparto por run, D4-7):"
+
+    $summary = & $VenvPython -c @"
+import json, pathlib
+metrics = json.loads(pathlib.Path(r'$simPinnMetrics').read_text(encoding='utf-8'))
+for name in ('train', 'val', 'test'):
+    s = metrics['splits'][name]
+    print(f"    {name:<5}: {s['runs']:>2} runs, {s['instants']:>6,} instantes, "
+          f"{s['critical_instants']:>5,} CRITICAL, {s['trainable_pairs']:>6,} pares, "
+          f"rejilla {100.0 * s['coverage_fraction']:.1f} %")
 "@
     if ($LASTEXITCODE -eq 0) { $summary | ForEach-Object { Write-Host $_ } }
 }

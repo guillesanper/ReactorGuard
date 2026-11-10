@@ -12,6 +12,9 @@
 # simulate (F3-M6) es una rama independiente: no lee nada del TEP y escribe
 # data/raw/simulation, hermano de data/raw/tep (sin anidar outs). No cablea
 # featurize/split/streamer (D13): eso es de Fase 4.
+#
+# prepare_sim (F4-M1) cuelga de simulate y escribe data/processed/sim_pinn, los
+# datos de la PINN repartidos por run (D4-7, D4-8). Tampoco toca featurize/split.
 # =============================================================================
 
 stages:
@@ -195,4 +198,36 @@ stages:
       - data/raw/simulation
     metrics:
       - metrics/simulation_metrics.json:
+          cache: false
+
+  prepare_sim:
+    # F4-M1 (D4-8): datos de la PINN desde el dataset simulado. Rama independiente
+    # del TEP: no toca featurize ni split. Lee solo las columnas que necesita y
+    # comprueba el sha256 de cada run contra el manifiesto de simulate.
+    cmd: python ml/training/prepare_sim.py
+    deps:
+      - ml/training/prepare_sim.py
+      - ml/training/sim_dataset.py
+      - ml/training/pinn_params.py
+      # Directorio de codigo que importa: manifiesto, etiquetas, cobertura,
+      # catalogo, escenarios y loaders de parametros.
+      - data/simulation
+      # Catalogo (orden de columnas) y umbrales de cobertura de D6
+      # (scenario_planner.k_min_readings y n_min_episodes).
+      - configs/sim_sensors.yaml
+      - configs/plant_parameters.yaml
+      - data/raw/simulation
+    params:
+      - pinn.data_dir
+      - pinn.metrics_path
+      - pinn.val_runs_per_scenario
+      - pinn.test_runs_per_scenario
+      # De donde LEE: el out de simulate y las tablas que lo describen.
+      - simulation.output_dir
+      - simulation.sensors_path
+      - simulation.plant_parameters_path
+    outs:
+      - data/processed/sim_pinn
+    metrics:
+      - metrics/sim_pinn_metrics.json:
           cache: false
