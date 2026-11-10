@@ -1,6 +1,6 @@
 # ReactorGuard — Registro de Progreso
 **Nuclear Reactor Anomaly Detection Platform**
-*Actualizado: 2026-11-05 — Fase 2 verificada contra el commit `d35f802`; Fase 3: F3-M1 (`b343fb7`), F3-M2 (`36c9d3a`), F3-M3 (`7051d89`), F3-M4 (`eb97924`), F3-M5 (`967ccb7` y `2b1305e`) y F3-M6 (rama `feat/stage-simulate`) commiteados; la entrada `simulate` de `dvc.lock` se genera en Windows*
+*Actualizado: 2026-11-10 — Fase 2 verificada contra el commit `d35f802`; **Fase 3 cerrada en local** (F3-M7: `Verify-Phase3.ps1 -FromScratch` con los 4 criterios CUMPLIDOS); F3-M1 a F3-M6 commiteados (F3-M6 y la entrada `simulate` de `dvc.lock` en la rama `feat/stage-simulate`, `a8bb24f`); F3-M7 sin commitear*
 
 Este documento distingue tres cosas que antes se confundian: **codigo escrito**, **verificado en local**
 y **criterio medido en el entorno real**. Una tarea puede estar completada como codigo y aun asi no
@@ -14,7 +14,7 @@ tener su criterio de exito medido.
 |------|--------|---------|--------|
 | 1 | Foundation – GKE + Kafka | 1–2 | Codigo completo, **sin desplegar**; criterios sin medir |
 | 2 | Data Pipeline + Sensor Validator | 3–4 | **Codigo completo y verificado en local**; criterios 2 y 4 CUMPLIDOS, 1 y 3 NO MEDIDOS hasta medir en el cluster |
-| 3 | Simulation Layer (OpenMC + PyDy) | 5 | **En curso**: F3-M1 a F3-M5 hechos; **F3-M6 hecho** (opcion B de D11 aplicada: tasa 0,12, pesos 0,55/0,38/0,06/0,01; stage `simulate`, manifiesto, metricas y suite de seguridad activa); falta generar la entrada `simulate` de `dvc.lock` en Windows; F3-M7 pendiente. Plan en `ReactorGuard_Fase3_Plan.md` |
+| 3 | Simulation Layer (OpenMC + PyDy) | 5 | **Cerrada en local (F3-M7)**: los 4 criterios CUMPLIDOS con `Verify-Phase3.ps1 -FromScratch` (salida 0): 8/8 tipos y 144/144 modos, conservacion 100 % y matriz esperada, 1.377.000 lecturas con verdad-terreno (168.958 con fallo, opcion B de D11), stage `simulate` reproducible bit a bit. F3-M8 (OpenMC) opcional y pendiente. Referencia en `ReactorGuard_Fase3_Simulacion.md`; plan en `ReactorGuard_Fase3_Plan.md` |
 | 4 | ML Core – PINN Training | 6–7 | No iniciada (solo andamiaje) |
 | 5 | Uncertainty – BNN + Conformal Prediction | 8 | No iniciada |
 | 6 | API + K8s Serving | 9–10 | No iniciada (solo andamiaje, 2 de 4 endpoints devuelven 501) |
@@ -161,6 +161,28 @@ Mediciones de F3-M6 (detalle en `Docs/physics_constraints.md`, seccion 14): data
 144/144 modos (val 38,2 %, test 40,3 %), conservacion 3,87e-12, 0 violaciones del estado verdadero fuera de la
 matriz y 0 fuera de ventana; 75,6 MB; 2 min 9 s con 4 procesos (7 min 23 s de CPU) en Linux frente a los ~43
 min presupuestados con las cifras de Windows de F3-M5: **por medir en Windows**.
+
+### Linea base al cierre de F3-M7 (2026-11-10, Windows, sobre `a8bb24f` con F3-M7 sin commitear)
+
+```
+ruff check .                   All checks passed
+mypy ml/ api/ data/            2 errores no-untyped-call en data/storage/parquet_codec.py (entorno, ver abajo)
+pytest tests/unit tests/safety --cov --cov-fail-under=70
+  apertura: 2837 passed, 1 skipped, TOTAL 99,55 % (7576 sentencias, 34 sin cubrir)
+  cierre  : 2867 passed (+30 de test_verify_phase3_script.py), 1 skipped, TOTAL 99,55 %, 33 min 15 s sin suspensiones
+Verify-Phase3.ps1 -FromScratch salida 0: criterios 1-4 CUMPLIDOS (10 min 54 s, sin suspensiones)
+Verify-Phase2.ps1 -SkipCluster salida 2: criterios 2 y 4 CUMPLIDOS, 1 y 3 NO MEDIDOS (sin cambios)
+```
+
+La duracion de la suite de apertura no se cita: hubo suspensiones de Windows (Kernel-Power 506/507) en
+su intervalo. Los 2 errores de `mypy` son del venv local, no del codigo: tiene `mypy 2.3.0` (el extra `dev`
+fija 2.4.1) y `pyarrow 24.0.0`, sin tipos; CI instala un `pyarrow` tipado. **No actualizar `pyarrow` en el
+venv**: su version va en los bytes del parquet e invalidaria la entrada `simulate` de `dvc.lock` (M7-4).
+
+Mediciones de F3-M7 (detalle en `Docs/physics_constraints.md`, seccion 15): stage `simulate` 10 min 46 s con
+8 procesos en Windows; vacio alto 120 s y medio 335 s por run en un proceso (F3-M5 midio 834 y 838 s: no se
+reproduce). La suite completa sobre `tests/` (con integracion) da 28 fallos de metricas por orden de
+ejecucion: `feast` define `PROMETHEUS_MULTIPROC_DIR` al importarse (M7-5, deuda de Fase 2).
 
 ---
 
@@ -357,8 +379,8 @@ dT/dt exige un salto de 1800 K entre muestras (C5): no es un detector a esa cade
 | T5.2 | Modelo termodinamico: ODEs coolant/core | **Completado en F3-M1** (scipy LSODA, no PyDy); `data/simulation/thermal_model.py` |
 | T5.3 | `reactor_simulator.py`: neutronica + termica integradas | **Completado en F3-M3** en operacion normal (modelo ODE, 34 runs, 1.377.000 lecturas, determinista entre procesos, 414 pasos/s); los fallos de proceso llegaron en F3-M4 y los de instrumento en F3-M5 (`ReactorSimulator.planned` compone el dataset con fallos; generado entero con el plan factible: 75,6 MB, vacio 838 s por run) |
 | T5.4 | `fault_injector.py`: drift, stuck, noise spike, bias + 4 tipos adicionales | **Completado en F3-M5 (los 8 tipos del TDD 2.2)**: 3 de proceso (F3-M4, `process_faults.py`) y 5 de instrumento (F3-M5, `instrument_faults.py`, 3 niveles cada uno) con etiquetas de severidad solo de `FAULT_SEVERITY`; sobre TEP ya los cubre `data/validation/fault_injector.py` (T3.6). Tasa y pesos de D11 decididos antes de F3-M6 (opcion B) |
-| T5.5 | DVC stage `simulate` con labels | **Completado en F3-M6** (codigo y medicion en Linux): stage en `dvc.yaml`, 34 parquet con el layout del TDD 4.4 + `manifest.json` + `metrics/simulation_metrics.json`; 168.958 lecturas etiquetadas (12,27 %), 75,6 MB. Pendiente: la entrada de `dvc.lock`, que se genera en Windows con `Invoke-Pipeline.ps1 -Stage simulate` |
-| T5.6 | Validacion de constraints fisicos (Appendix B TDD) | **Matriz completa medida**: reglas y conservacion (F3-M2), fallos de proceso (F3-M4, seccion 12) y los 5 de instrumento, votada y por canal (F3-M5, secciones 9 y 13 de `Docs/physics_constraints.md`). **Suite de `tests/safety` activa desde F3-M6** (13 tests: tasa +-2 pp, etiquetas por eje, severidad estatica, 8/8 tipos, CRITICAL >= minimo, conservacion, matriz esperada y fuera de ventana, manifiesto, plan == frame y determinismo entre procesos) |
+| T5.5 | DVC stage `simulate` con labels | **Completado en F3-M6, verificado en F3-M7**: stage en `dvc.yaml`, 34 parquet con el layout del TDD 4.4 + `manifest.json` + `metrics/simulation_metrics.json`; 1.377.000 lecturas con verdad-terreno, 168.958 con fallo (12,27 %), 75,6 MB; entrada de `dvc.lock` generada en Windows (`a8bb24f`, 10 min 46 s con 8 procesos) y reproducida bit a bit desde cero por `Verify-Phase3.ps1 -FromScratch` |
+| T5.6 | Validacion de constraints fisicos (Appendix B TDD) | **Matriz completa medida**: reglas y conservacion (F3-M2), fallos de proceso (F3-M4, seccion 12) y los 5 de instrumento, votada y por canal (F3-M5, secciones 9 y 13 de `Docs/physics_constraints.md`). **Suite de `tests/safety` activa desde F3-M6** (13 tests: tasa +-2 pp, etiquetas por eje, severidad estatica, 8/8 tipos, CRITICAL >= minimo, conservacion, matriz esperada y fuera de ventana, manifiesto, plan == frame y determinismo entre procesos). **Verificacion de la fase** con `infra/scripts/Verify-Phase3.ps1` (F3-M7): 4/4 criterios CUMPLIDOS |
 
 ---
 
@@ -476,7 +498,8 @@ Lo que impide dar por cerrada la Fase 2 en el cluster y que **no** se resuelve e
    Destruir la infraestructura al terminar. Guia en [Despliegue_GCP.md](Despliegue_GCP.md) (secciones 6 y 7).
 2. Antes del despliegue, decidir: persistencia del estado de los detectores, DLQ, y que hacer con las
    100.934 alertas (hallazgo 9).
-3. Fases 3 y 4 solo cuando se indique explicitamente.
+3. Fase 3 cerrada en local (F3-M8, calibracion con OpenMC en Docker, es opcional). Fase 4 solo cuando se
+   indique explicitamente; sus notas de arranque estan en `ReactorGuard_Fase3_Simulacion.md`, seccion 8.
 
 Referencia tecnica del camino de streaming (invariantes, contrato de mensajes, commit, rebalanceo, metricas y
 runbook): [ReactorGuard_Fase2_Streaming.md](ReactorGuard_Fase2_Streaming.md).
@@ -505,6 +528,12 @@ runbook): [ReactorGuard_Fase2_Streaming.md](ReactorGuard_Fase2_Streaming.md).
 - **Verificacion de la Fase 2**: `.\infra\scripts\Verify-Phase2.ps1` (salida 0 todos cumplidos, 1 algun
   fallado, 2 alguno sin medir, 3 error del verificador). `-SkipCluster` evita kubectl; `-FromScratch` rehace
   el pipeline en una copia temporal (minutos, necesita red)
+- **Verificacion de la Fase 3**: `.\infra\scripts\Verify-Phase3.ps1` (mismos estados y salidas). Lee
+  `metrics/simulation_metrics.json`, los parquet de `data/raw/simulation` y `dvc.lock`, y ejecuta
+  `tests/safety`; `-SkipPytest` reutiliza el ultimo JUnit; `-FromScratch` rehace solo `simulate` en una copia
+  (~10 min, sin red, necesita los cambios commiteados)
+- **`pyarrow` y `pandas`**: sus versiones cambian los bytes del dataset simulado; actualizarlas obliga a
+  regenerar `simulate` y su entrada de `dvc.lock`
 - **Puerto 8000 del host**: puede estar ocupado por otro proyecto; los servicios en el host fallan con
   `EXIT_RUNTIME`. Usar una copia de `params.yaml` con otro `health_port` y `--params`
 - **Suspension de Windows**: la suspension moderna (Kernel-Power 506/507) falsea las mediciones largas;

@@ -1,4 +1,8 @@
-# Constraints fisicos de ReactorGuard (F3-M2, calibrado en F3-M3, matriz de F3-M4, dataset de F3-M6)
+# Constraints fisicos de ReactorGuard (F3-M2, calibrado en F3-M3, matriz de F3-M4, dataset de F3-M6, cierre en F3-M7)
+
+**Version final de la Fase 3** (2026-11-10). La referencia de uso del dataset (layout, columnas, regeneracion,
+limitaciones y notas para Fase 4) esta en `Docs/ReactorGuard_Fase3_Simulacion.md`; este documento guarda
+las ecuaciones y las mediciones. El cierre de la fase esta en la seccion 15.
 
 Implementacion: `data/simulation/physics_constraints.py`. Tests:
 `tests/unit/test_physics_constraints.py`. Modelo contra el que se verifican:
@@ -1024,8 +1028,8 @@ Generado entero con `python data/generators/reactor_simulator.py --workers 4`
 **Coste**: F3-M5 midio el vacio planificado en 838 / 457 / 834 s por run en Windows y
 presupuesto ~43 min para el stage. Aqui el dataset entero cuesta 7 min 23 s de CPU.
 La diferencia no esta explicada: puede ser la maquina, la pila numerica (scipy, BLAS) o
-suspensiones de Windows no detectadas (M5-11). **Se mide en Windows con
-`Invoke-Pipeline.ps1 -Stage simulate`** antes de citar un coste del stage.
+suspensiones de Windows no detectadas (M5-11). **Medido en Windows en F3-M7 (15.2)**: las cifras de
+F3-M5 no se reproducen; el stage cuesta 10 min 46 s con 8 procesos.
 
 ### 14.2 Matriz de violaciones sobre el estado verdadero (dataset entero)
 
@@ -1085,3 +1089,35 @@ probable es una deriva de redondeo entre plataformas (LSODA, libm) que se acumul
 del run. **No se ha localizado el paso en que divergen** (haria falta el frame de Windows).
 Consecuencia: la reproducibilidad bit a bit vale dentro de una plataforma y una version de
 `pyarrow`; la entrada `simulate` de `dvc.lock` se genera y se verifica en Windows.
+
+## 15. Cierre de la fase (F3-M7)
+
+### 15.1 Criterios de exito
+
+`infra/scripts/Verify-Phase3.ps1 -FromScratch` en Windows (2026-11-10, sin suspensiones en el intervalo),
+salida **0**:
+
+| # | Criterio | Resultado |
+|---|---|---|
+| 1 | 8/8 tipos y >= 95 % de la rejilla (D6) | CUMPLIDO: 8/8 tipos, 144/144 modos (recalculado de `covered / grid_size`) |
+| 2 | Conservacion 100 % y matriz esperada (D7) | CUMPLIDO: 0 fallos, peor residuo 3,87e-12 (tolerancia 1e-6); el estado verdadero solo viola la matriz de 14.2; 13 tests de `tests/safety` pasan sin saltos (63 s) |
+| 3 | > 1.000.000 lecturas etiquetadas | CUMPLIDO: 1.377.000 lecturas con verdad-terreno contadas en los 34 parquet (sha256, filas y etiquetas iguales al manifiesto); 168.958 con fallo |
+| 4 | Resultados identicos con la misma semilla | CUMPLIDO: `dvc status simulate` limpio y la etapa rehecha en una copia temporal da los mismos md5 de `data/raw/simulation` y de las metricas |
+
+El criterio 3 cuenta lecturas con verdad-terreno, no lecturas con fallo (hallazgo M7-1 del plan). Sin
+regresion de Fase 2: `Verify-Phase2.ps1 -SkipCluster` sigue en salida 2 con los criterios 2 y 4 CUMPLIDOS.
+
+### 15.2 Coste del stage en Windows
+
+Portatil de referencia (i5-1135G7 4C/8T, Windows 11, Python 3.12, `pyarrow 24.0.0`, `pandas 2.3.3`):
+
+| Medicion | Resultado |
+|---|---|
+| Stage completo, `--workers 0` (8 procesos) | **10 min 46 s** de reloj |
+| Etapa rehecha en `-FromScratch` | ~9 min 45 s (10 min 54 s del verificador, 63 s de suite) |
+| Vacio alto (`sim_run_025`), un proceso | 120 s de reloj, 118 s de CPU |
+| Vacio medio (`sim_run_017`), un proceso | 335 s de reloj, 326 s de CPU |
+
+Los dos runs aislados dan los mismos sha256 que el stage con 8 procesos. F3-M5 midio 834 y 838 s para esos
+niveles (13.10 y M5-8): esas cifras no se reproducen, y la explicacion mas probable son suspensiones no
+detectadas en aquella medicion (M5-11). El presupuesto de ~43 min queda descartado.
