@@ -1,6 +1,6 @@
 # ReactorGuard — Registro de Progreso
 **Nuclear Reactor Anomaly Detection Platform**
-*Actualizado: 2026-11-10 — Fase 2 verificada contra el commit `d35f802`; **Fase 3 cerrada en local** (F3-M7: `Verify-Phase3.ps1 -FromScratch` con los 4 criterios CUMPLIDOS); F3-M1 a F3-M6 commiteados (F3-M6 y la entrada `simulate` de `dvc.lock` en la rama `feat/stage-simulate`, `a8bb24f`); F3-M7 sin commitear*
+*Actualizado: 2026-11-10 — Fase 2 verificada contra el commit `d35f802`; **Fase 3 cerrada en local** (F3-M7: `Verify-Phase3.ps1 -FromScratch` con los 4 criterios CUMPLIDOS); F3-M1 a F3-M7 commiteados (rama `feat/stage-simulate`, `afa5e85`); **Fase 4: plan propuesto (F4-M0) en `ReactorGuard_Fase4_Plan.md`, pendiente de aprobacion** (rama `feat/fase4-plan`)*
 
 Este documento distingue tres cosas que antes se confundian: **codigo escrito**, **verificado en local**
 y **criterio medido en el entorno real**. Una tarea puede estar completada como codigo y aun asi no
@@ -15,7 +15,7 @@ tener su criterio de exito medido.
 | 1 | Foundation – GKE + Kafka | 1–2 | Codigo completo, **sin desplegar**; criterios sin medir |
 | 2 | Data Pipeline + Sensor Validator | 3–4 | **Codigo completo y verificado en local**; criterios 2 y 4 CUMPLIDOS, 1 y 3 NO MEDIDOS hasta medir en el cluster |
 | 3 | Simulation Layer (OpenMC + PyDy) | 5 | **Cerrada en local (F3-M7)**: los 4 criterios CUMPLIDOS con `Verify-Phase3.ps1 -FromScratch` (salida 0): 8/8 tipos y 144/144 modos, conservacion 100 % y matriz esperada, 1.377.000 lecturas con verdad-terreno (168.958 con fallo, opcion B de D11), stage `simulate` reproducible bit a bit. F3-M8 (OpenMC) opcional y pendiente. Referencia en `ReactorGuard_Fase3_Simulacion.md`; plan en `ReactorGuard_Fase3_Plan.md` |
-| 4 | ML Core – PINN Training | 6–7 | No iniciada (solo andamiaje) |
+| 4 | ML Core – PINN Training | 6–7 | **Plan propuesto (F4-M0), pendiente de aprobacion**: preflight medido y decisiones D4-1 a D4-16 en `ReactorGuard_Fase4_Plan.md`; sin codigo de producto (solo andamiaje) |
 | 5 | Uncertainty – BNN + Conformal Prediction | 8 | No iniciada |
 | 6 | API + K8s Serving | 9–10 | No iniciada (solo andamiaje, 2 de 4 endpoints devuelven 501) |
 | 7 | CI/CD + Security Gates | 11 | Solo esqueleto (`ci.yaml`, `terraform.yaml`, `dependabot.yml`) |
@@ -183,6 +183,25 @@ Mediciones de F3-M7 (detalle en `Docs/physics_constraints.md`, seccion 15): stag
 8 procesos en Windows; vacio alto 120 s y medio 335 s por run en un proceso (F3-M5 midio 834 y 838 s: no se
 reproduce). La suite completa sobre `tests/` (con integracion) da 28 fallos de metricas por orden de
 ejecucion: `feast` define `PROMETHEUS_MULTIPROC_DIR` al importarse (M7-5, deuda de Fase 2).
+
+### Linea base de apertura de Fase 4 (F4-M0, 2026-11-10, Windows, rama `feat/fase4-plan` sobre `afa5e85`)
+
+```
+ruff check .                   All checks passed   (venv: ruff 0.15.22; el extra dev fija 0.17.3)
+mypy ml/ api/ data/            los mismos 2 errores de entorno en data/storage/parquet_codec.py
+pytest tests/unit tests/safety --cov --cov-fail-under=70
+  2867 passed, 1 skipped, TOTAL 99,55 % (7576 sentencias, 34 sin cubrir), 817 s sin suspensiones
+dvc status                     Data and pipelines are up to date
+Verify-Phase2.ps1 -SkipCluster salida 2 (2 y 4 CUMPLIDOS)      Verify-Phase3.ps1 salida 0 (4/4)
+```
+
+La suite tardo 817 s frente a los 33 min 15 s de F3-M7; la diferencia no se investigo. Preflight de Fase 4 (sondas
+fuera del repo, detalle en `ReactorGuard_Fase4_Plan.md`, seccion 2): MLP del TDD 0,47 s por epoca y 0,11 ms p99 por
+muestra en CPU, LSTM del andamiaje 73-210 s por epoca; entrenamiento del MLP determinista entre procesos; el Rule
+Engine existente detecta 1.727 de 4.733 instantes CRITICAL (36,5 %; excursion 0/1.653) con 0 falsos positivos en
+32.161 normales; 108 de 144 modos tienen un solo episodio; `predictor.py` no importa con `mapie 1.4.1`; MLflow 3.14
+rechaza el backend de ficheros y por defecto crea `mlflow.db` sin ignorar; SHAP `GradientExplainer` 787 ms por
+muestra.
 
 ---
 
@@ -385,11 +404,14 @@ dT/dt exige un salto de 1800 K entre muestras (C5): no es un detector a esa cade
 ---
 
 ## Fase 4 — ML Core: PINN Training
-**Semanas 6–7** · No iniciada (solo andamiaje)
+**Semanas 6–7** · Plan propuesto (F4-M0), pendiente de aprobacion: [ReactorGuard_Fase4_Plan.md](ReactorGuard_Fase4_Plan.md)
+(preflight medido, choques C1-C9, decisiones D4-1 a D4-16, hitos F4-M1 a F4-M8, stages `prepare_sim`, `train` y
+`evaluate`, `Verify-Phase4.ps1`)
 
 Existe `ml/models/pinn.py`, `ml/training/train.py` y `ml/serving/predictor.py`, pero:
-`physics_residual` **no implementa la fisica que documenta**, `train.py` no tiene loop de entrenamiento y
-`predictor.py` declara MAPIE sin ajustarlo.
+`ReactorPINN` es un LSTM y no el MLP del TDD 5.2, `physics_residual` **no implementa la fisica que documenta**,
+`train.py` no tiene loop de entrenamiento y `predictor.py` **no se puede importar** con `mapie 1.4.1` (`MapieRegressor`
+ya no existe en la API 1.x).
 
 | ID | Tarea | Estado |
 |----|-------|--------|
@@ -498,8 +520,9 @@ Lo que impide dar por cerrada la Fase 2 en el cluster y que **no** se resuelve e
    Destruir la infraestructura al terminar. Guia en [Despliegue_GCP.md](Despliegue_GCP.md) (secciones 6 y 7).
 2. Antes del despliegue, decidir: persistencia del estado de los detectores, DLQ, y que hacer con las
    100.934 alertas (hallazgo 9).
-3. Fase 3 cerrada en local (F3-M8, calibracion con OpenMC en Docker, es opcional). Fase 4 solo cuando se
-   indique explicitamente; sus notas de arranque estan en `ReactorGuard_Fase3_Simulacion.md`, seccion 8.
+3. Fase 3 cerrada en local (F3-M8, calibracion con OpenMC en Docker, es opcional).
+4. **Fase 4: revisar y aprobar las decisiones D4-1 a D4-16** de `ReactorGuard_Fase4_Plan.md` (seccion 5; las marcadas
+   "criterio" cambian la lectura de Plan_Fases) y, con ellas aprobadas, ejecutar F4-M1 (stage `prepare_sim`).
 
 Referencia tecnica del camino de streaming (invariantes, contrato de mensajes, commit, rebalanceo, metricas y
 runbook): [ReactorGuard_Fase2_Streaming.md](ReactorGuard_Fase2_Streaming.md).
