@@ -226,8 +226,8 @@ stages:
       size: 32139
     - path: ml/features/store/feature_store_params.py
       hash: md5
-      md5: 61698ed70e0071501f84043ec5e549c0
-      size: 8898
+      md5: 29aec187260da9d262ec976c554e8e6e
+      size: 9166
     - path: ml/features/store/source_builder.py
       hash: md5
       md5: 0270d5a6b3f6654e6f7cb720e9c5f539
@@ -260,3 +260,88 @@ stages:
       hash: md5
       md5: da35b1a9e4488bf90aa6b0e42215a336
       size: 57477921
+  simulate:
+    cmd: python data/generators/reactor_simulator.py --workers 0
+    deps:
+    - path: configs/neutronics_coefficients.yaml
+      hash: md5
+      md5: 8e0115b8043725cf95ae417fb7664903
+      size: 1495
+    - path: configs/plant_parameters.yaml
+      hash: md5
+      md5: 403500ad29b8586a7b5b9ae1bb2351d1
+      size: 10971
+    - path: configs/sim_sensor_spans.yaml
+      hash: md5
+      md5: a0fad145c722666d2a8a6aaba62f4989
+      size: 4569
+    - path: configs/sim_sensors.yaml
+      hash: md5
+      md5: d276e3983b158f0c6c81f2e63ae9838d
+      size: 6867
+    - path: configs/water_table.yaml
+      hash: md5
+      md5: f4ed575a44ad62d149ba541406279e59
+      size: 78997
+    - path: data/generators/reactor_simulator.py
+      hash: md5
+      md5: e2e1a334532c15aa092b31d5d6890eff
+      size: 20675
+    - path: data/generators/tep_adapter.py
+      hash: md5
+      md5: f0ac0eda503af196d04562f70ab76dbc
+      size: 24285
+    - path: data/schemas/sensor_reading.py
+      hash: md5
+      md5: 17dd31fc9a8435d77f213aff76c7a139
+      size: 7049
+    - path: data/schemas/sensor_spans.py
+      hash: md5
+      md5: 86dd5cedbe46a89d54e290a01ff0b052
+      size: 7438
+    - path: data/simulation
+      hash: md5
+      md5: 6ac3b6084426682300594b2454eb85d4.dir
+      size: 328850
+      nfiles: 14
+    params:
+      params.yaml:
+        simulation.calibration_date: '2025-06-01'
+        simulation.critical_min_fraction: 0.05
+        simulation.drift_coefficient: 0.0001
+        simulation.dt_seconds: 180
+        simulation.fault_injection_rate: 0.12
+        simulation.last_maintenance_date: '2025-12-01'
+        simulation.load_hold_minutes_max: 360
+        simulation.load_hold_minutes_min: 60
+        simulation.load_max_fraction: 1.0
+        simulation.load_min_fraction: 0.7
+        simulation.max_ramp_percent_per_min: 5.0
+        simulation.metrics_path: metrics/simulation_metrics.json
+        simulation.n_samples: 50000
+        simulation.neutronics_path: configs/neutronics_coefficients.yaml
+        simulation.openmc_seed: 42
+        simulation.output_dir: data/raw/simulation
+        simulation.plant_id: SIM-PWR-01
+        simulation.plant_parameters_path: configs/plant_parameters.yaml
+        simulation.run_length_steps: 1500
+        simulation.sensors_path: configs/sim_sensors.yaml
+        simulation.severity_weights:
+          critical: 0.55
+          high: 0.38
+          medium: 0.06
+          low: 0.01
+        simulation.spans_path: configs/sim_sensor_spans.yaml
+        simulation.start_time: '2026-01-01T00:00:00+00:00'
+        simulation.warmup_fraction: 0.2
+        simulation.water_table_path: configs/water_table.yaml
+    outs:
+    - path: data/raw/simulation
+      hash: md5
+      md5: 32802fa8a5aaa7725c6faf316d492d99.dir
+      size: 75598846
+      nfiles: 35
+    - path: metrics/simulation_metrics.json
+      hash: md5
+      md5: a0678572342713d5740b9de733dd090f
+      size: 16914

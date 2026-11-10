@@ -19,9 +19,15 @@
     Cuatro capas:
         Capa 1 - Configuracion : resolver ProjectRoot y el interprete del venv,
                                  y anteponerlo al PATH
-        Capa 2 - Preflight     : verificar que dvc responde y que params.yaml parsea
+        Capa 2 - Preflight     : verificar que dvc responde, que params.yaml parsea
+                                 y que existen las tablas que leen los stages
         Capa 3 - Ejecucion     : dvc repro, opcionalmente acotado o forzado
         Capa 4 - Reporte       : dvc status y resumen de particiones y conteos
+                                 (TEP y simulacion)
+
+    El stage `simulate` (F3-M6) es el mas caro del grafo y lo domina el vacio
+    (F3-M5 midio ~840 s por run en Windows; Docs/physics_constraints.md, 14.1).
+    Reparte los runs entre un proceso por CPU; el resultado no depende de cuantos.
 
 .PARAMETER Stage
     Reproduce only this stage and its dependencies. Defaults to the whole graph.
@@ -33,6 +39,7 @@
     .\infra\scripts\Invoke-Pipeline.ps1
     .\infra\scripts\Invoke-Pipeline.ps1 -Stage adapt_tep
     .\infra\scripts\Invoke-Pipeline.ps1 -Stage adapt_tep -Force
+    .\infra\scripts\Invoke-Pipeline.ps1 -Stage simulate
 #>
 
 [CmdletBinding()]
@@ -105,6 +112,25 @@ if (-not (Test-Path $spansPath)) {
 }
 Write-Host "  spans        : configs/sensor_spans.yaml presente"
 
+# Las tablas de la simulacion solo se exigen si el stage simulate va a correr
+# (grafo entero o -Stage simulate): reproducir solo la rama TEP no las necesita.
+if (-not $Stage -or $Stage -eq "simulate") {
+    $simConfigs = @(
+        @{ Path = "configs\sim_sensors.yaml";            Hint = "catalogo de sensores (F3-M1), versionado en git" },
+        @{ Path = "configs\sim_sensor_spans.yaml";       Hint = "python data/generators/derive_sim_spans.py" },
+        @{ Path = "configs\plant_parameters.yaml";       Hint = "parametros de planta (F3-M1), versionado en git" },
+        @{ Path = "configs\neutronics_coefficients.yaml"; Hint = "coeficientes neutronicos (F3-M1), versionado en git" },
+        @{ Path = "configs\water_table.yaml";            Hint = "python -m data.simulation.build_water_table --output configs/water_table.yaml" }
+    )
+    foreach ($config in $simConfigs) {
+        if (-not (Test-Path (Join-Path $ProjectRoot $config.Path))) {
+            Write-Error "Falta $($config.Path) ($($config.Hint)). El stage simulate no puede correr sin ella."
+            exit 1
+        }
+    }
+    Write-Host "  simulacion   : $($simConfigs.Count) tablas de configs/ presentes"
+}
+
 # ===========================================================================
 # Capa 3 - Ejecucion
 # ===========================================================================
@@ -151,6 +177,35 @@ for part in sorted(root.glob('fault_type=*/readings.parquet')):
     label = 'normal' if part.parent.name.endswith('=00') else 'fault'
     print(f"    {part.parent.name} ({label:6}): {n:>8,} lecturas")
 print(f"    {'TOTAL':<20}: {total:>8,} lecturas")
+"@
+    if ($LASTEXITCODE -eq 0) { $summary | ForEach-Object { Write-Host $_ } }
+}
+
+$simulationDir = Join-Path $ProjectRoot "data\raw\simulation"
+if (Test-Path $simulationDir) {
+    Write-Host ""
+    Write-Host "  Runs en data/raw/simulation:"
+
+    $summary = & $VenvPython -c @"
+import json, pathlib
+root = pathlib.Path(r'$simulationDir')
+manifest = root / 'manifest.json'
+runs = json.loads(manifest.read_text(encoding='utf-8'))['runs'] if manifest.exists() else []
+by_type = {}
+for run in runs:
+    entry = by_type.setdefault(run['scenario'], [0, 0, 0])
+    entry[0] += 1
+    entry[1] += run['rows']
+    entry[2] += run['labelled']
+for scenario in sorted(by_type):
+    n_runs, rows, labelled = by_type[scenario]
+    print(f"    fault_type={scenario:<24}: {n_runs:>3} runs, {rows:>9,} lecturas, {labelled:>9,} etiquetadas")
+total = sum(e[1] for e in by_type.values())
+labelled = sum(e[2] for e in by_type.values())
+share = 100.0 * labelled / total if total else 0.0
+print(f"    {'TOTAL':<35}: {len(runs):>3} runs, {total:>9,} lecturas, {labelled:>9,} etiquetadas ({share:.2f} %)")
+if not manifest.exists():
+    print('    (sin manifest.json: el stage simulate no termino)')
 "@
     if ($LASTEXITCODE -eq 0) { $summary | ForEach-Object { Write-Host $_ } }
 }

@@ -237,3 +237,95 @@ def build_simulator(work_dir: Path, **overrides: Any) -> ReactorSimulator:
     """
     params_path = write_sim_params(work_dir, **overrides)
     return ReactorSimulator.from_params(load_simulation_params(params_path))
+
+
+# ----------------------------------------------------------------------
+# F3-M6: dataset planificado pequeno (suite de seguridad y stage simulate)
+# ----------------------------------------------------------------------
+
+SMALL_DATASET_RATE = 0.12
+"""Tasa etiquetada de la opcion B de D11 (la de params.yaml)."""
+
+SMALL_DATASET_WEIGHTS: dict[str, float] = {
+    "critical": 0.55,
+    "high": 0.38,
+    "medium": 0.06,
+    "low": 0.01,
+}
+"""Pesos de severidad de la opcion B de D11 (los de params.yaml)."""
+
+_SMALL_INSTRUMENT_LENGTHS: dict[str, tuple[int, int, int]] = {
+    "drift": (24, 12, 6),
+    "stuck": (10, 12, 16),
+    "intermittent": (8, 12, 16),
+}
+"""Longitudes (bajo, medio, alto) de los episodios de instrumento en runs de 60 pasos.
+
+El bloqueado debe superar la ventana de 8 del detector y crecer con el nivel."""
+
+
+def write_small_plant_params(work_dir: Path) -> Path:
+    """Write a copy of plant_parameters.yaml scaled to runs of 60 steps.
+
+    El planificador exige 3 runs por tipo y ventanas de proceso de 151 pasos por
+    defecto, que no caben en un dataset de segundos. Esta copia acorta las
+    ventanas (4 pasos a magnitud plena y 5 de recuperacion, salvo el vacio, que
+    conserva sus 20), las longitudes de instrumento y pide 2 runs por tipo, con un
+    tope de picos de 0,05 para que el reparto de la opcion B quepa. Las magnitudes
+    de los niveles, las rampas de entrada (30 min) y el modelo fisico no cambian.
+    Las rampas no se comprimen mas (medido en F3-M6): con una entrada de 6 min o una
+    retirada en 1 paso la excursion alta viola la regla de potencia/flujo sobre el
+    estado verdadero, y el vacio alto con 5 pasos de recuperacion la viola un paso
+    DESPUES de cerrar su ventana; con las rampas de produccion no ocurre ninguna
+    de las dos cosas.
+
+    Args:
+        work_dir: Directorio donde escribir el fichero.
+
+    Returns:
+        The path of the scaled plant parameters.
+    """
+    document = yaml.safe_load((CONFIGS / "plant_parameters.yaml").read_text(encoding="utf-8"))
+    for kind, tiers in document["fault_tiers"].items():
+        tiers["hold_steps"] = 4
+        if kind != "void_formation":
+            tiers["recovery_steps"] = 5
+    for kind, (low, medium, high) in _SMALL_INSTRUMENT_LENGTHS.items():
+        levels = document["instrument_faults"][kind]["levels"]
+        levels["low"]["length_steps"] = low
+        levels["medium"]["length_steps"] = medium
+        levels["high"]["length_steps"] = high
+    document["scenario_planner"]["n_min_runs"] = 2
+    document["scenario_planner"]["max_spike_rate"] = 0.05
+    work_dir.mkdir(parents=True, exist_ok=True)
+    path = work_dir / "plant_parameters.yaml"
+    path.write_text(yaml.safe_dump(document, sort_keys=False), encoding="utf-8")
+    return path
+
+
+def write_small_dataset_params(work_dir: Path, **overrides: Any) -> Path:
+    """Write a params file whose planned dataset is feasible and takes seconds.
+
+    34 runs de 60 pasos (2040 pasos, 55.080 lecturas: los mismos runs que el
+    dataset de params.yaml) con la tasa y los pesos de la opcion B de D11 sobre la
+    planta escalada de `write_small_plant_params`. El plan etiqueta el 12,65 %
+    (CRITICAL 6,98 %), con los 8 tipos y 15 runs normales: los minimos por tipo
+    pesan mas en runs cortos y hacen falta mas runs normales que en produccion.
+
+    Args:
+        work_dir: Directorio de trabajo (salida, metricas y planta escalada).
+        **overrides: Claves de la seccion `simulation:` a sustituir.
+
+    Returns:
+        The path of the params file.
+    """
+    section: dict[str, Any] = {
+        "n_samples": 2040,
+        "run_length_steps": 60,
+        "openmc_seed": 42,
+        "fault_injection_rate": SMALL_DATASET_RATE,
+        "severity_weights": dict(SMALL_DATASET_WEIGHTS),
+        "plant_parameters_path": str(write_small_plant_params(work_dir)),
+    }
+    section.update(overrides)
+    return write_sim_params(work_dir, **section)

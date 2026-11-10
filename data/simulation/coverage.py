@@ -367,6 +367,27 @@ class CoverageCollector:
             columns=list(_COLUMNS),
         )
 
+    def merge(self, other: CoverageCollector) -> None:
+        """Add every run another collector holds (F3-M6: one collector per worker).
+
+        El reparto en particiones ordena los runs por `run_id` (`_offsets`), no por
+        orden de llegada, de modo que el informe no depende del orden de fusion.
+
+        Args:
+            other: Colector con runs disjuntos de los de este.
+
+        Raises:
+            ValueError: If a run of `other` was already added here.
+        """
+        repeated = sorted(set(self._runs) & set(other._runs))
+        if repeated:
+            raise ValueError(
+                f"runs {', '.join(repeated)} were already added to the coverage collector."
+            )
+        self._runs.update(other._runs)
+        self._groups.update(other._groups)
+        self._labelled.extend(other._labelled)
+
     @property
     def n_runs(self) -> int:
         """Return the runs added so far."""

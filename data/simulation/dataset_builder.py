@@ -1,4 +1,4 @@
-"""Ensamblado del frame largo de un run de simulacion (parte 1 de F3-M3).
+"""Ensamblado del frame largo de un run (parte 1, F3-M3) y del dataset (parte 2, F3-M6).
 
 Cadena: entradas del modelo -> estado (LSODA) -> magnitudes verdaderas por sensor
 -> ruido por sensor -> cuentas ADC con `SensorSpan.to_raw_counts` -> filas.
@@ -22,16 +22,29 @@ de INSTRUMENTO (F3-M5) cambian `measured` DESPUES del ruido
 (`instrument_faults.apply_instrument_faults`): las etiquetas salen de
 `RunPlan.instrument_faults`, `true_value` queda intacto y `corrupted` marca solo
 las lecturas cuyo valor difiere de la medida sin fallo.
+
+La parte 2 (F3-M6) convierte runs ya escritos en el dataset del stage `simulate`:
+`write_run_output` escribe el parquet de un run y resume lo que lleva
+(`RunRecord`: filas, etiquetas por severidad, conservacion, violaciones de regla y
+`sha256`); `build_dataset` agrega los runs (`SimulatedDataset`, con la cobertura de
+D6); `write_dataset` escribe `manifest.json` y `write_metrics` el JSON de metricas.
+Ninguno de los dos JSON lleva reloj ni rutas absolutas: dos construcciones con la
+misma semilla dan los mismos bytes.
 """
 
 from __future__ import annotations
 
+import hashlib
+import json
 import logging
 import uuid
-from collections.abc import Mapping, Sequence
+from collections import Counter
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
+from types import MappingProxyType
+from typing import Any
 
 import numpy as np
 import pandas as pd
@@ -40,10 +53,32 @@ from numpy.typing import NDArray
 from data.generators.tep_adapter import READING_ID_NAMESPACE
 from data.schemas.sensor_reading import QualityFlag
 from data.schemas.sensor_spans import SensorSpan
+from data.simulation.coverage import (
+    DEFAULT_RATIOS,
+    PARTITIONS,
+    CoverageCollector,
+    CoverageReport,
+    CoverageScope,
+)
 from data.simulation.instrument_faults import apply_instrument_faults
-from data.simulation.scenario import FAULT_SEVERITY, FaultAxis, RunPlan, ScenarioKind
+from data.simulation.physics_constraints import (
+    RULE_NAMES,
+    ConstraintLimits,
+    conservation_report,
+    evaluate_rules,
+)
+from data.simulation.scenario import (
+    FAULT_KINDS,
+    FAULT_SEVERITY,
+    FaultAxis,
+    FaultSeverity,
+    RunPlan,
+    ScenarioKind,
+)
 from data.simulation.sensor_catalog import SensorCatalog
+from data.simulation.simulation_params import SimulationParams
 from data.simulation.thermal_model import Diagnostics, ModelInputs, ReactorModel, StepResult
+from data.simulation.water_properties import WaterTable
 
 _LOG = logging.getLogger(__name__)
 
@@ -740,4 +775,545 @@ def write_run_parquet(frame: pd.DataFrame, path: str | Path) -> Path:
     target.parent.mkdir(parents=True, exist_ok=True)
     frame.to_parquet(target, index=False)
     _LOG.info("Wrote %d readings to %s", len(frame), target.name)
+    return target
+
+
+# ----------------------------------------------------------------------
+# Parte 2 (F3-M6): dataset completo, manifiesto y metricas
+# ----------------------------------------------------------------------
+
+MANIFEST_NAME = "manifest.json"
+"""Nombre del manifiesto, en la raiz del dataset."""
+
+MANIFEST_VERSION = 1
+"""Version del formato de `manifest.json` y del JSON de metricas."""
+
+EXPECTED_TRUE_STATE_VIOLATIONS: Mapping[ScenarioKind, frozenset[str]] = MappingProxyType(
+    {
+        ScenarioKind.VOID_FORMATION: frozenset(
+            {"energy_balance", "power_flux", "boiling", "flow_range", "mass_balance"}
+        )
+    }
+)
+"""Reglas que el ESTADO VERDADERO de un run puede violar, por escenario (D7).
+
+Es la matriz de violaciones esperadas medida en F3-M4 sobre valores verdaderos
+(`Docs/physics_constraints.md`, 12.3): la excursion y la reduccion de caudal
+conservan la energia y a 180 s son cuasi-estaticas, de modo que no violan ninguna
+regla; el vacio viola la de energia y la de potencia/flujo en los tres niveles y,
+con ebullicion franca (medio y alto), tambien la de ebullicion, la de rango de
+caudal y la de masa (el vacio expulsa refrigerante: el caudal masico de rama
+caliente supera el tope de bomba mientras el de rama fria no cambia). F3-M6 la
+confirma sobre el dataset entero. Los fallos de instrumento no tocan la planta (su
+estado verdadero es el normal) y la operacion normal no viola ninguna. Un
+escenario ausente no admite ninguna violacion, y ninguno la admite FUERA de la
+ventana de su fallo (F3-M4: 0 fuera de ventana). Las violaciones sobre el valor
+MEDIDO se informan pero no se exigen: el ruido y los fallos de instrumento las
+producen por diseno."""
+
+
+def labelled_mask(frame: pd.DataFrame) -> NDArray[np.bool_]:
+    """Return which rows of a long frame carry a fault label on either axis.
+
+    Args:
+        frame: Frame largo (LONG_COLUMNS).
+
+    Returns:
+        Boolean array, one entry per row.
+    """
+    process = frame["process_fault"].astype(str).to_numpy()
+    instrument = frame["instrument_fault"].astype(str).to_numpy()
+    mask: NDArray[np.bool_] = (process != NO_FAULT) | (instrument != NO_FAULT)
+    return mask
+
+
+def file_sha256(path: str | Path) -> str:
+    """Return the SHA-256 hex digest of a file.
+
+    Args:
+        path: Fichero a resumir.
+
+    Returns:
+        The hex digest.
+    """
+    digest = hashlib.sha256()
+    with Path(path).open("rb") as fh:
+        for chunk in iter(lambda: fh.read(1 << 20), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+@dataclass(frozen=True)
+class RunRecord:
+    """Resumen de un run escrito (una entrada del manifiesto).
+
+    Attributes:
+        run_id: Identificador del run.
+        scenario: Escenario (`fault_type=<escenario>`).
+        path: Ruta del parquet RELATIVA a la raiz del dataset, con `/`.
+        sha256: Digest de los bytes del parquet.
+        rows: Lecturas del run.
+        n_steps: Pasos del run.
+        labelled: Lecturas etiquetadas (cualquiera de los dos ejes).
+        planned_labelled: Lecturas que el plan preveia etiquetar.
+        by_severity: Lecturas etiquetadas por severidad TDD 2.2 (las 4 claves).
+        episodes: Episodios distintos (`episode_id`).
+        corrupted: Lecturas cuyo valor difiere de la medida sin fallo.
+        fault_level: Niveles de los episodios del run -> lecturas etiquetadas.
+        max_instant_residual: Peor cierre instantaneo de energia (relativo a P0).
+        max_interval_residual: Peor cierre de energia por intervalo (relativo).
+        conservation_failures: Instantes e intervalos por encima de la tolerancia.
+        violations_true: Filas (pasos) que violan cada regla sobre `true_value`.
+        violations_true_outside_window: Pasos FUERA de la ventana de un fallo de
+            proceso en que el estado verdadero viola alguna regla.
+        violations_measured: Filas que violan cada regla sobre `value`.
+    """
+
+    run_id: str
+    scenario: str
+    path: str
+    sha256: str
+    rows: int
+    n_steps: int
+    labelled: int
+    planned_labelled: int
+    by_severity: Mapping[str, int]
+    episodes: int
+    corrupted: int
+    fault_level: Mapping[str, int]
+    max_instant_residual: float
+    max_interval_residual: float
+    conservation_failures: int
+    violations_true: Mapping[str, int]
+    violations_true_outside_window: int
+    violations_measured: Mapping[str, int]
+
+    @property
+    def unexpected_violations(self) -> dict[str, int]:
+        """Return the true-state violations the expected matrix does not allow.
+
+        Returns:
+            Rule -> violated steps for the rules outside the matrix of the run's
+            scenario, plus `outside_window` -> steps that violate any rule while
+            no process fault is active.
+        """
+        allowed = EXPECTED_TRUE_STATE_VIOLATIONS.get(ScenarioKind(self.scenario), frozenset())
+        out = {rule: n for rule, n in self.violations_true.items() if n and rule not in allowed}
+        if self.violations_true_outside_window:
+            out["outside_window"] = self.violations_true_outside_window
+        return out
+
+    def to_dict(self) -> dict[str, Any]:
+        """Return the JSON-ready manifest entry."""
+        return {
+            "run_id": self.run_id,
+            "scenario": self.scenario,
+            "path": self.path,
+            "sha256": self.sha256,
+            "rows": self.rows,
+            "n_steps": self.n_steps,
+            "labelled": self.labelled,
+            "planned_labelled": self.planned_labelled,
+            "by_severity": dict(self.by_severity),
+            "episodes": self.episodes,
+            "corrupted": self.corrupted,
+            "fault_level": dict(self.fault_level),
+            "max_instant_residual": self.max_instant_residual,
+            "max_interval_residual": self.max_interval_residual,
+            "conservation_failures": self.conservation_failures,
+            "violations_true": dict(self.violations_true),
+            "violations_true_outside_window": self.violations_true_outside_window,
+            "violations_measured": dict(self.violations_measured),
+        }
+
+
+@dataclass(frozen=True)
+class RunOutput:
+    """Lo que deja un run escrito: su entrada del manifiesto y su cobertura.
+
+    Se puede enviar entre procesos (el stage `simulate` reparte runs entre
+    trabajadores y fusiona las coberturas con `CoverageCollector.merge`).
+
+    Attributes:
+        record: Entrada del manifiesto.
+        coverage: Colector con las filas etiquetadas del run.
+    """
+
+    record: RunRecord
+    coverage: CoverageCollector
+
+
+def _rule_violations(
+    frame: pd.DataFrame,
+    column: str,
+    catalog: SensorCatalog,
+    table: WaterTable,
+    limits: ConstraintLimits,
+) -> pd.DataFrame:
+    """Return the per-step violation frame of the seven rules over one column."""
+    wide = wide_frame_from_long(frame, column)
+    return evaluate_rules(wide, catalog.roles, table, limits)
+
+
+def _counts(violations: pd.DataFrame) -> dict[str, int]:
+    """Return the violated steps of each rule."""
+    return {rule: int(violations[rule].sum()) for rule in RULE_NAMES}
+
+
+def summarize_run(
+    sim: RunSimulation,
+    frame: pd.DataFrame,
+    *,
+    path: str,
+    sha256: str,
+    catalog: SensorCatalog,
+    table: WaterTable,
+    limits: ConstraintLimits,
+) -> RunRecord:
+    """Summarise one run: labels, conservation and rule violations.
+
+    Args:
+        sim: Run integrado (aporta los diagnosticos de conservacion).
+        frame: Frame largo del run.
+        path: Ruta relativa del parquet dentro del dataset.
+        sha256: Digest del parquet.
+        catalog: Catalogo de sensores (roles de las reglas).
+        table: Tabla del agua.
+        limits: Umbrales de las reglas y tolerancia de conservacion.
+
+    Returns:
+        The RunRecord.
+    """
+    mask = labelled_mask(frame)
+    process_sev = frame["process_severity"].astype("string")
+    instrument_sev = frame["instrument_severity"].astype("string")
+    severity = process_sev.fillna(instrument_sev)[mask]
+    counts = Counter(str(v) for v in severity)
+    levels = Counter(str(v) for v in frame["fault_level"][mask])
+    conservation = conservation_report(sim.diagnostics, sim.steps, limits)
+    true_state = _rule_violations(frame, "true_value", catalog, table, limits)
+    spec = sim.plan.process_fault
+    in_window = np.array(
+        [spec is not None and spec.is_active(k) for k in range(sim.n_steps)], dtype=np.bool_
+    )
+    outside = true_state.to_numpy().any(axis=1) & ~in_window
+    return RunRecord(
+        run_id=sim.plan.run_id,
+        scenario=sim.plan.scenario.value,
+        path=path,
+        sha256=sha256,
+        rows=len(frame),
+        n_steps=sim.n_steps,
+        labelled=int(mask.sum()),
+        planned_labelled=sim.plan.expected_labelled_readings(len(catalog.sensors)),
+        by_severity={s.value: counts.get(s.value, 0) for s in FaultSeverity},
+        episodes=int(frame["episode_id"][mask].nunique()),
+        corrupted=int(frame["corrupted"].sum()),
+        fault_level=dict(sorted(levels.items())),
+        max_instant_residual=conservation.max_instant_residual,
+        max_interval_residual=conservation.max_interval_residual,
+        conservation_failures=conservation.n_failures,
+        violations_true=_counts(true_state),
+        violations_true_outside_window=int(outside.sum()),
+        violations_measured=_counts(_rule_violations(frame, "value", catalog, table, limits)),
+    )
+
+
+def write_run_output(
+    sim: RunSimulation,
+    frame: pd.DataFrame,
+    output_dir: str | Path,
+    seed: int,
+    *,
+    catalog: SensorCatalog,
+    table: WaterTable,
+    limits: ConstraintLimits,
+) -> RunOutput:
+    """Write one run under the TDD 4.4 layout and summarise it.
+
+    Args:
+        sim: Run integrado.
+        frame: Frame largo del run.
+        output_dir: Raiz del dataset.
+        seed: Semilla maestra (directorio `seed=<n>`).
+        catalog: Catalogo de sensores.
+        table: Tabla del agua.
+        limits: Umbrales de las reglas.
+
+    Returns:
+        The RunOutput (manifest entry and coverage of the run).
+    """
+    root = Path(output_dir)
+    path = write_run_parquet(
+        frame, run_parquet_path(root, sim.plan.scenario, seed, sim.plan.run_id)
+    )
+    record = summarize_run(
+        sim,
+        frame,
+        path=path.relative_to(root).as_posix(),
+        sha256=file_sha256(path),
+        catalog=catalog,
+        table=table,
+        limits=limits,
+    )
+    coverage = CoverageCollector()
+    coverage.add_frame(frame)
+    return RunOutput(record=record, coverage=coverage)
+
+
+@dataclass(frozen=True)
+class SimulatedDataset:
+    """El dataset del stage `simulate`, agregado run a run.
+
+    Attributes:
+        params: Parametros de simulacion con los que se genero.
+        records: Una entrada por run, en orden de run.
+        coverage: Cobertura de D6 (dataset entero y particiones).
+        n_sensors: Sensores del catalogo.
+        conservation_tolerance: Tolerancia de conservacion (D7).
+    """
+
+    params: SimulationParams
+    records: tuple[RunRecord, ...]
+    coverage: CoverageReport
+    n_sensors: int
+    conservation_tolerance: float
+
+    @property
+    def total_readings(self) -> int:
+        """Return the readings of the whole dataset."""
+        return sum(r.rows for r in self.records)
+
+    @property
+    def labelled_readings(self) -> int:
+        """Return the labelled readings of the whole dataset."""
+        return sum(r.labelled for r in self.records)
+
+    @property
+    def labelled_fraction(self) -> float:
+        """Return the labelled share of all readings."""
+        return self.labelled_readings / self.total_readings
+
+    def readings_by_severity(self) -> dict[str, int]:
+        """Return labelled readings per TDD 2.2 severity."""
+        return {
+            s.value: sum(r.by_severity.get(s.value, 0) for r in self.records)
+            for s in FaultSeverity
+        }
+
+    @property
+    def critical_fraction(self) -> float:
+        """Return the CRITICAL share of all readings."""
+        return self.readings_by_severity()[FaultSeverity.CRITICAL.value] / self.total_readings
+
+    @property
+    def plan_matches_frames(self) -> bool:
+        """Return whether every run labels exactly what its plan foresaw."""
+        return all(r.labelled == r.planned_labelled for r in self.records)
+
+    @property
+    def conservation_compliant(self) -> bool:
+        """Return whether no run exceeds the conservation tolerance (D7, 100 %)."""
+        return all(r.conservation_failures == 0 for r in self.records)
+
+    def unexpected_violations(self) -> dict[str, dict[str, int]]:
+        """Return run -> rule -> steps for true-state violations outside the matrix."""
+        return {r.run_id: r.unexpected_violations for r in self.records if r.unexpected_violations}
+
+    @property
+    def violations_as_expected(self) -> bool:
+        """Return whether the true state violates only the expected rules."""
+        return not self.unexpected_violations()
+
+    def manifest(self) -> dict[str, Any]:
+        """Return the JSON-ready manifest (no clock, relative paths)."""
+        params = self.params
+        return {
+            "version": MANIFEST_VERSION,
+            "plant_id": params.plant_id,
+            "seed": params.openmc_seed,
+            "dt_seconds": params.dt_seconds,
+            "run_length_steps": params.run_length_steps,
+            "n_runs": len(self.records),
+            "n_sensors": self.n_sensors,
+            "total_readings": self.total_readings,
+            "labelled_readings": self.labelled_readings,
+            "runs": [r.to_dict() for r in self.records],
+        }
+
+    def _by_scenario(self) -> dict[str, dict[str, int]]:
+        out: dict[str, dict[str, int]] = {}
+        for record in self.records:
+            entry = out.setdefault(
+                record.scenario, {"runs": 0, "readings": 0, "labelled": 0, "episodes": 0}
+            )
+            entry["runs"] += 1
+            entry["readings"] += record.rows
+            entry["labelled"] += record.labelled
+            entry["episodes"] += record.episodes
+        return dict(sorted(out.items()))
+
+    def _rule_matrix(self, attribute: str) -> dict[str, dict[str, int]]:
+        out: dict[str, dict[str, int]] = {}
+        for record in self.records:
+            counts: Mapping[str, int] = getattr(record, attribute)
+            entry = out.setdefault(record.scenario, dict.fromkeys(RULE_NAMES, 0))
+            for rule in RULE_NAMES:
+                entry[rule] += counts[rule]
+        return dict(sorted(out.items()))
+
+    def metrics(self) -> dict[str, Any]:
+        """Return the JSON-ready metrics of the dataset (`metrics/simulation_metrics.json`)."""
+        total = self.total_readings
+        severities = self.readings_by_severity()
+        report = self.coverage
+
+        def scope(s: CoverageScope) -> dict[str, Any]:
+            return {
+                "n_types": s.n_types,
+                "types_present": list(s.types_present),
+                "labelled_readings": s.labelled_readings,
+                "covered": len(s.covered),
+                "grid_size": s.grid_size,
+                "grid_fraction": s.grid_fraction,
+                "missing": [m.label for m in s.missing],
+            }
+
+        unexpected = self.unexpected_violations()
+        return {
+            "version": MANIFEST_VERSION,
+            "seed": self.params.openmc_seed,
+            "n_runs": len(self.records),
+            "total_readings": total,
+            "labelled_readings": self.labelled_readings,
+            "labelled_fraction": self.labelled_fraction,
+            "fault_injection_rate": self.params.fault_injection_rate,
+            "critical_fraction": self.critical_fraction,
+            "critical_min_fraction": self.params.critical_min_fraction,
+            "plan_matches_frames": self.plan_matches_frames,
+            "corrupted_readings": sum(r.corrupted for r in self.records),
+            "by_severity": {
+                sev: {"readings": n, "fraction": n / total} for sev, n in severities.items()
+            },
+            "by_scenario": self._by_scenario(),
+            "coverage": {
+                "k_min_readings": report.k_min_readings,
+                "n_min_episodes": report.n_min_episodes,
+                "gate": report.gate,
+                "types_ok": report.types_ok,
+                "grid_ok": report.grid_ok,
+                "passed": report.passed,
+                "n_types": report.overall.n_types,
+                "n_fault_types": len(FAULT_KINDS),
+                "grid_fraction": report.overall.grid_fraction,
+                "overall": scope(report.overall),
+                "partitions": {name: scope(report.partitions[name]) for name in PARTITIONS},
+            },
+            "compliance": {
+                "conservation_tolerance": self.conservation_tolerance,
+                "conservation_compliant": self.conservation_compliant,
+                "conservation_failures": sum(r.conservation_failures for r in self.records),
+                "max_instant_residual": max(r.max_instant_residual for r in self.records),
+                "max_interval_residual": max(r.max_interval_residual for r in self.records),
+                "violations_as_expected": not unexpected,
+                "unexpected_violations": unexpected,
+                "expected_true_state_violations": {
+                    kind.value: sorted(rules)
+                    for kind, rules in sorted(EXPECTED_TRUE_STATE_VIOLATIONS.items())
+                },
+                "rule_violations_true": self._rule_matrix("violations_true"),
+                "rule_violations_measured": self._rule_matrix("violations_measured"),
+            },
+        }
+
+
+def build_dataset(
+    outputs: Iterable[RunOutput],
+    params: SimulationParams,
+    *,
+    n_sensors: int,
+    k_min_readings: int,
+    n_min_episodes: int,
+    coverage_gate: float,
+    conservation_tolerance: float,
+    ratios: Sequence[float] = DEFAULT_RATIOS,
+) -> SimulatedDataset:
+    """Aggregate written runs into the dataset summary.
+
+    Args:
+        outputs: Un RunOutput por run, en cualquier orden.
+        params: Parametros de simulacion.
+        n_sensors: Sensores del catalogo.
+        k_min_readings: Lecturas minimas para cubrir un modo (D6).
+        n_min_episodes: Episodios minimos para cubrir un modo (D6).
+        coverage_gate: Fraccion minima de la rejilla (D6).
+        conservation_tolerance: Tolerancia de conservacion (D7).
+        ratios: Proporciones (train, val, test) de la cobertura por particion.
+
+    Returns:
+        The SimulatedDataset, with the runs in run order.
+
+    Raises:
+        ValueError: If there are no runs or a run appears twice.
+    """
+    collector = CoverageCollector()
+    records: list[RunRecord] = []
+    for output in outputs:
+        collector.merge(output.coverage)
+        records.append(output.record)
+    if not records:
+        raise ValueError("build_dataset needs at least one run.")
+    records.sort(key=lambda r: (len(r.run_id), r.run_id))
+    report = collector.report(k_min_readings, n_min_episodes, coverage_gate, ratios)
+    return SimulatedDataset(
+        params=params,
+        records=tuple(records),
+        coverage=report,
+        n_sensors=n_sensors,
+        conservation_tolerance=conservation_tolerance,
+    )
+
+
+def _write_json(document: Mapping[str, Any], path: str | Path) -> Path:
+    """Write a JSON document with sorted keys and a trailing newline."""
+    target = Path(path)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    text = json.dumps(document, indent=2, sort_keys=True, allow_nan=False) + "\n"
+    target.write_text(text, encoding="utf-8", newline="\n")
+    return target
+
+
+def write_dataset(dataset: SimulatedDataset, output_dir: str | Path) -> Path:
+    """Write `manifest.json` at the root of the dataset.
+
+    Args:
+        dataset: Dataset agregado.
+        output_dir: Raiz del dataset.
+
+    Returns:
+        The manifest path.
+    """
+    path = _write_json(dataset.manifest(), Path(output_dir) / MANIFEST_NAME)
+    _LOG.info("Wrote the manifest of %d runs to %s", len(dataset.records), path)
+    return path
+
+
+def write_metrics(dataset: SimulatedDataset, path: str | Path) -> Path:
+    """Write the metrics JSON of the dataset (`metrics/simulation_metrics.json`).
+
+    Args:
+        dataset: Dataset agregado.
+        path: Destino.
+
+    Returns:
+        The path written.
+    """
+    target = _write_json(dataset.metrics(), path)
+    _LOG.info(
+        "Dataset: %d readings, %.2f %% labelled, coverage %s, conservation %s.",
+        dataset.total_readings,
+        100.0 * dataset.labelled_fraction,
+        "passed" if dataset.coverage.passed else "FAILED",
+        "compliant" if dataset.conservation_compliant else "FAILED",
+    )
     return target
