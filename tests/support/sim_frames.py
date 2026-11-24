@@ -485,3 +485,193 @@ def write_long_dataset(root: Path, frames: Sequence[pd.DataFrame]) -> Path:
         json.dumps({"version": MANIFEST_VERSION, "runs": entries}, indent=2), encoding="utf-8"
     )
     return manifest
+
+
+# ----------------------------------------------------------------------
+# F4-M3: particiones anchas de prepare_sim sobre trazas fisicas (stage train)
+# ----------------------------------------------------------------------
+
+PINN_SPLITS: tuple[str, ...] = ("train", "val", "test")
+"""Particiones que escribe prepare_sim."""
+
+
+def pinn_run_frame(
+    run_id: str,
+    loads: Sequence[float],
+    start: str,
+    rng: np.random.Generator,
+    labelled_steps: Sequence[int] = (),
+    scenario: ScenarioKind = ScenarioKind.NORMAL,
+) -> pd.DataFrame:
+    """Return the wide frame of one run as prepare_sim writes it (the train columns).
+
+    El estado verdadero sale del modelo de referencia a lo largo de un perfil de
+    carga y el medido le suma el ruido del catalogo, de modo que las perdidas
+    fisicas son evaluables (a diferencia de `long_run_frame`). Columnas: identidad
+    del instante, `value:`/`true:` por sensor en el orden del catalogo, `labelled`
+    y `trainable_pair` (D4-6: ninguno de los dos instantes etiquetado).
+
+    Args:
+        run_id: Identificador del run.
+        loads: Carga en cada instante (al menos 2).
+        start: Instante del paso 0 (cadencia de 180 s).
+        rng: Generator del ruido de medida.
+        labelled_steps: Instantes marcados como etiquetados.
+        scenario: Escenario del run.
+
+    Returns:
+        The wide frame, one row per instant.
+    """
+    model = build_model()
+    catalog = build_catalog()
+    trace = run_load_profile(model, list(loads))
+    true = wide_frame(trace, model, catalog, start=start)
+    measured = wide_frame(trace, model, catalog, start=start, rng=rng)
+    n_steps = len(loads)
+    labelled = np.zeros(n_steps, dtype=np.bool_)
+    labelled[list(labelled_steps)] = True
+    trainable = np.zeros(n_steps, dtype=np.bool_)
+    trainable[:-1] = ~labelled[:-1] & ~labelled[1:]
+    columns: dict[str, Any] = {
+        "run_id": np.full(n_steps, run_id, dtype=object),
+        "scenario": np.full(n_steps, scenario.value, dtype=object),
+        "timestep": np.arange(n_steps, dtype=np.int64),
+        "timestamp": pd.DatetimeIndex(true.index).tz_localize("UTC"),
+    }
+    for tag in catalog.tags:
+        columns[f"value:{tag}"] = measured[tag].to_numpy(dtype=np.float64)
+    for tag in catalog.tags:
+        columns[f"true:{tag}"] = true[tag].to_numpy(dtype=np.float64)
+    columns["labelled"] = labelled
+    columns["trainable_pair"] = trainable
+    return pd.DataFrame(columns)
+
+
+def pinn_partitions(
+    n_steps: int = 24, runs_per_split: int = 2, seed: int = 0
+) -> dict[str, pd.DataFrame]:
+    """Return small train/val/test frames over load ramps (seconds to build).
+
+    Cada run empieza a una hora distinta (contexto horario variado) y recorre una
+    rampa de carga distinta (contexto de potencia variado). En cada run se etiqueta
+    un instante central, de modo que hay pares descartados por D4-6.
+
+    Args:
+        n_steps: Instantes por run.
+        runs_per_split: Runs por particion.
+        seed: Semilla del ruido de medida.
+
+    Returns:
+        Split -> wide frame (runs concatenated in order).
+    """
+    rng = np.random.default_rng(seed)
+    frames: dict[str, pd.DataFrame] = {}
+    index = 0
+    for split in PINN_SPLITS:
+        runs = []
+        for _ in range(runs_per_split):
+            index += 1
+            load_to = 1.0 - 0.05 * (index % 4)
+            loads = ramp_loads(1.0, load_to, n_steps - 1 - 4, hold_steps=4)
+            start = (pd.Timestamp("2026-01-01") + pd.Timedelta(hours=5 * index)).isoformat()
+            runs.append(
+                pinn_run_frame(
+                    f"sim_run_{index:03d}", loads, start, rng, labelled_steps=(n_steps // 2,)
+                )
+            )
+        frames[split] = pd.concat(runs, ignore_index=True)
+    return frames
+
+
+def write_pinn_partitions(data_dir: Path, frames: dict[str, pd.DataFrame]) -> Path:
+    """Write the frames and an assignment.json with the catalog order, as prepare_sim.
+
+    Args:
+        data_dir: Directorio de salida (`pinn.data_dir`).
+        frames: Split -> wide frame.
+
+    Returns:
+        data_dir.
+    """
+    data_dir.mkdir(parents=True, exist_ok=True)
+    for split, frame in frames.items():
+        frame.to_parquet(data_dir / f"{split}.parquet", index=False)
+    runs = {
+        str(run): {"scenario": str(frame["scenario"].iloc[0]), "split": split}
+        for split, frame in frames.items()
+        for run in frame["run_id"].unique()
+    }
+    document = {
+        "version": 1,
+        "tags": list(build_catalog().tags),
+        "val_runs_per_scenario": 1,
+        "test_runs_per_scenario": 1,
+        "runs": runs,
+    }
+    (data_dir / "assignment.json").write_text(
+        json.dumps(document, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+    )
+    return data_dir
+
+
+def pinn_train_section(work_dir: Path, **overrides: Any) -> dict[str, Any]:
+    """Return a pinn: section for a tiny training under work_dir (well under 10 s).
+
+    Lleva las claves de prepare_sim y las del stage train, con una red de 16
+    neuronas, pocas epocas y el store de MLflow bajo work_dir.
+
+    Args:
+        work_dir: Directorio de trabajo (normalmente `tmp_path`).
+        **overrides: Claves a sustituir.
+
+    Returns:
+        The section, ready for `yaml.safe_dump`.
+    """
+    section: dict[str, Any] = {
+        "data_dir": str(work_dir / "sim_pinn"),
+        "metrics_path": str(work_dir / "metrics" / "sim_pinn_metrics.json"),
+        "val_runs_per_scenario": 1,
+        "test_runs_per_scenario": 1,
+        "seed": 42,
+        "num_threads": 1,
+        "hidden": 16,
+        "n_hidden": 2,
+        "dropout": 0.1,
+        "learning_rate": 1.0e-2,
+        "weight_decay": 0.0,
+        "batch_size": 16,
+        "max_epochs": 6,
+        "early_stopping_patience": 2,
+        "lr_patience": 1,
+        "lr_factor": 0.5,
+        "min_lr": 1.0e-5,
+        "lambda_energy": 1.0,
+        "lambda_mass": 1.0,
+        "curriculum_epochs": 2,
+        "model_dir": str(work_dir / "models" / "pinn" / "candidate"),
+        "train_metrics_path": str(work_dir / "metrics" / "pinn_train_metrics.json"),
+        "mlflow_tracking_uri": f"sqlite:///{(work_dir / 'mlruns' / 'mlflow.db').as_posix()}",
+        "mlflow_experiment": "test-pinn",
+    }
+    section.update(overrides)
+    return section
+
+
+def write_pinn_train_params(work_dir: Path, **overrides: Any) -> Path:
+    """Write params.yaml with a simulation: section and a tiny pinn: section.
+
+    Args:
+        work_dir: Directorio de trabajo.
+        **overrides: Claves de pinn: a sustituir.
+
+    Returns:
+        The params path.
+    """
+    work_dir.mkdir(parents=True, exist_ok=True)
+    document = {
+        "simulation": sim_section(work_dir),
+        "pinn": pinn_train_section(work_dir, **overrides),
+    }
+    path = work_dir / "params.yaml"
+    path.write_text(yaml.safe_dump(document), encoding="utf-8")
+    return path

@@ -102,6 +102,8 @@ mlartifacts/
 mlflow.db
 
 # Model checkpoints and large binaries
+# Out del stage train (models/pinn/candidate: model.pt + model_card.json), lo versiona DVC.
+models/
 *.pt
 *.pth
 *.onnx

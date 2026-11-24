@@ -231,3 +231,57 @@ stages:
     metrics:
       - metrics/sim_pinn_metrics.json:
           cache: false
+
+  train:
+    # F4-M3 (T6.2-T6.4): MLP del TDD 5.2 sobre los pares sin etiqueta de prepare_sim
+    # (D4-6), curriculum de lambdas y parada temprana por la perdida de val. Escribe el
+    # checkpoint y la ficha (sin reloj ni rutas) y registra cada epoca en MLflow, cuyo
+    # store (mlruns/) no participa en el hash (D4-14): por eso mlflow_tracking_uri es la
+    # unica clave de pinn: que lee y no declara. La salida es identica byte a byte entre
+    # ejecuciones, procesos y con 1 o 4 hilos (H5, medido en F4-M3).
+    cmd: python ml/training/train.py
+    deps:
+      - ml/training/train.py
+      - ml/training/pinn_data.py
+      - ml/training/checkpoint.py
+      - ml/training/pinn_params.py
+      - ml/training/sim_dataset.py
+      # Red, estado fisico y perdidas (F4-M2).
+      - ml/models
+      # Importa catalogo, planta, tabla del agua, reglas (dominio de la tabla) y
+      # loaders de parametros.
+      - data/simulation
+      - configs/sim_sensors.yaml
+      - configs/plant_parameters.yaml
+      - configs/water_table.yaml
+      - data/processed/sim_pinn
+    params:
+      - pinn.data_dir
+      - pinn.seed
+      - pinn.num_threads
+      - pinn.hidden
+      - pinn.n_hidden
+      - pinn.dropout
+      - pinn.learning_rate
+      - pinn.weight_decay
+      - pinn.batch_size
+      - pinn.max_epochs
+      - pinn.early_stopping_patience
+      - pinn.lr_patience
+      - pinn.lr_factor
+      - pinn.min_lr
+      - pinn.lambda_energy
+      - pinn.lambda_mass
+      - pinn.curriculum_epochs
+      - pinn.model_dir
+      - pinn.train_metrics_path
+      - pinn.mlflow_experiment
+      # De donde LEE el catalogo, las escalas de planta y cp.
+      - simulation.sensors_path
+      - simulation.plant_parameters_path
+      - simulation.water_table_path
+    outs:
+      - models/pinn/candidate
+    metrics:
+      - metrics/pinn_train_metrics.json:
+          cache: false

@@ -1,6 +1,6 @@
 # ReactorGuard — Registro de Progreso
 **Nuclear Reactor Anomaly Detection Platform**
-*Actualizado: 2026-11-10 — Fase 2 verificada contra el commit `d35f802`; **Fase 3 cerrada en local** (F3-M7: `Verify-Phase3.ps1 -FromScratch` con los 4 criterios CUMPLIDOS); F3-M1 a F3-M7 commiteados (rama `feat/stage-simulate`, `afa5e85`); **Fase 4: plan aprobado; F4-M1 (stage `prepare_sim`) y F4-M2 (modelo y perdidas fisicas) hechos** (en `main`, 2026-11-24)*
+*Actualizado: 2026-11-10 — Fase 2 verificada contra el commit `d35f802`; **Fase 3 cerrada en local** (F3-M7: `Verify-Phase3.ps1 -FromScratch` con los 4 criterios CUMPLIDOS); F3-M1 a F3-M7 commiteados (rama `feat/stage-simulate`, `afa5e85`); **Fase 4: plan aprobado; F4-M1 (stage `prepare_sim`), F4-M2 (modelo y perdidas fisicas) y F4-M3 (loop, MLflow y stage `train`) hechos** (en `main`, 2026-11-24)*
 
 Este documento distingue tres cosas que antes se confundian: **codigo escrito**, **verificado en local**
 y **criterio medido en el entorno real**. Una tarea puede estar completada como codigo y aun asi no
@@ -434,7 +434,8 @@ dT/dt exige un salto de 1800 K entre muestras (C5): no es un detector a esa cade
 **Semanas 6–7** · Plan **aprobado** (2026-11-10, D4-1 a D4-16 tal como se proponen; la retirada de claves de
 `training:` de D4-9 pasa a M3): [ReactorGuard_Fase4_Plan.md](ReactorGuard_Fase4_Plan.md) (preflight medido, choques
 C1-C9, hitos F4-M1 a F4-M8, stages `prepare_sim`, `train` y `evaluate`, `Verify-Phase4.ps1`). **F4-M1 hecho**: stage
-`prepare_sim`; **F4-M2 hecho**: red y perdidas fisicas (seccion 15 del plan).
+`prepare_sim`; **F4-M2 hecho**: red y perdidas fisicas; **F4-M3 hecho**: loop de entrenamiento, MLflow y stage `train`
+(seccion 15 del plan).
 
 **F4-M1 (datos de entrenamiento)** aporta `ml/training/pinn_params.py` (loader de la seccion nueva `pinn:`),
 `ml/training/sim_dataset.py` (manifiesto con verificacion de `sha256`, reparto por run estratificado de D4-7, frame
@@ -455,18 +456,31 @@ reproduce la seccion 2.3 del plan: residuo de energia medido 0,66 / 2,51 / 4,13 
 ~1e-4 sobre la medicion) son 300-1000 veces menores que el MSE de datos en z (0,03-0,08): la rejilla de M5 necesita
 lambdas mayores que {0; 0,1; 1; 10} (plan, seccion 15).
 
-El andamiaje restante: `ml/training/train.py` no tiene loop de entrenamiento (F4-M3; solo se adapto a la firma
-nueva) y `predictor.py` **no se puede importar** con `mapie 1.4.1` (`MapieRegressor` ya no existe en la API 1.x);
+**F4-M3 (loop, MLflow y stage `train`, T6.2-T6.4)** reescribe `ml/training/train.py` (Adam, `ReduceLROnPlateau`,
+curriculum lineal de lambda 0 -> objetivo en 50 epocas, parada temprana y mejor epoca por la perdida total de val con
+los lambdas objetivo, contando la paciencia solo tras el curriculum) y crea `ml/training/pinn_data.py` (contexto de 4
+entradas de D4-2, z-score de train de sensores y contexto, pares sin etiqueta de D4-6, mascara de masa con (x(t), y(t+1))
+medidos, hallazgo M2-3) y `ml/training/checkpoint.py` (`model.pt` de tensores y primitivos, carga con
+`weights_only=True`). Registra cada epoca en MLflow con la URI explicita `sqlite:///mlruns/mlflow.db` (D4-14) y anade el
+stage `train` a `dvc.yaml`. Se retiran de `training:` las diez claves del andamiaje y la semilla (D4-9); quedan las seis
+del stage `split`. Medido en el contenedor Linux (torch 2.15, 4 hilos): 100 epocas sin parada temprana (mejor 91; el lr
+llega a su suelo hacia la 87), 32-34 s el loop y ~40 s el stage; val_data **0,2893** frente a persistencia 0,5739 y
+ruido 0,2846 (en la escala z de D4-6; en la del preflight 0,0343 frente a 0,0679 y 0,0332); frente al valor verdadero de
+t+1 el MSE es 0,0047 (la red quita el ruido). Terminos fisicos de val 9,8e-8 (energia) y 1,0e-7 (masa): **con lambda = 1
+pesan ~2e-6 del MSE de datos** (hallazgo M3-2). `model.pt` identico byte a byte entre dos ejecuciones, dos procesos y
+con 1 o 4 hilos (H5): `torch.save` es estable y no hace falta serializador propio.
+
+El andamiaje restante: `predictor.py` **no se puede importar** con `mapie 1.4.1` (`MapieRegressor` ya no existe en la API 1.x);
 ademas espera la tupla del LSTM retirado. No se toca en Fase 4 (D4-16).
 
 | ID | Tarea | Estado |
 |----|-------|--------|
 | T6.1 | `ml/models/pinn.py`: arquitectura + energy/mass balance loss | Completado (F4-M2): MLP del TDD 5.2, `physics_state.py` y `physics_loss.py`, 100 % de cobertura en `ml/models`; perdidas medidas sobre el dataset reproducen la seccion 2.3 del plan |
-| T6.2 | Training loop PyTorch: Adam, LR scheduler, early stopping | Pendiente |
-| T6.3 | Integracion MLflow | Pendiente |
-| T6.4 | DVC stage `train` | Pendiente |
+| T6.2 | Training loop PyTorch: Adam, LR scheduler, early stopping | Completado (F4-M3): `ml/training/train.py` (Adam, `ReduceLROnPlateau`, curriculum de lambdas, parada temprana tras el curriculum, mejor epoca restaurada), `pinn_data.py` y `checkpoint.py`; 100 % de cobertura; val_data 0,2893 (persistencia 0,5739, ruido 0,2846) |
+| T6.3 | Integracion MLflow | Completado (F4-M3): un run por entrenamiento en `sqlite:///mlruns/mlflow.db` (artefactos en `mlruns/artifacts`), params y metricas por epoca (data, energy, mass, total, val_*, lr); nunca `mlflow.db` en la raiz (test) |
+| T6.4 | DVC stage `train` | Parcial (F4-M3): stage en `dvc.yaml` y salida reproducible byte a byte (H5); falta generar `dvc.lock` en Windows con `Invoke-Pipeline.ps1 -Stage train` |
 | T6.5 | `ml/validation/physics_check.py` | Pendiente |
-| T7.1 | Reentrenamiento con dataset de simulacion | En curso: datos preparados (F4-M1, stage `prepare_sim`, `data/processed/sim_pinn`); el entrenamiento llega en M3 |
+| T7.1 | Reentrenamiento con dataset de simulacion | En curso: datos (F4-M1) y entrenamiento con lambda = 1 (F4-M3, `models/pinn/candidate`); la seleccion de lambdas llega en M5 |
 | T7.2 | Grid search lambda_energy y lambda_mass | Pendiente |
 | T7.3 | `ml/models/rules.py`: 6 constraints del TDD | Pendiente |
 | T7.4 | Fusion PINN + Rules | Pendiente |
@@ -567,9 +581,11 @@ Lo que impide dar por cerrada la Fase 2 en el cluster y que **no** se resuelve e
 2. Antes del despliegue, decidir: persistencia del estado de los detectores, DLQ, y que hacer con las
    100.934 alertas (hallazgo 9).
 3. Fase 3 cerrada en local (F3-M8, calibracion con OpenMC en Docker, es opcional).
-4. **Fase 4: F4-M3** (loop de entrenamiento, MLflow y stage `train`; T6.2-T6.4) cuando el usuario lo indique. Antes:
-   avisar de la retirada de las diez claves de `training:` (D4-9) y decidir con que par de instantes se calcula la
-   mascara de masa (hallazgo M2-3 del plan). F4-M1 y F4-M2 estan en `main`.
+4. **Fase 4**: generar en Windows el `dvc.lock` del stage `train` (`.\infra\scripts\Invoke-Pipeline.ps1 -Stage train`)
+   y commitearlo con `metrics/pinn_train_metrics.json`; despues **F4-M4** (validacion fisica, `physics_check.py` y stage
+   `evaluate`; T6.5) cuando el usuario lo indique. Antes: concretar D4-12 (que instantes de test reciben prediccion,
+   reglas votadas o por canal) y si el stage `evaluate` entra ya en M4 solo con `physics_check`. F4-M1 a F4-M3 estan
+   en `main`.
 
 Referencia tecnica del camino de streaming (invariantes, contrato de mensajes, commit, rebalanceo, metricas y
 runbook): [ReactorGuard_Fase2_Streaming.md](ReactorGuard_Fase2_Streaming.md).

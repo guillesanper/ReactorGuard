@@ -330,28 +330,15 @@ feature_store:
   cluster_config_path: ml/features/store/feature_store.cluster.yaml
 
 # -----------------------------------------------------------------------------
-# Training parameters  (ml/training/train.py)
+# Training parameters  (stage split de Fase 2)
+#
+# Solo quedan las claves del stage split. Los hiperparametros del andamiaje de la
+# PINN (learning_rate, weight_decay, optimizer, batch_size, max_epochs,
+# early_stopping_patience, physics_lambda, hidden_size, n_layers, dropout) y la
+# semilla se retiraron en F4-M3 (D4-9): su unico lector era el andamiaje de
+# ml/training/train.py, y sus sustitutos viven en la seccion pinn:.
 # -----------------------------------------------------------------------------
 training:
-  # Optimiser
-  learning_rate: 1.0e-3
-  weight_decay: 1.0e-4
-  optimizer: "adamw"            # adamw | sgd
-
-  # Batch & epochs
-  batch_size: 256
-  max_epochs: 100
-  early_stopping_patience: 10
-
-  # Physics-informed loss weight (λ in L = L_data + λ·L_physics)
-  # Higher → more physics constraint, lower → data-driven
-  physics_lambda: 0.1
-
-  # Model architecture
-  hidden_size: 256              # Hidden layer width
-  n_layers: 4                   # Number of hidden layers
-  dropout: 0.2
-
   # Train/val/test split ratios (must sum to 1.0).
   #
   # El corte es TEMPORAL DENTRO DE CADA fault_type: cada particion aporta sus
@@ -375,16 +362,13 @@ training:
   metrics_path: metrics/split_metrics.json
   distribution_path: metrics/split_distribution.json
 
-  # Random seed for reproducibility
-  seed: 42
-
 # -----------------------------------------------------------------------------
 # PINN parameters  (ml/training/, Fase 4)
 #
 # Leidos via ml/training/pinn_params.py. Solo llevan las claves que algun stage
-# lee de verdad (D4-9): F4-M1 resuelve las del stage prepare_sim; los
-# hiperparametros del modelo y del entrenamiento entran con su consumidor
-# (F4-M2/M3), y entonces se retiran de training: las claves del andamiaje.
+# lee de verdad (D4-9): las cuatro primeras son del stage prepare_sim (F4-M1) y el
+# resto del stage train (F4-M3), que las declara todas en dvc.yaml salvo
+# mlflow_tracking_uri (MLflow no participa en el hash, D4-14).
 #
 # prepare_sim lee el dataset de simulation.output_dir y el catalogo de
 # simulation.sensors_path; aqui no se repiten.
@@ -404,6 +388,53 @@ pinn:
   # instantes CRITICAL (medido en F4-M1).
   val_runs_per_scenario: 1
   test_runs_per_scenario: 1
+
+  # --- Stage train (F4-M3) ---
+  # Aleatoriedad (convencion 4 del plan): la inicializacion de la red y el barajado
+  # usan Generators sembrados desde seed; torch.manual_seed solo lo fija el punto de
+  # entrada (lo necesita el dropout). Hilos intra-op fijos: el resultado medido no
+  # depende de ellos (H5), pero el tiempo si.
+  seed: 42
+  num_threads: 4
+
+  # Red (D4-1, TDD 5.2): Linear(27 + 4, hidden) -> Tanh, n_hidden capas ocultas con
+  # dropout entre ellas. Las 4 entradas de contexto (D4-2) las fija el contrato del
+  # checkpoint, no un parametro.
+  hidden: 256
+  n_hidden: 3
+  dropout: 0.1
+
+  # Adam con ReduceLROnPlateau sobre la perdida total de val con los lambdas
+  # objetivo (multiplica lr por lr_factor tras lr_patience epocas sin mejora, sin
+  # bajar de min_lr). La parada temprana vigila la misma cifra y solo cuenta epocas
+  # una vez terminado el curriculum.
+  learning_rate: 1.0e-3
+  weight_decay: 0.0
+  batch_size: 256
+  max_epochs: 100
+  early_stopping_patience: 10
+  lr_patience: 5
+  lr_factor: 0.5
+  min_lr: 1.0e-6
+
+  # loss = data + lambda_energy energy + lambda_mass mass (TDD 5.2: 1,0 y 1,0). Los
+  # lambdas suben linealmente de 0 al objetivo en curriculum_epochs epocas (riesgo
+  # de Plan_Fases); con 0 entran enteros desde la primera. Con lambda = 1 los
+  # terminos fisicos son 300-1000 veces menores que el MSE de datos (M2-1): la
+  # rejilla de F4-M5 decide los definitivos.
+  lambda_energy: 1.0
+  lambda_mass: 1.0
+  curriculum_epochs: 50
+
+  # Salidas del stage train (out de DVC y metricas versionadas). El checkpoint
+  # (model.pt) y la ficha (model_card.json) no llevan reloj ni rutas absolutas.
+  model_dir: models/pinn/candidate
+  train_metrics_path: metrics/pinn_train_metrics.json
+
+  # MLflow (D4-14): URI explicita bajo mlruns/ (ignorado por git) y artefactos en
+  # mlruns/artifacts. Nunca mlflow.db en la raiz. El reloj y el host van solo aqui.
+  mlflow_tracking_uri: sqlite:///mlruns/mlflow.db
+  mlflow_experiment: reactorguard-pinn
 
 # -----------------------------------------------------------------------------
 # Serving / inference parameters  (ml/serving/)

@@ -152,9 +152,8 @@ markers = [
 source = ["data", "ml/features", "ml/models", "ml/training"]
 # ml/models entro en F4-M2 (red, estado fisico y perdidas, tests propios).
 # ml/training entro en F4-M1 con pinn_params.py, sim_dataset.py y prepare_sim.py
-# (stage prepare_sim, tests propios). train.py sigue siendo el andamiaje sin loop
-# hasta que F4-M3 lo reescriba: hasta entonces queda fuera del alcance medido.
-omit = ["ml/training/train.py"]
+# (stage prepare_sim, tests propios); train.py salio del omit en F4-M3, al
+# reescribirse con el loop real (stage train, tests propios).
 # data/generators/reactor_simulator.py salio de este omit (y del override de mypy)
 # al REESCRIBIRSE en F3-M3 (T5.3): ya construye SensorReading canonicos y tiene
 # tests propios. Ya no queda ninguna exclusion de cobertura.

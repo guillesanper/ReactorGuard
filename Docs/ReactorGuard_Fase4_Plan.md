@@ -1,7 +1,7 @@
 # Fase 4 (ML Core: PINN) - plan por hitos con guia de ejecucion
 
 Estado: **APROBADO** (2026-11-10: D4-1 a D4-16 tal como se proponen, con un unico ajuste de calendario en D4-9:
-la retirada de claves de `training:` pasa de M1 a M3). Plan redactado en F4-M0; **F4-M1 y F4-M2 hechos** (seccion 15). Las
+la retirada de claves de `training:` pasa de M1 a M3). Plan redactado en F4-M0; **F4-M1, F4-M2 y F4-M3 hechos** (seccion 15). Las
 sondas del preflight se ejecutaron fuera del repo (scratchpad), leyendo `data/raw/simulation` sin modificarlo. Etiquetas:
 **[M]** medida durante la planificacion, **[L]** leida del codigo o de un documento, **[W]** documentacion externa
 no medida, **[C]** calculada a partir de cifras [M] (aritmetica, no medicion). Prosa sin tildes, como el resto del
@@ -261,6 +261,24 @@ lambda 0 -> objetivo en `pinn.curriculum_epochs` (50 por defecto, riesgo de Plan
 (seccion 8). **Medir**: convergencia (curva), epocas hasta parar, tiempo del stage, **bytes de `model.pt` entre dos
 ejecuciones y entre procesos** (H5); si `torch.save` no es estable, guardar con un serializador propio de tensores y
 documentarlo. MSE de val frente a persistencia (0,0833) y ruido (0,0331).
+**Hecho (2026-11-24)**: ver seccion 15. Decisiones del usuario al abrir el hito: (a) se retiran las diez claves de D4-9
+**y** `training.seed`, cuyo unico lector era tambien el andamiaje (quedan las seis del stage `split`); (b) la mascara de
+masa usa el par medido (x(t), y(t+1)) (M2-3); (c) claves nuevas de `pinn:` con los valores propuestos (seed 42, 4 hilos,
+256 x 3, dropout 0,1, Adam 1e-3 sin decaimiento, lote 256, 100 epocas, paciencia 10, `ReduceLROnPlateau` 5 / 0,5 /
+1e-6, lambdas 1 y 1, curriculum 50, salidas y MLflow); (d) parada temprana, planificador de lr y mejor epoca vigilan
+`val_total` con los lambdas OBJETIVO y la paciencia solo cuenta tras el curriculum. Precisiones por evidencia del hito:
+(1) el contexto de D4-2 es `power_level` = mediana de `P_th` / 100, `power_rate` = diferencia hacia atras de
+`power_level` por hora (0 en el primer instante de cada run: solo usa el pasado), `hour_sin`/`hour_cos` de la hora UTC;
+las cuatro se normalizan con media y desviacion de train y viajan en el checkpoint; (2) la logica se reparte en
+`ml/training/pinn_data.py` (pares y contexto), `ml/training/checkpoint.py` (contrato de `model.pt`) y `train.py` (loop,
+MLflow, salidas); `PinnTrainParams` es una vista aparte de `pinn:` para que `prepare_sim` y sus `params:` no cambien;
+(3) el stage `train` declara exactamente las claves de `pinn:` que lee salvo la URI (no las tres de `prepare_sim` que
+no lee) mas `simulation.{sensors,plant_parameters,water_table}_path`, y depende tambien de `pinn_data.py`,
+`checkpoint.py`, `sim_dataset.py`, `ml/models` y `data/simulation` (lo que importa); (4) `torch.save` es estable
+(H5): no hay serializador propio; (5) la inicializacion reproduce `nn.Linear.reset_parameters` con un `Generator`, y
+`torch.manual_seed` solo se fija en `deterministic_torch` (lo necesita el dropout), que restaura el estado global al
+salir; (6) las lineas base de 2.3 estan en otra escala z (hallazgo M3-1): se comparan las calculadas sobre val con el
+z-score de D4-6, que el stage escribe en sus metricas.
 
 ### F4-M4 - Validacion fisica (T6.5)
 
@@ -402,7 +420,7 @@ actualizada, filas T6.x/T7.x de Progreso y mensaje de commit (sin linea Co-Autho
 | F4-M0 | Hecho (plan propuesto, pendiente de aprobacion) | 2026-11-10 | puertas: 2867 passed / 1 skipped / 99,55 % (817 s); V2 = 2, V3 = 0; preflight en la seccion 2 | - |
 | F4-M1 | Hecho (stage `prepare_sim`) | 2026-11-10 | 16/9/9 runs; CRITICAL 1.474 / 1.446 / 1.813 instantes y 30.126 / 30.390 / 30.546 lecturas (91.062); pares entrenables 15.105 / 8.071 / 7.645; rejilla 50,0 / 41,7 / 42,4 %; 8.160 instantes con >1 episodio; salidas 9,57 / 5,43 / 5,43 MB; stage 7,2-7,7 s via DVC (6,4 s el script); mismos md5 en 6 ejecuciones; puertas: ruff limpio, mypy con los 2 errores de entorno, 2976 passed / 1 skipped / 99,57 % (812 s, sin 506/507), 100 % en los 3 modulos nuevos, `dvc status` limpio, V2 = 2, V3 = 0. Nota: `dvc repro --force prepare_sim` rehace tambien `simulate` (~4 min, lock identico) | - |
 | F4-M2 | Hecho (red y perdidas fisicas) | 2026-11-24 | MLP 146.715 parametros (27 sensores + 4 de contexto); sobre los 32.161 instantes normales, residuo de energia \|Q_gen - Q_rem\|/Q_gen medido 0,66 / 2,51 / 4,13 % (p50/p99/max) y sobre `true_value` 0,0075 / 0,153 / 0,71 %; masa \|m_hl - m_cl\|/m_cl medida 0,67 / 2,54 / 4,28 % (= seccion 2.3); perdida media de energia 6,76e-5 (medido) / 7,3e-8 (verdadero), de masa en cuasi-estacionario 9,98e-5 / 1,0e-8; 0 filas normales fuera de la tabla; 99,89 % de los normales cuasi-estacionarios. Coste por lote de 256 (float32, 4 hilos, Adam, contenedor Linux x86_64, torch 2.15.0): 3,31 ms p50 solo datos frente a 5,31 ms con los dos terminos (+60 %, ~0,12 s por epoca de 15.105 pares); terminos fisicos sin backward 0,56 ms. Puertas (Linux, pandas 2.3.3, pyarrow 24.0.0): ruff limpio, mypy con los 2 errores de entorno, `pytest tests/unit tests/safety --cov` 2965 passed / 85 skipped / 99,58 % (416 s), 100 % en `ml/models`. `dvc.lock`, V2 y V3 no se ejecutaron (Windows) | - |
-| F4-M3 | Pendiente | | | |
+| F4-M3 | Hecho (loop, MLflow y stage `train`) | 2026-11-24 | Contenedor Linux x86_64, torch 2.15.0, mlflow 3.14.0, 4 hilos: 15.105 / 8.071 pares train/val (todos cuasi-estacionarios); 100 epocas sin parada temprana, mejor la 91, lr 1e-3 -> 1e-6 (suelo hacia la 87); loop 32-34 s (41,6 s con 1 hilo), stage ~40 s de pared; curva de val_data 0,3051 (epoca 0) -> 0,2972 (1) -> 0,2906 (20) -> 0,2894 (49) -> 0,28928 (91); val_data **0,28928** frente a persistencia 0,57390 y ruido 0,28459 en el z de D4-6 (0,504 y 1,017 veces; en la escala de 2.3: 0,0343 / 0,0679 / 0,0332); MSE frente a `true_value` de t+1 0,0047; val_energy 9,81e-8, val_mass 1,02e-7; peso de la fisica (lambda = 1) ~2,2e-6 del MSE de datos en train y 6,9e-7 en val; `model.pt` 591.089 bytes, sha256 `f87d3377...` identico (con la ficha y las metricas) entre 2 ejecuciones, 2 procesos, 2 directorios y 1/4 hilos; puertas: ruff limpio, mypy con los 2 errores de entorno, `pytest tests/unit tests/safety --cov` 3093 passed / 85 skipped / 99,61 % (431 s), 100 % en `ml/training` y `ml/models`; tests de `test_train.py` 42 en 12,5 s (el entrenamiento mas largo 1,1 s). `dvc.lock`, V2 y V3 no se ejecutaron (Windows) | - |
 | F4-M4 | Pendiente | | | |
 | F4-M5 | Pendiente | | | |
 | F4-M6 | Pendiente | | | |
@@ -419,3 +437,16 @@ actualizada, filas T6.x/T7.x de Progreso y mensaje de commit (sin linea Co-Autho
 | M2-4 | `torch.median` devuelve el inferior de los dos centrales; con 2 canales por rol no coincide con la mediana de pandas de las reglas. `channel_median` usa la definicion de numpy (test que la compara con la mediana por rol sobre un frame con ruido) |
 | M2-5 | Entorno: en el contenedor Linux `simulate` reproduce `sim_pinn_metrics.json` byte a byte, pero `metrics/simulation_metrics.json` cambia en 9 lineas (p. ej. `void_formation`: `boiling` 713 -> 712; `max_instant_residual` 3,0e-16 -> 6,1e-16): diferencias de coma flotante entre plataformas en el run de vacio. No se commitea; el lock y las metricas siguen siendo los de Windows |
 | M2-6 | Entorno: torch desde PyPI (2.15.0+cu132, sin GPU) funciona en el contenedor; el indice de ruedas de PyTorch sigue bloqueado. La suite `tests` entera da 23 fallos dependientes del orden en `test_validation_consumer`/`test_stream_metrics`/`test_tep_streamer`/`test_validation_service`, identicos en `ce655e1` (antes de integrar) y que pasan aislados; con `tests/unit tests/safety` (la puerta del plan) no aparecen |
+
+**Hallazgos de F4-M3**
+
+| # | Hallazgo |
+|---|---|
+| M3-1 | Las lineas base de la seccion 2.3 (persistencia 0,0833, ruido 0,0331) se normalizaron con la desviacion de TODOS los instantes, fallos incluidos: el ruido 0,0331 se reproduce exacto asi (persistencia 0,0679 sobre los pares entrenables). Con el z-score de D4-6 (train sin etiqueta, la desviacion es menor) las mismas cifras en val son **0,5739 y 0,2846**; el stage escribe estas en `metrics/pinn_train_metrics.json` y la comparacion se hace en la misma escala. En la escala del preflight el modelo da 0,0343 (persistencia 0,0679, ruido 0,0332) |
+| M3-2 | **Peso de la fisica con lambda = 1: ~2e-6 del MSE de datos** en train y 6,9e-7 en val (energia 9,8e-8, masa 1,0e-7 frente a val_data 0,289), no 1e-3 como estimaba M2-1: la red predice casi el estado verdadero (MSE frente a `true_value` de t+1: 0,0047), cuya energia (suelo 7,3e-8) y masa (1e-8) estan muy por debajo de las de la medicion (6,8e-5 y 1,0e-4). Para que la fisica pese un 1 % de los datos haria falta lambda ~1e4; con la rejilla propuesta ({0; 0,1; 1; 10}^2) o con {0; 10; 100; 1000} la red apenas cambiaria. La rejilla de M5 no se toca sin el usuario |
+| M3-3 | Sin parada temprana en 100 epocas: la mejor es la 91 y `ReduceLROnPlateau` llega al suelo de 1e-6 hacia la 87; las mejoras de val de ~1e-5 relativo siguen reiniciando la paciencia. El tope `max_epochs` es el que manda; una `min_delta` cambiaria eso (no se anade sin consultar) |
+| M3-4 | Por sensor, el MSE de val frente a su ruido es ~1 en caudales y temperaturas, pero **4,1 en los tres `NI-FLUX`**, 3,2 en `PWR-TH-01` y 1,6 en `TC-CL-1`: el flujo responde a cambios de carga que no se ven en t. El residuo normal del flujo sera alto: relevante para normalizar el residuo por sensor en M6 |
+| M3-5 | `torch.save` es estable en bytes: las entradas del zip llevan fecha fija (1980), `.data/serialization_id` depende del contenido y el prefijo interno sale del nombre del fichero (`model/`). `model.pt` (591.089 bytes), `model_card.json` y las metricas son identicos entre dos ejecuciones, dos procesos, dos directorios y con 1 o 4 hilos (con 1 hilo el loop tarda 41,6 s frente a 32-34 s). Falta medir Windows frente a Linux (torch 2.13 frente a 2.15) |
+| M3-6 | Con el par (x(t), y(t+1)) todos los pares entrenables son cuasi-estacionarios (15.105 / 15.105 en train, 8.071 / 8.071 en val): la mascara de masa no excluye ninguno en estos datos (M2 midio 99,89 % sobre los instantes normales) |
+| M3-7 | Entorno: el contenedor no trae `mlflow`; `pip install mlflow==3.14.0` exige antes `pip install --ignore-installed blinker` (el `blinker` de Debian no se puede desinstalar). Crear el esquema sqlite cuesta ~3 s por store: los tests de MLflow comparten uno por modulo |
+| M3-8 | `metrics/pinn_train_metrics.json` y `dvc.lock` del stage `train` se generan en Windows (`Invoke-Pipeline.ps1 -Stage train`): las cifras de esta seccion son del contenedor Linux y no se commitean. Hasta entonces `TestDvcCriterion::test_stage_names_and_hashes_agree_with_the_real_files` (`dvc.lock` debe registrar todas las etapas de `dvc.yaml`) falla en Windows y en el CI, que trae `pwsh`; en el contenedor sin `pwsh` se salta |

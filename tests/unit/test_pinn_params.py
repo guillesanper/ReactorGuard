@@ -14,8 +14,14 @@ from typing import Any
 import pytest
 import yaml
 
-from ml.training.pinn_params import DEFAULT_PARAMS_PATH, PinnParams, load_pinn_params
-from tests.support.sim_frames import REPO_ROOT
+from ml.training.pinn_params import (
+    DEFAULT_PARAMS_PATH,
+    PinnParams,
+    PinnTrainParams,
+    load_pinn_params,
+    load_pinn_train_params,
+)
+from tests.support.sim_frames import REPO_ROOT, pinn_train_section
 
 
 def pinn_section(**overrides: Any) -> dict[str, Any]:
@@ -162,3 +168,99 @@ class TestRepositoryParams:
         params = load_pinn_params(REPO_ROOT / DEFAULT_PARAMS_PATH)
         assert stage["outs"] == [params.data_dir.as_posix()]
         assert [next(iter(m)) for m in stage["metrics"]] == [params.metrics_path.as_posix()]
+
+
+# ----------------------------------------------------------------------
+# Stage train (F4-M3): load_pinn_train_params
+# ----------------------------------------------------------------------
+
+
+def _train_section(**overrides: Any) -> dict[str, Any]:
+    """Return a valid pinn: section for the train stage with relative paths."""
+    section = pinn_train_section(Path("work"))
+    section.update(
+        data_dir="data/processed/sim_pinn",
+        model_dir="models/pinn/candidate",
+        train_metrics_path="metrics/pinn_train_metrics.json",
+        mlflow_tracking_uri="sqlite:///mlruns/mlflow.db",
+    )
+    section.update(overrides)
+    return section
+
+
+def _load_train(tmp_path: Path, **overrides: Any) -> PinnTrainParams:
+    path = _write(tmp_path / "p.yaml", {"pinn": _train_section(**overrides)})
+    return load_pinn_train_params(path)
+
+
+class TestTrainParams:
+    """The keys of the train stage resolve and fail naming the key."""
+
+    def test_typed_values(self, tmp_path: Path) -> None:
+        """Paths are Path, counts int, rates float, the URI a string."""
+        params = _load_train(tmp_path, seed=0, curriculum_epochs=0, lr_patience=0.0)
+        assert params.data_dir == Path("data/processed/sim_pinn")
+        assert params.model_dir == Path("models/pinn/candidate")
+        assert (params.seed, params.curriculum_epochs, params.lr_patience) == (0, 0, 0)
+        assert isinstance(params.lr_patience, int)
+        assert params.learning_rate == 1.0e-2
+        assert params.mlflow_tracking_uri == "sqlite:///mlruns/mlflow.db"
+
+    def test_prepare_sim_loader_ignores_the_train_keys(self, tmp_path: Path) -> None:
+        """Both views read the same section without interfering."""
+        path = _write(tmp_path / "p.yaml", {"pinn": _train_section()})
+        assert load_pinn_params(path).val_runs_per_scenario == 1
+
+    @pytest.mark.parametrize("key", sorted(PinnTrainParams.__dataclass_fields__))
+    def test_missing_key_names_the_key(self, tmp_path: Path, key: str) -> None:
+        """Every field is required."""
+        section = _train_section()
+        del section[key]
+        path = _write(tmp_path / "p.yaml", {"pinn": section})
+        with pytest.raises(KeyError, match=f"'pinn.{key}'"):
+            load_pinn_train_params(path)
+
+    @pytest.mark.parametrize(
+        ("key", "value", "message"),
+        [
+            ("num_threads", 0, "positive integer"),
+            ("hidden", 2.5, "positive integer"),
+            ("batch_size", True, "positive integer"),
+            ("seed", -1, "non-negative integer"),
+            ("curriculum_epochs", 1.5, "non-negative integer"),
+            ("lr_patience", "two", "non-negative integer"),
+            ("seed", float("inf"), "non-negative integer"),
+            ("dropout", 1.0, r"in \[0, 1\)"),
+            ("dropout", -0.1, r"in \[0, 1\)"),
+            ("lr_factor", 0.0, r"in \(0, 1\)"),
+            ("lr_factor", 1.0, r"in \(0, 1\)"),
+            ("learning_rate", 0.0, "> 0"),
+            ("min_lr", -1.0e-6, "> 0"),
+            ("weight_decay", -0.1, ">= 0"),
+            ("lambda_energy", -1.0, ">= 0"),
+            ("lambda_mass", float("nan"), "finite"),
+            ("learning_rate", "fast", "a number"),
+            ("learning_rate", True, "a number"),
+            ("mlflow_experiment", "", "non-empty string"),
+            ("mlflow_tracking_uri", 3, "non-empty string"),
+            ("mlflow_tracking_uri", "mlruns", "sqlite"),
+            ("mlflow_tracking_uri", "sqlite:///", "sqlite"),
+            ("model_dir", "", "non-empty path"),
+        ],
+    )
+    def test_out_of_range_values(self, tmp_path: Path, key: str, value: Any, message: str) -> None:
+        """Each invalid value is rejected naming the key."""
+        with pytest.raises(ValueError, match=f"'pinn.{key}'.*{message}"):
+            _load_train(tmp_path, **{key: value})
+
+    @pytest.mark.parametrize(
+        ("key", "value"),
+        [
+            ("model_dir", "data/processed/sim_pinn/model"),
+            ("train_metrics_path", "models/pinn/candidate/metrics.json"),
+        ],
+    )
+    def test_outs_cannot_nest(self, tmp_path: Path, key: str, value: str) -> None:
+        """model_dir, train_metrics_path and data_dir are distinct DVC outs."""
+        with pytest.raises(ValueError, match="no pueden anidarse"):
+            _load_train(tmp_path, **{key: value})

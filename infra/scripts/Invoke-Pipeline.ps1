@@ -32,6 +32,10 @@
     El stage `prepare_sim` (F4-M1) cuelga de `simulate` y escribe los datos de la
     PINN repartidos por run en data/processed/sim_pinn (segundos).
 
+    El stage `train` (F4-M3) cuelga de `prepare_sim`: entrena la PINN (~40 s en
+    el contenedor Linux con 4 hilos), escribe models/pinn/candidate y registra el run
+    en MLflow (mlruns/mlflow.db).
+
 .PARAMETER Stage
     Reproduce only this stage and its dependencies. Defaults to the whole graph.
 
@@ -44,6 +48,7 @@
     .\infra\scripts\Invoke-Pipeline.ps1 -Stage adapt_tep -Force
     .\infra\scripts\Invoke-Pipeline.ps1 -Stage simulate
     .\infra\scripts\Invoke-Pipeline.ps1 -Stage prepare_sim
+    .\infra\scripts\Invoke-Pipeline.ps1 -Stage train
 #>
 
 [CmdletBinding()]
@@ -232,5 +237,21 @@ for name in ('train', 'val', 'test'):
     if ($LASTEXITCODE -eq 0) { $summary | ForEach-Object { Write-Host $_ } }
 }
 
+$pinnTrainMetrics = Join-Path $ProjectRoot "metrics\pinn_train_metrics.json"
+if (Test-Path $pinnTrainMetrics) {
+    Write-Host ""
+    Write-Host "  Entrenamiento de la PINN en models/pinn/candidate (F4-M3):"
+
+    $summary = & $VenvPython -c @"
+import json, pathlib
+metrics = json.loads(pathlib.Path(r'$pinnTrainMetrics').read_text(encoding='utf-8'))
+best, base = metrics['best'], metrics['baselines']
+print(f"    epocas {metrics['epochs_run']} (mejor {metrics['best_epoch']}), pares "
+      f"{metrics['pairs']['train']:,} / {metrics['pairs']['val']:,}")
+print(f"    val_data {best['val_data']:.5f} (persistencia {base['val_persistence_mse']:.5f}, "
+      f"ruido {base['val_noise_mse']:.5f}); energia {best['val_energy']:.3g}, masa {best['val_mass']:.3g}")
+"@
+    if ($LASTEXITCODE -eq 0) { $summary | ForEach-Object { Write-Host $_ } }
+}
 Write-Host ""
 Write-Host "Pipeline completado."
