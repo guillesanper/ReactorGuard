@@ -17,8 +17,10 @@ import yaml
 from ml.training.pinn_params import (
     DEFAULT_PARAMS_PATH,
     PinnParams,
+    PinnPhysicsParams,
     PinnTrainParams,
     load_pinn_params,
+    load_pinn_physics_params,
     load_pinn_train_params,
 )
 from tests.support.sim_frames import REPO_ROOT, pinn_train_section
@@ -264,3 +266,70 @@ class TestTrainParams:
         """model_dir, train_metrics_path and data_dir are distinct DVC outs."""
         with pytest.raises(ValueError, match="no pueden anidarse"):
             _load_train(tmp_path, **{key: value})
+
+
+# ----------------------------------------------------------------------
+# Stage evaluate (F4-M4): load_pinn_physics_params
+# ----------------------------------------------------------------------
+
+
+def _physics_section(**overrides: Any) -> dict[str, Any]:
+    """Return a valid pinn: section for physics_check with relative paths."""
+    section = _train_section(physics_metrics_path="metrics/pinn_physics_metrics.json")
+    section.update(overrides)
+    return section
+
+
+def _load_physics(tmp_path: Path, **overrides: Any) -> PinnPhysicsParams:
+    path = _write(tmp_path / "p.yaml", {"pinn": _physics_section(**overrides)})
+    return load_pinn_physics_params(path)
+
+
+class TestPhysicsParams:
+    """The keys of physics_check resolve and fail naming the key."""
+
+    def test_typed_values(self, tmp_path: Path) -> None:
+        """Paths are Path and the thread count int."""
+        assert _load_physics(tmp_path, num_threads=2.0) == PinnPhysicsParams(
+            data_dir=Path("data/processed/sim_pinn"),
+            model_dir=Path("models/pinn/candidate"),
+            num_threads=2,
+            physics_metrics_path=Path("metrics/pinn_physics_metrics.json"),
+        )
+
+    def test_other_views_ignore_the_physics_key(self, tmp_path: Path) -> None:
+        """prepare_sim and train read the same section without interfering."""
+        path = _write(tmp_path / "p.yaml", {"pinn": _physics_section()})
+        assert load_pinn_params(path).test_runs_per_scenario == 1
+        assert load_pinn_train_params(path).hidden == 16
+
+    @pytest.mark.parametrize("key", sorted(PinnPhysicsParams.__dataclass_fields__))
+    def test_missing_key_names_the_key(self, tmp_path: Path, key: str) -> None:
+        """Every field is required."""
+        section = _physics_section()
+        del section[key]
+        path = _write(tmp_path / "p.yaml", {"pinn": section})
+        with pytest.raises(KeyError, match=f"'pinn.{key}'"):
+            load_pinn_physics_params(path)
+
+    @pytest.mark.parametrize(
+        ("key", "value", "message"),
+        [
+            ("num_threads", 0, "positive integer"),
+            ("num_threads", 1.5, "positive integer"),
+            ("physics_metrics_path", "", "non-empty path"),
+            ("model_dir", 3, "non-empty path"),
+        ],
+    )
+    def test_out_of_range_values(self, tmp_path: Path, key: str, value: Any, message: str) -> None:
+        """Each invalid value is rejected naming the key."""
+        with pytest.raises(ValueError, match=f"'pinn.{key}'.*{message}"):
+            _load_physics(tmp_path, **{key: value})
+
+    @pytest.mark.parametrize(
+        "value", ["models/pinn/candidate/physics.json", "data/processed/sim_pinn/physics.json"]
+    )
+    def test_metrics_cannot_nest(self, tmp_path: Path, value: str) -> None:
+        """The metrics file lives outside the model and the data outs."""
+        with pytest.raises(ValueError, match="no pueden anidarse"):
+            _load_physics(tmp_path, physics_metrics_path=value)

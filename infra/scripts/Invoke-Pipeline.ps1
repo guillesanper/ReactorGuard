@@ -36,6 +36,10 @@
     el contenedor Linux con 4 hilos), escribe models/pinn/candidate y registra el run
     en MLflow (mlruns/mlflow.db).
 
+    El stage `evaluate` (F4-M4) cuelga de `train`: predice el test y mide la
+    satisfaccion de las 7 reglas fisicas (segundos); escribe
+    metrics/pinn_physics_metrics.json.
+
 .PARAMETER Stage
     Reproduce only this stage and its dependencies. Defaults to the whole graph.
 
@@ -49,6 +53,7 @@
     .\infra\scripts\Invoke-Pipeline.ps1 -Stage simulate
     .\infra\scripts\Invoke-Pipeline.ps1 -Stage prepare_sim
     .\infra\scripts\Invoke-Pipeline.ps1 -Stage train
+    .\infra\scripts\Invoke-Pipeline.ps1 -Stage evaluate
 #>
 
 [CmdletBinding()]
@@ -250,6 +255,23 @@ print(f"    epocas {metrics['epochs_run']} (mejor {metrics['best_epoch']}), pare
       f"{metrics['pairs']['train']:,} / {metrics['pairs']['val']:,}")
 print(f"    val_data {best['val_data']:.5f} (persistencia {base['val_persistence_mse']:.5f}, "
       f"ruido {base['val_noise_mse']:.5f}); energia {best['val_energy']:.3g}, masa {best['val_mass']:.3g}")
+"@
+    if ($LASTEXITCODE -eq 0) { $summary | ForEach-Object { Write-Host $_ } }
+}
+
+$pinnPhysicsMetrics = Join-Path $ProjectRoot "metrics\pinn_physics_metrics.json"
+if (Test-Path $pinnPhysicsMetrics) {
+    Write-Host ""
+    Write-Host "  Satisfaccion fisica de la PINN en test (F4-M4, D4-12):"
+
+    $summary = & $VenvPython -c @"
+import json, pathlib
+metrics = json.loads(pathlib.Path(r'$pinnPhysicsMetrics').read_text(encoding='utf-8'))
+for name in ('all', 'normal'):
+    p, m = metrics['prediction'][name], metrics['measurement'][name]
+    print(f"    {name:<6}: prediccion {p['n_satisfied']:,} / {p['n_evaluated']:,}, "
+          f"medicion {m['n_satisfied']:,} / {m['n_evaluated']:,}")
+print(f"    criterio 1 (> 99 %): {'CUMPLIDO' if metrics['passed'] else 'FALLADO'}")
 "@
     if ($LASTEXITCODE -eq 0) { $summary | ForEach-Object { Write-Host $_ } }
 }

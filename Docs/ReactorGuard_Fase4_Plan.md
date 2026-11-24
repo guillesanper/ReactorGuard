@@ -285,6 +285,19 @@ z-score de D4-6, que el stage escribe en sus metricas.
 **Crear** `ml/validation/physics_check.py` (D4-12): predice el test, desnormaliza, pivota a frame ancho con
 `DatetimeIndex` y aplica `evaluate_rules_detailed`; escribe `metrics/pinn_physics_metrics.json` (satisfaccion total,
 normal, por regla, no evaluables). Stage `evaluate` (seccion 8). **Medir** el criterio 1 con el modelo de M3.
+**Hecho (2026-11-24)**: ver seccion 15. Decisiones del usuario al abrir el hito: (a) reciben prediccion **todos** los
+instantes de test con t-1 en su run, etiquetados incluidos, con x(t-1) tal como se midio; (b) el primer instante de cada
+run no tiene prediccion y cuenta como **no evaluable** (fuera del denominador, informado aparte); (c) reglas **votadas**
+(defecto de D4-13; por canal en M6); (d) el stage `evaluate` entra ya en M4 solo con `physics_check` (`safety_check` se
+anade en M6); (e) dT/dt cuenta como regla **evaluable que no dispara** (D4-12). Precisiones por evidencia del hito:
+(1) vista nueva `PinnPhysicsParams` de `pinn:` (`data_dir`, `model_dir`, `num_threads` y la clave nueva
+`physics_metrics_path`), que el stage declara exactamente; (2) las reglas se aplican por run sobre el frame ancho de las
+PREDICCIONES de ese run, asi que dT/dt y la mascara cuasi-estacionaria de la masa usan y(t) - y(t-1) y no son evaluables
+en el primer instante predicho de cada run; (3) un instante es evaluado si al menos una regla es evaluable en el y
+satisfecho si ninguna regla evaluable se viola; (4) la referencia sobre la MEDICION se evalua sobre el run entero (sus
+derivadas usan x(t-1) medido) y se resume sobre los mismos instantes que la prediccion; (5) el JSON lleva ademas el
+desglose por escenario y los sha256 de `model.pt`, `test.parquet` y `assignment.json`; el stage no tiene outs, solo la
+metrica.
 
 ### F4-M5 - Rejilla de lambdas (T7.1, T7.2)
 
@@ -338,7 +351,7 @@ train:
   outs: [models/pinn/candidate]                            # model.pt + model_card.json
   metrics: [metrics/pinn_train_metrics.json: {cache: false}]
 
-evaluate:
+evaluate:                                                  # F4-M4: solo physics_check (safety_check en M6)
   cmd: python ml/validation/physics_check.py && python ml/validation/safety_check.py
   deps: [ml/validation/physics_check.py, ml/validation/safety_check.py, ml/models, models/pinn/candidate,
          data/processed/sim_pinn, data/simulation/physics_constraints.py]
@@ -421,7 +434,7 @@ actualizada, filas T6.x/T7.x de Progreso y mensaje de commit (sin linea Co-Autho
 | F4-M1 | Hecho (stage `prepare_sim`) | 2026-11-10 | 16/9/9 runs; CRITICAL 1.474 / 1.446 / 1.813 instantes y 30.126 / 30.390 / 30.546 lecturas (91.062); pares entrenables 15.105 / 8.071 / 7.645; rejilla 50,0 / 41,7 / 42,4 %; 8.160 instantes con >1 episodio; salidas 9,57 / 5,43 / 5,43 MB; stage 7,2-7,7 s via DVC (6,4 s el script); mismos md5 en 6 ejecuciones; puertas: ruff limpio, mypy con los 2 errores de entorno, 2976 passed / 1 skipped / 99,57 % (812 s, sin 506/507), 100 % en los 3 modulos nuevos, `dvc status` limpio, V2 = 2, V3 = 0. Nota: `dvc repro --force prepare_sim` rehace tambien `simulate` (~4 min, lock identico) | - |
 | F4-M2 | Hecho (red y perdidas fisicas) | 2026-11-24 | MLP 146.715 parametros (27 sensores + 4 de contexto); sobre los 32.161 instantes normales, residuo de energia \|Q_gen - Q_rem\|/Q_gen medido 0,66 / 2,51 / 4,13 % (p50/p99/max) y sobre `true_value` 0,0075 / 0,153 / 0,71 %; masa \|m_hl - m_cl\|/m_cl medida 0,67 / 2,54 / 4,28 % (= seccion 2.3); perdida media de energia 6,76e-5 (medido) / 7,3e-8 (verdadero), de masa en cuasi-estacionario 9,98e-5 / 1,0e-8; 0 filas normales fuera de la tabla; 99,89 % de los normales cuasi-estacionarios. Coste por lote de 256 (float32, 4 hilos, Adam, contenedor Linux x86_64, torch 2.15.0): 3,31 ms p50 solo datos frente a 5,31 ms con los dos terminos (+60 %, ~0,12 s por epoca de 15.105 pares); terminos fisicos sin backward 0,56 ms. Puertas (Linux, pandas 2.3.3, pyarrow 24.0.0): ruff limpio, mypy con los 2 errores de entorno, `pytest tests/unit tests/safety --cov` 2965 passed / 85 skipped / 99,58 % (416 s), 100 % en `ml/models`. `dvc.lock`, V2 y V3 no se ejecutaron (Windows) | - |
 | F4-M3 | Hecho (loop, MLflow y stage `train`) | 2026-11-24 | Contenedor Linux x86_64, torch 2.15.0, mlflow 3.14.0, 4 hilos: 15.105 / 8.071 pares train/val (todos cuasi-estacionarios); 100 epocas sin parada temprana, mejor la 91, lr 1e-3 -> 1e-6 (suelo hacia la 87); loop 32-34 s (41,6 s con 1 hilo), stage ~40 s de pared; curva de val_data 0,3051 (epoca 0) -> 0,2972 (1) -> 0,2906 (20) -> 0,2894 (49) -> 0,28928 (91); val_data **0,28928** frente a persistencia 0,57390 y ruido 0,28459 en el z de D4-6 (0,504 y 1,017 veces; en la escala de 2.3: 0,0343 / 0,0679 / 0,0332); MSE frente a `true_value` de t+1 0,0047; val_energy 9,81e-8, val_mass 1,02e-7; peso de la fisica (lambda = 1) ~2,2e-6 del MSE de datos en train y 6,9e-7 en val; `model.pt` 591.089 bytes, sha256 `f87d3377...` identico (con la ficha y las metricas) entre 2 ejecuciones, 2 procesos, 2 directorios y 1/4 hilos; puertas: ruff limpio, mypy con los 2 errores de entorno, `pytest tests/unit tests/safety --cov` 3093 passed / 85 skipped / 99,61 % (431 s), 100 % en `ml/training` y `ml/models`; tests de `test_train.py` 42 en 12,5 s (el entrenamiento mas largo 1,1 s). `dvc.lock`, V2 y V3 no se ejecutaron (Windows) | - |
-| F4-M4 | Pendiente | | | |
+| F4-M4 | Hecho (`physics_check` y stage `evaluate`) | 2026-11-24 | Contenedor Linux x86_64, torch 2.15.0, modelo de M3 (`model.pt` sha256 `f87d3377...`), 4 hilos: test 13.500 instantes en 9 runs, 13.491 con prediccion (9 primeros de run no evaluables, 0 sin ninguna regla evaluable); **satisfaccion de la prediccion 13.491 / 13.491 = 100 % (criterio 1 CUMPLIDO)**, normales 7.837 / 7.837, 0 violaciones en las 7 reglas y en los 9 escenarios; dT/dt y masa evaluables en 13.482 (el primer instante predicho de cada run no tiene y(t-1)); la MEDICION de los mismos instantes 11.885 / 13.491 (88,1 %): power_flux 1.533, energia 550, ebullicion 521, masa 283 (de 13.367 cuasi-estacionarios), caudal 113, dT/dt 0; normales 7.837 / 7.837; en val, prediccion 13.491 / 13.491 y medicion 92,0 %; stage ~2,7 s de pared (prediccion y reglas 0,3-1,1 s); `metrics/pinn_physics_metrics.json` 12.483 bytes, sha256 `c27fa362...` identico en 5 ejecuciones y con 1 o 4 hilos; puertas: ruff limpio, mypy con los 2 errores de entorno, `pytest tests/unit tests/safety --cov` 3133 passed / 85 skipped / 99,62 % (385 s), 100 % en `ml/validation`, `ml/training` y `ml/models`; `test_physics_check.py` 28 tests en 6,3 s (entrenamiento diminuto incluido). `dvc.lock`, la metrica versionada, V2 y V3 no se ejecutaron (Windows) | - |
 | F4-M5 | Pendiente | | | |
 | F4-M6 | Pendiente | | | |
 | F4-M7 | Pendiente | | | |
@@ -450,3 +463,12 @@ actualizada, filas T6.x/T7.x de Progreso y mensaje de commit (sin linea Co-Autho
 | M3-6 | Con el par (x(t), y(t+1)) todos los pares entrenables son cuasi-estacionarios (15.105 / 15.105 en train, 8.071 / 8.071 en val): la mascara de masa no excluye ninguno en estos datos (M2 midio 99,89 % sobre los instantes normales) |
 | M3-7 | Entorno: el contenedor no trae `mlflow`; `pip install mlflow==3.14.0` exige antes `pip install --ignore-installed blinker` (el `blinker` de Debian no se puede desinstalar). Crear el esquema sqlite cuesta ~3 s por store: los tests de MLflow comparten uno por modulo |
 | M3-8 | `metrics/pinn_train_metrics.json` y `dvc.lock` del stage `train` se generan en Windows (`Invoke-Pipeline.ps1 -Stage train`): las cifras de esta seccion son del contenedor Linux y no se commitean. Hasta entonces `TestDvcCriterion::test_stage_names_and_hashes_agree_with_the_real_files` (`dvc.lock` debe registrar todas las etapas de `dvc.yaml`) falla en Windows y en el CI, que trae `pwsh`; en el contenedor sin `pwsh` se salta |
+
+**Hallazgos de F4-M4**
+
+| # | Hallazgo |
+|---|---|
+| M4-1 | **El criterio 1 se cumple con holgura y discrimina poco**: la prediccion a un paso satisface las 7 reglas en el 100 % de test (y de val), tambien en los 1.606 instantes de test cuya MEDICION viola alguna (sus margenes minimos alli son los de los normales: energia 0,045 de 0,05, ebullicion 23,8 K, power_flux 3,59 puntos). La red predice siempre un estado de operacion normal: en el vacio, el estado VERDADERO ebulle (margen -12,9 K) y la prediccion no. Consecuencia para M6: la deteccion tiene que salir del residuo medicion - prediccion (y de las reglas sobre la medicion), no de las reglas sobre la prediccion; y para M5, la restriccion de seleccion "satisfaccion en val >= 99 %" no discrimina entre combinaciones con lambda = 1 |
+| M4-2 | M3-4 sobre test normal: el error de la prediccion frente a `true_value` es 0,75 puntos en `NI-FLUX` y 0,71 en `PWR-TH` (2,5 y 2,4 veces su ruido de 0,30), 0,12 C en T_out (ruido 0,15) y 1,6 kg/s en caudal (ruido 44,8). Aun asi las reglas de potencia y flujo no saltan: P_th y flujo se predicen coherentes, \|P_th - k flux\| p50 / p99 / max 0,018 / 0,37 / 0,81 puntos (umbral 4,5; medido 0,26 / 1,07 / 1,79) y residuo de energia 0,02 / 0,12 / 0,30 % (umbral 5 %; medido 0,58 / 2,26 / 3,5 %). La prediccion es mas fisica que la medicion porque quita el ruido |
+| M4-3 | Las reglas con derivada temporal usan y(t) - y(t-1) sobre la prediccion: no son evaluables en el primer instante predicho de cada run (13.482 de 13.491). dT/dt no se dispara (margen minimo 9,98 de 10 C/s, D4-12). La mascara cuasi-estacionaria deja evaluables 13.482 instantes en la prediccion frente a 13.367 en la medicion: la prediccion suaviza los transitorios |
+| M4-4 | La salida (`metrics/pinn_physics_metrics.json`) depende de `model.pt`: el de Linux (torch 2.15) puede no ser el de Windows (torch 2.13, M3-5 pendiente). Las cifras de esta seccion son del contenedor; la metrica versionada y el `dvc.lock` de `evaluate` se generan en Windows con `Invoke-Pipeline.ps1 -Stage evaluate`. Hasta entonces `TestDvcCriterion::test_stage_names_and_hashes_agree_with_the_real_files` sigue fallando en Windows y en el CI (ahora faltan `train` y `evaluate`) |

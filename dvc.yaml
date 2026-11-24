@@ -285,3 +285,41 @@ stages:
     metrics:
       - metrics/pinn_train_metrics.json:
           cache: false
+
+  evaluate:
+    # F4-M4 (T6.5): satisfaccion fisica del test (D4-12, criterio 1 de la Fase 4).
+    # Predice cada instante de test que tiene t-1 en su run (desde x(t-1) medido),
+    # desnormaliza y aplica por run las 7 reglas votadas de physics_constraints
+    # (D4-13). El primer instante de cada run no tiene prediccion: no evaluable.
+    # Escribe solo metricas, sin reloj ni rutas (identicas byte a byte entre
+    # ejecuciones y con 1 o 4 hilos, medido en F4-M4). safety_check (F4-M6) se
+    # anade a este mismo stage.
+    cmd: python ml/validation/physics_check.py
+    deps:
+      - ml/validation/physics_check.py
+      # Carga del checkpoint, contexto (D4-2), loader y columnas de prepare_sim.
+      - ml/training/checkpoint.py
+      - ml/training/pinn_data.py
+      - ml/training/pinn_params.py
+      - ml/training/sim_dataset.py
+      # Red y estado fisico que importa el checkpoint (F4-M2).
+      - ml/models
+      # Reglas, catalogo, planta, tabla del agua y loaders de parametros.
+      - data/simulation
+      - configs/sim_sensors.yaml
+      - configs/plant_parameters.yaml
+      - configs/water_table.yaml
+      - models/pinn/candidate
+      - data/processed/sim_pinn
+    params:
+      - pinn.data_dir
+      - pinn.model_dir
+      - pinn.num_threads
+      - pinn.physics_metrics_path
+      # De donde LEE el catalogo, los umbrales de planta y la tabla del agua.
+      - simulation.sensors_path
+      - simulation.plant_parameters_path
+      - simulation.water_table_path
+    metrics:
+      - metrics/pinn_physics_metrics.json:
+          cache: false

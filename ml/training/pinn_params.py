@@ -5,13 +5,15 @@ Existe por la misma razon que `data/simulation/simulation_params.py`: que los
 que esos stages leen de la seccion `pinn:` pasa por aqui, y un valor fuera de rango
 falla al cargar con un mensaje que nombra la clave completa.
 
-Dos vistas de la misma seccion, una por stage, para que cada uno declare en
+Una vista de la misma seccion por stage, para que cada uno declare en
 `dvc.yaml` exactamente las claves que lee:
 
 - `PinnParams` (F4-M1): datos y reparto por run del stage `prepare_sim` (D4-7, D4-8).
 - `PinnTrainParams` (F4-M3): red, optimizacion, curriculum, salidas y MLflow del
   stage `train`. Sustituye a las claves del andamiaje que D4-9 retiro de
   `training:`.
+- `PinnPhysicsParams` (F4-M4): checkpoint, test y metricas de `physics_check` en el
+  stage `evaluate`.
 """
 
 from __future__ import annotations
@@ -349,4 +351,61 @@ def load_pinn_train_params(params_path: str | Path = DEFAULT_PARAMS_PATH) -> Pin
         train_metrics_path=train_metrics_path,
         mlflow_tracking_uri=uri,
         mlflow_experiment=_text(section, "mlflow_experiment"),
+    )
+
+
+# ----------------------------------------------------------------------
+# Stage evaluate: validacion fisica (F4-M4)
+# ----------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class PinnPhysicsParams:
+    """Configuracion resuelta de `physics_check` en el stage evaluate (seccion pinn:).
+
+    Attributes:
+        data_dir: Directorio de `prepare_sim` del que se lee test.
+        model_dir: Directorio del checkpoint (`model.pt`) del stage train.
+        num_threads: Hilos intra-op de torch durante la prediccion.
+        physics_metrics_path: JSON de satisfaccion fisica (D4-12).
+    """
+
+    data_dir: Path
+    model_dir: Path
+    num_threads: int
+    physics_metrics_path: Path
+
+
+def load_pinn_physics_params(params_path: str | Path = DEFAULT_PARAMS_PATH) -> PinnPhysicsParams:
+    """Load and validate the keys of the pinn: section that physics_check reads.
+
+    Args:
+        params_path: Path to the params file.
+
+    Returns:
+        A fully resolved PinnPhysicsParams.
+
+    Raises:
+        FileNotFoundError: If params_path does not exist.
+        KeyError: If the pinn: section or a required key is missing.
+        TypeError: If the section is not a mapping.
+        ValueError: If a value is out of range or the metrics file would live
+            inside the data or the model directory.
+    """
+    section = _read_section(params_path)
+    data_dir = _path(section, "data_dir")
+    model_dir = _path(section, "model_dir")
+    physics_metrics_path = _path(section, "physics_metrics_path")
+    _check_not_nested(
+        {
+            "data_dir": data_dir,
+            "model_dir": model_dir,
+            "physics_metrics_path": physics_metrics_path,
+        }
+    )
+    return PinnPhysicsParams(
+        data_dir=data_dir,
+        model_dir=model_dir,
+        num_threads=_positive_int(section, "num_threads"),
+        physics_metrics_path=physics_metrics_path,
     )

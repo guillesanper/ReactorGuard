@@ -436,6 +436,13 @@ pinn:
   mlflow_tracking_uri: sqlite:///mlruns/mlflow.db
   mlflow_experiment: reactorguard-pinn
 
+  # --- Stage evaluate (F4-M4) ---
+  # Satisfaccion fisica del test (D4-12): fraccion de instantes cuyo estado
+  # PREDICHO (desde x(t-1) medido) no viola ninguna de las 7 reglas votadas. Lee el
+  # checkpoint de model_dir y la particion test de data_dir; predice con num_threads
+  # hilos. Fuera de data_dir y de model_dir (outs distintos de DVC).
+  physics_metrics_path: metrics/pinn_physics_metrics.json
+
 # -----------------------------------------------------------------------------
 # Serving / inference parameters  (ml/serving/)
 # -----------------------------------------------------------------------------

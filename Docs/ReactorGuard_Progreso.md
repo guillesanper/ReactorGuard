@@ -470,6 +470,18 @@ t+1 el MSE es 0,0047 (la red quita el ruido). Terminos fisicos de val 9,8e-8 (en
 pesan ~2e-6 del MSE de datos** (hallazgo M3-2). `model.pt` identico byte a byte entre dos ejecuciones, dos procesos y
 con 1 o 4 hilos (H5): `torch.save` es estable y no hace falta serializador propio.
 
+**F4-M4 (validacion fisica, T6.5)** crea `ml/validation/physics_check.py` y el stage `evaluate` (de momento solo con
+`physics_check`; `safety_check` llega en M6). Predice cada instante de test que tiene t-1 en su run (etiquetados
+incluidos, desde x(t-1) medido), desnormaliza con el z-score del checkpoint y aplica por run las 7 reglas votadas de
+`physics_constraints`; el primer instante de cada run es no evaluable. Con el modelo de M3: **13.491 / 13.491
+instantes de test satisfacen todas las reglas (100 %, criterio 1 CUMPLIDO)**, 7.837 / 7.837 los normales; ninguna regla
+salta sobre la prediccion, tampoco las de potencia y flujo pese a que el flujo se predice 2,5 veces peor que su ruido
+(M3-4): P_th y flujo se predicen coherentes entre si (|P_th - k flux| maximo 0,81 puntos frente al umbral de 4,5). La
+MEDICION de esos mismos instantes satisface 11.885 / 13.491 (88,1 %; 7.837 / 7.837 los normales): la prediccion a un
+paso nunca reproduce un estado de fallo (en los 1.606 instantes que violan en la medicion conserva los margenes de los
+normales, y no predice ebullicion en el vacio), de modo que la deteccion de M6 tiene que salir del residuo y no de las
+reglas sobre la prediccion. Stage ~2,7 s de pared; el JSON (12.483 bytes) es identico entre ejecuciones y con 1 o 4 hilos.
+
 El andamiaje restante: `predictor.py` **no se puede importar** con `mapie 1.4.1` (`MapieRegressor` ya no existe en la API 1.x);
 ademas espera la tupla del LSTM retirado. No se toca en Fase 4 (D4-16).
 
@@ -479,7 +491,7 @@ ademas espera la tupla del LSTM retirado. No se toca en Fase 4 (D4-16).
 | T6.2 | Training loop PyTorch: Adam, LR scheduler, early stopping | Completado (F4-M3): `ml/training/train.py` (Adam, `ReduceLROnPlateau`, curriculum de lambdas, parada temprana tras el curriculum, mejor epoca restaurada), `pinn_data.py` y `checkpoint.py`; 100 % de cobertura; val_data 0,2893 (persistencia 0,5739, ruido 0,2846) |
 | T6.3 | Integracion MLflow | Completado (F4-M3): un run por entrenamiento en `sqlite:///mlruns/mlflow.db` (artefactos en `mlruns/artifacts`), params y metricas por epoca (data, energy, mass, total, val_*, lr); nunca `mlflow.db` en la raiz (test) |
 | T6.4 | DVC stage `train` | Parcial (F4-M3): stage en `dvc.yaml` y salida reproducible byte a byte (H5); falta generar `dvc.lock` en Windows con `Invoke-Pipeline.ps1 -Stage train` |
-| T6.5 | `ml/validation/physics_check.py` | Pendiente |
+| T6.5 | `ml/validation/physics_check.py` | Completado (F4-M4): satisfaccion de las 7 reglas votadas sobre la prediccion de test 13.491 / 13.491 (100 %; normales 7.837 / 7.837; medicion 88,1 %), 100 % de cobertura en `ml/validation`; stage `evaluate` en `dvc.yaml` (solo `physics_check`); falta generar `dvc.lock` y `metrics/pinn_physics_metrics.json` en Windows |
 | T7.1 | Reentrenamiento con dataset de simulacion | En curso: datos (F4-M1) y entrenamiento con lambda = 1 (F4-M3, `models/pinn/candidate`); la seleccion de lambdas llega en M5 |
 | T7.2 | Grid search lambda_energy y lambda_mass | Pendiente |
 | T7.3 | `ml/models/rules.py`: 6 constraints del TDD | Pendiente |
@@ -581,11 +593,12 @@ Lo que impide dar por cerrada la Fase 2 en el cluster y que **no** se resuelve e
 2. Antes del despliegue, decidir: persistencia del estado de los detectores, DLQ, y que hacer con las
    100.934 alertas (hallazgo 9).
 3. Fase 3 cerrada en local (F3-M8, calibracion con OpenMC en Docker, es opcional).
-4. **Fase 4**: generar en Windows el `dvc.lock` del stage `train` (`.\infra\scripts\Invoke-Pipeline.ps1 -Stage train`)
-   y commitearlo con `metrics/pinn_train_metrics.json`; despues **F4-M4** (validacion fisica, `physics_check.py` y stage
-   `evaluate`; T6.5) cuando el usuario lo indique. Antes: concretar D4-12 (que instantes de test reciben prediccion,
-   reglas votadas o por canal) y si el stage `evaluate` entra ya en M4 solo con `physics_check`. F4-M1 a F4-M3 estan
-   en `main`.
+4. **Fase 4**: generar en Windows el `dvc.lock` de los stages `train` y `evaluate`
+   (`.\infra\scripts\Invoke-Pipeline.ps1 -Stage evaluate`, que rehace `train` si hace falta) y commitearlo con
+   `metrics/pinn_train_metrics.json` y `metrics/pinn_physics_metrics.json`; despues **F4-M5** (rejilla de lambdas,
+   `grid_search.py`; T7.1 y T7.2) cuando el usuario lo indique. Antes: decidir la rejilla (con lambda = 1 la fisica pesa
+   ~2e-6 del MSE, M3-2), `min_delta` de la parada temprana (M3-3) y la regla de seleccion
+   (la satisfaccion en val ya es del 100 % con lambda = 1, M4-1). F4-M1 a F4-M4 estan en `main`.
 
 Referencia tecnica del camino de streaming (invariantes, contrato de mensajes, commit, rebalanceo, metricas y
 runbook): [ReactorGuard_Fase2_Streaming.md](ReactorGuard_Fase2_Streaming.md).

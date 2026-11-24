@@ -149,7 +149,8 @@ markers = [
 # ml/features entro al escribirse kalman.py (T4.1), que es codigo de Fase 2 con
 # tests propios, no andamiaje: dejarlo fuera del alcance seria medir el gate
 # contra menos codigo del que la fase realmente entrega.
-source = ["data", "ml/features", "ml/models", "ml/training"]
+source = ["data", "ml/features", "ml/models", "ml/training", "ml/validation"]
+# ml/validation entro en F4-M4 con physics_check.py (stage evaluate, tests propios).
 # ml/models entro en F4-M2 (red, estado fisico y perdidas, tests propios).
 # ml/training entro en F4-M1 con pinn_params.py, sim_dataset.py y prepare_sim.py
 # (stage prepare_sim, tests propios); train.py salio del omit en F4-M3, al

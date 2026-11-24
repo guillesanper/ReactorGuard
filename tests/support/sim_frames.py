@@ -617,8 +617,9 @@ def write_pinn_partitions(data_dir: Path, frames: dict[str, pd.DataFrame]) -> Pa
 def pinn_train_section(work_dir: Path, **overrides: Any) -> dict[str, Any]:
     """Return a pinn: section for a tiny training under work_dir (well under 10 s).
 
-    Lleva las claves de prepare_sim y las del stage train, con una red de 16
-    neuronas, pocas epocas y el store de MLflow bajo work_dir.
+    Lleva las claves de prepare_sim, las del stage train y la de physics_check
+    (F4-M4), con una red de 16 neuronas, pocas epocas y el store de MLflow bajo
+    work_dir.
 
     Args:
         work_dir: Directorio de trabajo (normalmente `tmp_path`).
@@ -652,6 +653,7 @@ def pinn_train_section(work_dir: Path, **overrides: Any) -> dict[str, Any]:
         "train_metrics_path": str(work_dir / "metrics" / "pinn_train_metrics.json"),
         "mlflow_tracking_uri": f"sqlite:///{(work_dir / 'mlruns' / 'mlflow.db').as_posix()}",
         "mlflow_experiment": "test-pinn",
+        "physics_metrics_path": str(work_dir / "metrics" / "pinn_physics_metrics.json"),
     }
     section.update(overrides)
     return section
