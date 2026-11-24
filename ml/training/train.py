@@ -28,11 +28,13 @@ def load_params(path: str | Path) -> dict[str, Any]:
 
 
 def build_model(params: dict[str, Any], input_size: int) -> ReactorPINN:
+    # Andamiaje hasta F4-M3: solo se adapta a la firma del MLP de F4-M2 (D4-1). Las
+    # claves de training: se retiran en M3 junto con la reescritura (D4-9).
     t = params["training"]
     return ReactorPINN(
-        input_size=input_size,
-        hidden_size=t["hidden_size"],
-        n_layers=t["n_layers"],
+        n_sensors=input_size,
+        hidden=t["hidden_size"],
+        n_hidden=t["n_layers"],
         dropout=t["dropout"],
     )
 

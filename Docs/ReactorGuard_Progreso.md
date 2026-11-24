@@ -1,6 +1,6 @@
 # ReactorGuard — Registro de Progreso
 **Nuclear Reactor Anomaly Detection Platform**
-*Actualizado: 2026-11-10 — Fase 2 verificada contra el commit `d35f802`; **Fase 3 cerrada en local** (F3-M7: `Verify-Phase3.ps1 -FromScratch` con los 4 criterios CUMPLIDOS); F3-M1 a F3-M7 commiteados (rama `feat/stage-simulate`, `afa5e85`); **Fase 4: plan aprobado; F4-M1 hecho (stage `prepare_sim`)** (rama `feat/fase4-plan`)*
+*Actualizado: 2026-11-10 — Fase 2 verificada contra el commit `d35f802`; **Fase 3 cerrada en local** (F3-M7: `Verify-Phase3.ps1 -FromScratch` con los 4 criterios CUMPLIDOS); F3-M1 a F3-M7 commiteados (rama `feat/stage-simulate`, `afa5e85`); **Fase 4: plan aprobado; F4-M1 (stage `prepare_sim`) y F4-M2 (modelo y perdidas fisicas) hechos** (en `main`, 2026-11-24)*
 
 Este documento distingue tres cosas que antes se confundian: **codigo escrito**, **verificado en local**
 y **criterio medido en el entorno real**. Una tarea puede estar completada como codigo y aun asi no
@@ -434,7 +434,7 @@ dT/dt exige un salto de 1800 K entre muestras (C5): no es un detector a esa cade
 **Semanas 6–7** · Plan **aprobado** (2026-11-10, D4-1 a D4-16 tal como se proponen; la retirada de claves de
 `training:` de D4-9 pasa a M3): [ReactorGuard_Fase4_Plan.md](ReactorGuard_Fase4_Plan.md) (preflight medido, choques
 C1-C9, hitos F4-M1 a F4-M8, stages `prepare_sim`, `train` y `evaluate`, `Verify-Phase4.ps1`). **F4-M1 hecho**: stage
-`prepare_sim` (seccion 15 del plan).
+`prepare_sim`; **F4-M2 hecho**: red y perdidas fisicas (seccion 15 del plan).
 
 **F4-M1 (datos de entrenamiento)** aporta `ml/training/pinn_params.py` (loader de la seccion nueva `pinn:`),
 `ml/training/sim_dataset.py` (manifiesto con verificacion de `sha256`, reparto por run estratificado de D4-7, frame
@@ -444,14 +444,24 @@ los 34 runs reproduce el preflight: 16/9/9 runs, **1.474 / 1.446 / 1.813 instant
 42,4 %; 15.105 / 8.071 / 7.645 pares entrenables. Hallazgo: 8.160 instantes tienen mas de un episodio activo (los de
 instrumento se solapan en sensores distintos), por eso se guardan todos los `episode_ids` del instante.
 
-Existe `ml/models/pinn.py`, `ml/training/train.py` y `ml/serving/predictor.py`, pero:
-`ReactorPINN` es un LSTM y no el MLP del TDD 5.2, `physics_residual` **no implementa la fisica que documenta**,
-`train.py` no tiene loop de entrenamiento y `predictor.py` **no se puede importar** con `mapie 1.4.1` (`MapieRegressor`
-ya no existe en la API 1.x).
+**F4-M2 (modelo y perdidas fisicas, T6.1)** reescribe `ml/models/pinn.py` como el MLP del TDD 5.2 (`ReactorPINN(n_sensors,
+n_context=4, hidden=256, n_hidden=3, dropout=0.1)`, 146.715 parametros con 27 sensores, prediccion del paso siguiente
+en z-score; se retira el LSTM) y crea `ml/models/physics_state.py` (`PINN_STATE_ORDER` = flux, flow_in, t_in, t_out,
+flow_out con test de contrato; roles del catalogo a indices, desnormalizacion y mediana por rol igual que las reglas) y
+`ml/models/physics_loss.py` (energia `((Q_gen - Q_rem)/P0)^2` con cp de tabla sin gradiente y sin extrapolar; masa
+`((m_out - m_in)/m_nom)^2` solo en cuasi-estacionario; `PhysicsLossTerms`). Sobre los 32.161 instantes normales
+reproduce la seccion 2.3 del plan: residuo de energia medido 0,66 / 2,51 / 4,13 % (p50/p99/max), sobre `true_value`
+0,0075 / 0,153 / 0,71 %; masa medida 0,67 / 2,54 / 4,28 %. Hallazgo: con lambda = 1 los terminos fisicos (~7e-5 y
+~1e-4 sobre la medicion) son 300-1000 veces menores que el MSE de datos en z (0,03-0,08): la rejilla de M5 necesita
+lambdas mayores que {0; 0,1; 1; 10} (plan, seccion 15).
+
+El andamiaje restante: `ml/training/train.py` no tiene loop de entrenamiento (F4-M3; solo se adapto a la firma
+nueva) y `predictor.py` **no se puede importar** con `mapie 1.4.1` (`MapieRegressor` ya no existe en la API 1.x);
+ademas espera la tupla del LSTM retirado. No se toca en Fase 4 (D4-16).
 
 | ID | Tarea | Estado |
 |----|-------|--------|
-| T6.1 | `ml/models/pinn.py`: arquitectura + energy/mass balance loss | Pendiente (esqueleto con forward verificado en `test_pinn_forward.py`) |
+| T6.1 | `ml/models/pinn.py`: arquitectura + energy/mass balance loss | Completado (F4-M2): MLP del TDD 5.2, `physics_state.py` y `physics_loss.py`, 100 % de cobertura en `ml/models`; perdidas medidas sobre el dataset reproducen la seccion 2.3 del plan |
 | T6.2 | Training loop PyTorch: Adam, LR scheduler, early stopping | Pendiente |
 | T6.3 | Integracion MLflow | Pendiente |
 | T6.4 | DVC stage `train` | Pendiente |
@@ -557,8 +567,9 @@ Lo que impide dar por cerrada la Fase 2 en el cluster y que **no** se resuelve e
 2. Antes del despliegue, decidir: persistencia del estado de los detectores, DLQ, y que hacer con las
    100.934 alertas (hallazgo 9).
 3. Fase 3 cerrada en local (F3-M8, calibracion con OpenMC en Docker, es opcional).
-4. **Fase 4: F4-M2** (modelo y perdidas fisicas, T6.1) cuando el usuario lo indique; el plan esta aprobado y F4-M1
-   (stage `prepare_sim`) entregado.
+4. **Fase 4: F4-M3** (loop de entrenamiento, MLflow y stage `train`; T6.2-T6.4) cuando el usuario lo indique. Antes:
+   avisar de la retirada de las diez claves de `training:` (D4-9) y decidir con que par de instantes se calcula la
+   mascara de masa (hallazgo M2-3 del plan). F4-M1 y F4-M2 estan en `main`.
 
 Referencia tecnica del camino de streaming (invariantes, contrato de mensajes, commit, rebalanceo, metricas y
 runbook): [ReactorGuard_Fase2_Streaming.md](ReactorGuard_Fase2_Streaming.md).

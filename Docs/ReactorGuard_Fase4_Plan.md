@@ -1,7 +1,7 @@
 # Fase 4 (ML Core: PINN) - plan por hitos con guia de ejecucion
 
 Estado: **APROBADO** (2026-11-10: D4-1 a D4-16 tal como se proponen, con un unico ajuste de calendario en D4-9:
-la retirada de claves de `training:` pasa de M1 a M3). Plan redactado en F4-M0; **F4-M1 hecho** (seccion 15). Las
+la retirada de claves de `training:` pasa de M1 a M3). Plan redactado en F4-M0; **F4-M1 y F4-M2 hechos** (seccion 15). Las
 sondas del preflight se ejecutaron fuera del repo (scratchpad), leyendo `data/raw/simulation` sin modificarlo. Etiquetas:
 **[M]** medida durante la planificacion, **[L]** leida del codigo o de un documento, **[W]** documentacion externa
 no medida, **[C]** calculada a partir de cifras [M] (aritmetica, no medicion). Prosa sin tildes, como el resto del
@@ -243,6 +243,14 @@ estado de 5 componentes por mediana) y `ml/models/physics_loss.py` (`energy_bala
 `PhysicsLossTerms`, cp de `WaterTable` sin gradiente, mascaras de rejilla y cuasi-estacionario).
 **Reescribir** `tests/unit/test_pinn_forward.py` y crear `test_physics_state.py`, `test_physics_loss.py`.
 **Medir**: perdidas sobre `true_value` y sobre `value` de los runs normales (deben reproducir 2.3), coste por lote.
+**Hecho (2026-11-24)**: ver seccion 15. Precisiones respecto a lo escrito arriba, todas por evidencia del hito:
+(1) la presion no es componente del estado pero cp se evalua en (T_avg, P): `PhysicalState` lleva aparte
+`pressure_bar` (mediana del rol `P`); (2) la mediana por rol es la de numpy/pandas (media de los dos centrales con un
+numero par de canales): `torch.median` devuelve el inferior y no coincidiria con las reglas; (3) la mascara de masa
+(`quasi_steady_mask`) recibe T_avg MEDIDA en dos instantes consecutivos y no fija cuales: con solo la entrada x(t)
+haria falta x(t-1) (el primer instante de cada run quedaria fuera); con el par (x(t), y(t+1)) medido coincide con la
+mascara que la regla aplica en t+1. Lo decide M3 (hallazgo M2-3); (4) `ml/training/train.py` (andamiaje) se adapta solo
+a la firma nueva para que `mypy` siga limpio; su reescritura sigue en M3.
 
 ### F4-M3 - Loop de entrenamiento y MLflow (T6.2, T6.3, T6.4)
 
@@ -393,10 +401,21 @@ actualizada, filas T6.x/T7.x de Progreso y mensaje de commit (sin linea Co-Autho
 |---|---|---|---|---|
 | F4-M0 | Hecho (plan propuesto, pendiente de aprobacion) | 2026-11-10 | puertas: 2867 passed / 1 skipped / 99,55 % (817 s); V2 = 2, V3 = 0; preflight en la seccion 2 | - |
 | F4-M1 | Hecho (stage `prepare_sim`) | 2026-11-10 | 16/9/9 runs; CRITICAL 1.474 / 1.446 / 1.813 instantes y 30.126 / 30.390 / 30.546 lecturas (91.062); pares entrenables 15.105 / 8.071 / 7.645; rejilla 50,0 / 41,7 / 42,4 %; 8.160 instantes con >1 episodio; salidas 9,57 / 5,43 / 5,43 MB; stage 7,2-7,7 s via DVC (6,4 s el script); mismos md5 en 6 ejecuciones; puertas: ruff limpio, mypy con los 2 errores de entorno, 2976 passed / 1 skipped / 99,57 % (812 s, sin 506/507), 100 % en los 3 modulos nuevos, `dvc status` limpio, V2 = 2, V3 = 0. Nota: `dvc repro --force prepare_sim` rehace tambien `simulate` (~4 min, lock identico) | - |
-| F4-M2 | Pendiente | | | |
+| F4-M2 | Hecho (red y perdidas fisicas) | 2026-11-24 | MLP 146.715 parametros (27 sensores + 4 de contexto); sobre los 32.161 instantes normales, residuo de energia \|Q_gen - Q_rem\|/Q_gen medido 0,66 / 2,51 / 4,13 % (p50/p99/max) y sobre `true_value` 0,0075 / 0,153 / 0,71 %; masa \|m_hl - m_cl\|/m_cl medida 0,67 / 2,54 / 4,28 % (= seccion 2.3); perdida media de energia 6,76e-5 (medido) / 7,3e-8 (verdadero), de masa en cuasi-estacionario 9,98e-5 / 1,0e-8; 0 filas normales fuera de la tabla; 99,89 % de los normales cuasi-estacionarios. Coste por lote de 256 (float32, 4 hilos, Adam, contenedor Linux x86_64, torch 2.15.0): 3,31 ms p50 solo datos frente a 5,31 ms con los dos terminos (+60 %, ~0,12 s por epoca de 15.105 pares); terminos fisicos sin backward 0,56 ms. Puertas (Linux, pandas 2.3.3, pyarrow 24.0.0): ruff limpio, mypy con los 2 errores de entorno, `pytest tests/unit tests/safety --cov` 2965 passed / 85 skipped / 99,58 % (416 s), 100 % en `ml/models`. `dvc.lock`, V2 y V3 no se ejecutaron (Windows) | - |
 | F4-M3 | Pendiente | | | |
 | F4-M4 | Pendiente | | | |
 | F4-M5 | Pendiente | | | |
 | F4-M6 | Pendiente | | | |
 | F4-M7 | Pendiente | | | |
 | F4-M8 | Pendiente | | | |
+
+**Hallazgos de F4-M2**
+
+| # | Hallazgo |
+|---|---|
+| M2-1 | Con lambda = 1 los terminos fisicos sobre la medicion (energia 6,8e-5, masa 1,0e-4) son 300-1000 veces menores que el MSE de datos en z (persistencia 0,0833, ruido 0,0331, seccion 2.3): la rejilla de M5 propuesta ({0; 0,1; 1; 10}^2) apenas moveria la red. Propuesta para M5 (decision del usuario): ampliar a {0; 10; 100; 1000} o normalizar cada termino por su suelo medido |
+| M2-2 | El objetivo de D4-6 es `value` medido de t+1: una prediccion perfecta tiene perdida de energia 6,8e-5, no 0. El suelo con el estado verdadero es 7e-8 (forma estacionaria) |
+| M2-3 | La mascara de masa necesita T_avg medida en dos instantes. Con solo la entrada x(t) hace falta x(t-1) (pierde el primer instante de cada run); con el par (x(t), y(t+1)) medido coincide con la mascara que la regla aplica en t+1. `quasi_steady_mask` admite ambos; se fija en M3 |
+| M2-4 | `torch.median` devuelve el inferior de los dos centrales; con 2 canales por rol no coincide con la mediana de pandas de las reglas. `channel_median` usa la definicion de numpy (test que la compara con la mediana por rol sobre un frame con ruido) |
+| M2-5 | Entorno: en el contenedor Linux `simulate` reproduce `sim_pinn_metrics.json` byte a byte, pero `metrics/simulation_metrics.json` cambia en 9 lineas (p. ej. `void_formation`: `boiling` 713 -> 712; `max_instant_residual` 3,0e-16 -> 6,1e-16): diferencias de coma flotante entre plataformas en el run de vacio. No se commitea; el lock y las metricas siguen siendo los de Windows |
+| M2-6 | Entorno: torch desde PyPI (2.15.0+cu132, sin GPU) funciona en el contenedor; el indice de ruedas de PyTorch sigue bloqueado. La suite `tests` entera da 23 fallos dependientes del orden en `test_validation_consumer`/`test_stream_metrics`/`test_tep_streamer`/`test_validation_service`, identicos en `ce655e1` (antes de integrar) y que pasan aislados; con `tests/unit tests/safety` (la puerta del plan) no aparecen |
