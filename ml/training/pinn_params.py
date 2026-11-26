@@ -14,6 +14,9 @@ Una vista de la misma seccion por stage, para que cada uno declare en
   `training:`.
 - `PinnPhysicsParams` (F4-M4): checkpoint, test y metricas de `physics_check` en el
   stage `evaluate`.
+- `PinnGridParams` (F4-M5): rejilla de lambdas de `ml/training/grid_search.py`,
+  fuera de DVC. Entrena con las claves del stage train (vista `PinnTrainParams`) y
+  anade las claves `grid_*`.
 """
 
 from __future__ import annotations
@@ -408,4 +411,91 @@ def load_pinn_physics_params(params_path: str | Path = DEFAULT_PARAMS_PATH) -> P
         model_dir=model_dir,
         num_threads=_positive_int(section, "num_threads"),
         physics_metrics_path=physics_metrics_path,
+    )
+
+
+# ----------------------------------------------------------------------
+# Rejilla de lambdas (F4-M5, fuera de DVC)
+# ----------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class PinnGridParams:
+    """Configuracion resuelta de la rejilla de lambdas (seccion pinn:).
+
+    Attributes:
+        train: Claves del stage train con las que se entrena cada combinacion (sus
+            lambdas los sustituye la rejilla; model_dir y train_metrics_path no se
+            escriben).
+        lambda_energy: Valores de lambda_energy de la rejilla, en orden.
+        lambda_mass: Valores de lambda_mass de la rejilla, en orden.
+        min_val_satisfaction: Satisfaccion fisica minima en val para que una
+            combinacion sea admisible, en (0, 1].
+        seed_repeats: Semillas (seed, seed + 1, ...) con las que se repiten la
+            combinacion sin fisica y la provisional para medir el ruido entre
+            semillas (1 = sin repeticiones, tolerancia 0).
+        metrics_path: Manifiesto de la rejilla (`metrics/pinn_grid.json`).
+    """
+
+    train: PinnTrainParams
+    lambda_energy: tuple[float, ...]
+    lambda_mass: tuple[float, ...]
+    min_val_satisfaction: float
+    seed_repeats: int
+    metrics_path: Path
+
+
+def _lambda_values(section: dict[str, Any], key: str) -> tuple[float, ...]:
+    """Return a non-empty list of distinct finite numbers >= 0."""
+    raw = _require(section, key)
+    message = (
+        f"params.yaml: '{_SECTION}.{key}' must be a non-empty list of distinct numbers >= 0, "
+        f"got {raw!r}."
+    )
+    if not isinstance(raw, list) or not raw:
+        raise ValueError(message)
+    values: list[float] = []
+    for item in raw:
+        if isinstance(item, bool) or not isinstance(item, int | float):
+            raise ValueError(message)
+        value = float(item)
+        if not math.isfinite(value) or value < 0.0 or value in values:
+            raise ValueError(message)
+        values.append(value)
+    return tuple(values)
+
+
+def load_pinn_grid_params(params_path: str | Path = DEFAULT_PARAMS_PATH) -> PinnGridParams:
+    """Load and validate the keys of the pinn: section that the lambda grid reads.
+
+    Args:
+        params_path: Path to the params file.
+
+    Returns:
+        A fully resolved PinnGridParams.
+
+    Raises:
+        FileNotFoundError: If params_path does not exist.
+        KeyError: If the pinn: section or a required key is missing.
+        TypeError: If the section is not a mapping.
+        ValueError: If a value is out of range or the manifest would live inside
+            the data directory.
+    """
+    train = load_pinn_train_params(params_path)
+    section = _read_section(params_path)
+    metrics_path = _path(section, "grid_metrics_path")
+    _check_not_nested({"data_dir": train.data_dir, "grid_metrics_path": metrics_path})
+    satisfaction = _number(section, "grid_min_val_satisfaction")
+    if not 0.0 < satisfaction <= 1.0:
+        raise ValueError(
+            f"params.yaml: '{_SECTION}.grid_min_val_satisfaction' must be in (0, 1], "
+            f"got {satisfaction}."
+        )
+    return PinnGridParams(
+        train=train,
+        lambda_energy=_lambda_values(section, "grid_lambda_energy"),
+        lambda_mass=_lambda_values(section, "grid_lambda_mass"),
+        min_val_satisfaction=satisfaction,
+        seed_repeats=_positive_int(section, "grid_seed_repeats"),
+        metrics_path=metrics_path,
     )

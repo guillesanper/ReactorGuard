@@ -768,20 +768,37 @@ class TrainingOutcome:
     seconds: float
 
 
-def run_training(
-    params_path: str | Path, params: PinnTrainParams, logger: RunLogger
-) -> TrainingOutcome:
-    """Train the PINN and write the checkpoint, the card and the metrics.
+@dataclass(frozen=True)
+class TrainedModel:
+    """Una red entrenada en memoria, sin nada escrito en disco.
+
+    Attributes:
+        model: Red con los pesos de la mejor epoca, en modo evaluacion.
+        result: Historia y mejor epoca.
+        n_parameters: Parametros entrenables de la red.
+        seconds: Tiempo de pared del loop (solo informativo).
+    """
+
+    model: ReactorPINN
+    result: FitResult
+    n_parameters: int
+    seconds: float
+
+
+def train_model(data: TrainingData, params: PinnTrainParams, logger: RunLogger) -> TrainedModel:
+    """Build, initialise and train the network on resolved data (no file is written).
+
+    Lo comparten el stage train (`run_training`) y la rejilla de lambdas
+    (`ml.training.grid_search`), que entrena varias redes sobre los mismos datos.
 
     Args:
-        params_path: Fichero de parametros (secciones pinn: y simulation:).
-        params: Seccion pinn: resuelta.
-        logger: Destino del registro (MlflowRunLogger o NullRunLogger).
+        data: Datos resueltos (`load_training_data`).
+        params: Hiperparametros (semilla, red, optimizacion, lambdas).
+        logger: Destino del registro de parametros y epocas.
 
     Returns:
-        The TrainingOutcome.
+        The TrainedModel.
     """
-    data = load_training_data(params_path, params)
     init_seed = derived_seeds(params.seed, 2)[0]
     with deterministic_torch(params.seed, params.num_threads):
         model = ReactorPINN(
@@ -805,6 +822,26 @@ def run_training(
         result = fit(model, data, params, logger)
         seconds = time.perf_counter() - start
     model.eval()
+    return TrainedModel(model=model, result=result, n_parameters=n_parameters, seconds=seconds)
+
+
+def run_training(
+    params_path: str | Path, params: PinnTrainParams, logger: RunLogger
+) -> TrainingOutcome:
+    """Train the PINN and write the checkpoint, the card and the metrics.
+
+    Args:
+        params_path: Fichero de parametros (secciones pinn: y simulation:).
+        params: Seccion pinn: resuelta.
+        logger: Destino del registro (MlflowRunLogger o NullRunLogger).
+
+    Returns:
+        The TrainingOutcome.
+    """
+    data = load_training_data(params_path, params)
+    trained = train_model(data, params, logger)
+    model, result, seconds = trained.model, trained.result, trained.seconds
+    n_parameters = trained.n_parameters
 
     model_path = save_checkpoint(params.model_dir / MODEL_FILE, model, data.stats)
     sha = file_sha256(model_path)

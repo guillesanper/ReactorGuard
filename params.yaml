@@ -421,9 +421,10 @@ pinn:
   # lambdas suben linealmente de 0 al objetivo en curriculum_epochs epocas (riesgo
   # de Plan_Fases); con 0 entran enteros desde la primera. Con lambda = 1 los
   # terminos fisicos son 300-1000 veces menores que el MSE de datos (M2-1): la
-  # rejilla de F4-M5 decide los definitivos.
-  lambda_energy: 1.0
-  lambda_mass: 1.0
+  # rejilla de F4-M5 decide los definitivos: ganador de metrics/pinn_grid.json
+  # (F4-M5, copiado a mano), lambda_energy = 1e3 y lambda_mass = 1e5.
+  lambda_energy: 1.0e+3
+  lambda_mass: 1.0e+5
   curriculum_epochs: 50
 
   # Salidas del stage train (out de DVC y metricas versionadas). El checkpoint
@@ -442,6 +443,22 @@ pinn:
   # checkpoint de model_dir y la particion test de data_dir; predice con num_threads
   # hilos. Fuera de data_dir y de model_dir (outs distintos de DVC).
   physics_metrics_path: metrics/pinn_physics_metrics.json
+
+  # --- Rejilla de lambdas (F4-M5, fuera de DVC) ---
+  # python ml/training/grid_search.py entrena una red por combinacion
+  # grid_lambda_energy x grid_lambda_mass con el resto de claves del stage train,
+  # un run de MLflow por combinacion (tag grid), sin checkpoints, y escribe el
+  # manifiesto grid_metrics_path. Con lambda = 1 la fisica pesa ~2e-6 del MSE de
+  # datos (M3-2): la escala llega hasta 1e5. Seleccion (docstring del modulo):
+  # admisibles con satisfaccion en val >= grid_min_val_satisfaction; minimo de
+  # val_data con una tolerancia igual al mayor ruido entre grid_seed_repeats
+  # semillas de (0, 0) y de la provisional; desempate por val_energy + val_mass.
+  # El ganador se copia a mano a lambda_energy y lambda_mass. No se ejecuta en CI.
+  grid_lambda_energy: [0.0, 1.0e+3, 1.0e+4, 1.0e+5]
+  grid_lambda_mass: [0.0, 1.0e+3, 1.0e+4, 1.0e+5]
+  grid_min_val_satisfaction: 0.99
+  grid_seed_repeats: 3
+  grid_metrics_path: metrics/pinn_grid.json
 
 # -----------------------------------------------------------------------------
 # Serving / inference parameters  (ml/serving/)

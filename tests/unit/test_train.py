@@ -623,12 +623,12 @@ class TestRepository:
     """The versioned params.yaml, dvc.yaml and .gitignore agree with the stage."""
 
     def test_repository_params_resolve(self) -> None:
-        """The approved values of F4-M3."""
+        """The approved values of F4-M3, with the lambdas chosen by the F4-M5 grid."""
         params = load_pinn_train_params(REPO_ROOT / "params.yaml")
         assert (params.hidden, params.n_hidden, params.dropout) == (256, 3, 0.1)
         assert (params.lambda_energy, params.lambda_mass, params.curriculum_epochs) == (
-            1.0,
-            1.0,
+            1.0e3,
+            1.0e5,
             50,
         )
         assert params.mlflow_tracking_uri == "sqlite:///mlruns/mlflow.db"

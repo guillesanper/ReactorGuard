@@ -16,9 +16,11 @@ import yaml
 
 from ml.training.pinn_params import (
     DEFAULT_PARAMS_PATH,
+    PinnGridParams,
     PinnParams,
     PinnPhysicsParams,
     PinnTrainParams,
+    load_pinn_grid_params,
     load_pinn_params,
     load_pinn_physics_params,
     load_pinn_train_params,
@@ -333,3 +335,100 @@ class TestPhysicsParams:
         """The metrics file lives outside the model and the data outs."""
         with pytest.raises(ValueError, match="no pueden anidarse"):
             _load_physics(tmp_path, physics_metrics_path=value)
+
+
+# ----------------------------------------------------------------------
+# Rejilla de lambdas (F4-M5): load_pinn_grid_params
+# ----------------------------------------------------------------------
+
+
+def _grid_section(**overrides: Any) -> dict[str, Any]:
+    """Return a valid pinn: section for the grid with relative paths."""
+    section = _train_section(grid_metrics_path="metrics/pinn_grid.json")
+    section.update(overrides)
+    return section
+
+
+def _load_grid(tmp_path: Path, **overrides: Any) -> PinnGridParams:
+    path = _write(tmp_path / "p.yaml", {"pinn": _grid_section(**overrides)})
+    return load_pinn_grid_params(path)
+
+
+GRID_KEYS = (
+    "grid_lambda_energy",
+    "grid_lambda_mass",
+    "grid_min_val_satisfaction",
+    "grid_seed_repeats",
+    "grid_metrics_path",
+)
+
+
+class TestGridParams:
+    """The grid keys resolve on top of the train view and fail naming the key."""
+
+    def test_typed_values(self, tmp_path: Path) -> None:
+        """Lambdas become float tuples, the train view is embedded."""
+        params = _load_grid(tmp_path, grid_lambda_energy=[0, 1000], grid_seed_repeats=3.0)
+        assert params.lambda_energy == (0.0, 1000.0)
+        assert params.lambda_mass == (0.0, 1.0)
+        assert params.min_val_satisfaction == 0.99
+        assert params.seed_repeats == 3
+        assert params.metrics_path == Path("metrics/pinn_grid.json")
+        assert params.train == _load_train(tmp_path)
+
+    def test_real_params_resolve(self) -> None:
+        """The section of the repository describes the grid decided in F4-M5."""
+        params = load_pinn_grid_params(REPO_ROOT / DEFAULT_PARAMS_PATH)
+        assert params.lambda_energy == (0.0, 1.0e3, 1.0e4, 1.0e5)
+        assert params.lambda_mass == (0.0, 1.0e3, 1.0e4, 1.0e5)
+        assert params.seed_repeats == 3
+        assert params.metrics_path == Path("metrics/pinn_grid.json")
+
+    def test_no_stage_declares_the_grid_keys(self) -> None:
+        """The grid is outside DVC: no stage depends on its keys."""
+        stages = yaml.safe_load((REPO_ROOT / "dvc.yaml").read_text(encoding="utf-8"))["stages"]
+        declared = {str(entry) for stage in stages.values() for entry in stage.get("params", [])}
+        assert not {f"pinn.{key}" for key in GRID_KEYS} & declared
+
+    @pytest.mark.parametrize("key", GRID_KEYS)
+    def test_missing_key_names_the_key(self, tmp_path: Path, key: str) -> None:
+        """Every grid key is required."""
+        section = _grid_section()
+        del section[key]
+        path = _write(tmp_path / "p.yaml", {"pinn": section})
+        with pytest.raises(KeyError, match=f"'pinn.{key}'"):
+            load_pinn_grid_params(path)
+
+    @pytest.mark.parametrize(
+        ("key", "value", "message"),
+        [
+            ("grid_lambda_energy", [], "non-empty list"),
+            ("grid_lambda_energy", 1.0, "non-empty list"),
+            ("grid_lambda_mass", [0.0, -1.0], "non-empty list"),
+            ("grid_lambda_mass", [1.0, 1.0], "distinct"),
+            ("grid_lambda_mass", [True], "non-empty list"),
+            ("grid_lambda_mass", ["1"], "non-empty list"),
+            ("grid_lambda_mass", [float("inf")], "non-empty list"),
+            ("grid_min_val_satisfaction", 0.0, r"\(0, 1\]"),
+            ("grid_min_val_satisfaction", 1.5, r"\(0, 1\]"),
+            ("grid_min_val_satisfaction", "x", "number"),
+            ("grid_seed_repeats", 0, "positive integer"),
+            ("grid_metrics_path", "", "non-empty path"),
+        ],
+    )
+    def test_out_of_range_values(self, tmp_path: Path, key: str, value: Any, message: str) -> None:
+        """Each invalid value is rejected naming the key."""
+        with pytest.raises(ValueError, match=f"'pinn.{key}'.*{message}"):
+            _load_grid(tmp_path, **{key: value})
+
+    def test_manifest_cannot_nest_in_the_data(self, tmp_path: Path) -> None:
+        """The manifest lives outside the data out."""
+        with pytest.raises(ValueError, match="no pueden anidarse"):
+            _load_grid(tmp_path, grid_metrics_path="data/processed/sim_pinn/grid.json")
+
+    def test_other_views_ignore_the_grid_keys(self, tmp_path: Path) -> None:
+        """prepare_sim, train and physics_check read the same section unaffected."""
+        path = _write(tmp_path / "p.yaml", {"pinn": _grid_section()})
+        assert load_pinn_params(path).test_runs_per_scenario == 1
+        assert load_pinn_train_params(path).hidden == 16
+        assert load_pinn_physics_params(path).num_threads == 1

@@ -482,6 +482,20 @@ paso nunca reproduce un estado de fallo (en los 1.606 instantes que violan en la
 normales, y no predice ebullicion en el vacio), de modo que la deteccion de M6 tiene que salir del residuo y no de las
 reglas sobre la prediccion. Stage ~2,7 s de pared; el JSON (12.483 bytes) es identico entre ejecuciones y con 1 o 4 hilos.
 
+**F4-M5 (rejilla de lambdas, T7.1 y T7.2)** crea `ml/training/grid_search.py` (fuera de DVC, no se ejecuta en CI) y
+extrae de `run_training` la funcion `train_model`, que comparten el stage y la rejilla. La rejilla
+{0; 1e3; 1e4; 1e5}^2 (claves `pinn.grid_*`, vista `PinnGridParams`) entrena 16 redes sobre los mismos datos, repite
+con 2 semillas mas la combinacion sin fisica y la provisional, registra cada run en MLflow con el tag `grid` y escribe
+el manifiesto `metrics/pinn_grid.json` (combinacion, run_id, val_data, val_energy, val_mass, peso de la fisica y
+satisfaccion en val con `physics_document`). Regla: admisibles con satisfaccion en val >= 99 %, minimo de val_data con
+una tolerancia igual al ruido entre semillas y desempate por val_energy + val_mass. Medido en el contenedor (20 runs,
+597 s de entrenamiento): val_data 0,28903-0,29173 en las 16 combinaciones, del orden del ruido entre semillas
+(1,44e-4) salvo con lambda_energy = 1e5; satisfaccion en val 100 % en todas; la fisica si cambia la prediccion (energia
+hasta 830 veces y masa hasta 11.000 veces menores que sin fisica). **Ganador lambda_energy = 1e3, lambda_mass = 1e5**,
+copiado a mano a `params.yaml`; reentrenado, test sigue en 13.491 / 13.491 (100 %, criterio 1) y la medicion en 88,1 %.
+Criterio 4 en el contenedor: 20 runs con tag `grid` en el store = 20 entradas del manifiesto. El manifiesto del
+contenedor no se commitea (sus run_id solo existen en ese store, hallazgo M5-6): se genera en Windows.
+
 El andamiaje restante: `predictor.py` **no se puede importar** con `mapie 1.4.1` (`MapieRegressor` ya no existe en la API 1.x);
 ademas espera la tupla del LSTM retirado. No se toca en Fase 4 (D4-16).
 
@@ -492,8 +506,8 @@ ademas espera la tupla del LSTM retirado. No se toca en Fase 4 (D4-16).
 | T6.3 | Integracion MLflow | Completado (F4-M3): un run por entrenamiento en `sqlite:///mlruns/mlflow.db` (artefactos en `mlruns/artifacts`), params y metricas por epoca (data, energy, mass, total, val_*, lr); nunca `mlflow.db` en la raiz (test) |
 | T6.4 | DVC stage `train` | Parcial (F4-M3): stage en `dvc.yaml` y salida reproducible byte a byte (H5); falta generar `dvc.lock` en Windows con `Invoke-Pipeline.ps1 -Stage train` |
 | T6.5 | `ml/validation/physics_check.py` | Completado (F4-M4): satisfaccion de las 7 reglas votadas sobre la prediccion de test 13.491 / 13.491 (100 %; normales 7.837 / 7.837; medicion 88,1 %), 100 % de cobertura en `ml/validation`; stage `evaluate` en `dvc.yaml` (solo `physics_check`); falta generar `dvc.lock` y `metrics/pinn_physics_metrics.json` en Windows |
-| T7.1 | Reentrenamiento con dataset de simulacion | En curso: datos (F4-M1) y entrenamiento con lambda = 1 (F4-M3, `models/pinn/candidate`); la seleccion de lambdas llega en M5 |
-| T7.2 | Grid search lambda_energy y lambda_mass | Pendiente |
+| T7.1 | Reentrenamiento con dataset de simulacion | Parcial (F4-M5): reentrenado con los lambdas de la rejilla (1e3, 1e5) en el contenedor (val_data 0,28913; test 100 % de satisfaccion); falta regenerar `model.pt`, metricas y `dvc.lock` de `train` y `evaluate` en Windows |
+| T7.2 | Grid search lambda_energy y lambda_mass | Parcial (F4-M5): `ml/training/grid_search.py`, 20 runs en MLflow (16 + 4 repeticiones de semilla), ganador (1e3, 1e5) en `params.yaml`, 100 % de cobertura; falta ejecutar la rejilla en Windows y commitear `metrics/pinn_grid.json` (criterio 4 sobre el store local) |
 | T7.3 | `ml/models/rules.py`: 6 constraints del TDD | Pendiente |
 | T7.4 | Fusion PINN + Rules | Pendiente |
 | T7.5 | `ml/validation/safety_check.py` | Pendiente |
@@ -593,12 +607,12 @@ Lo que impide dar por cerrada la Fase 2 en el cluster y que **no** se resuelve e
 2. Antes del despliegue, decidir: persistencia del estado de los detectores, DLQ, y que hacer con las
    100.934 alertas (hallazgo 9).
 3. Fase 3 cerrada en local (F3-M8, calibracion con OpenMC en Docker, es opcional).
-4. **Fase 4**: generar en Windows el `dvc.lock` de los stages `train` y `evaluate`
-   (`.\infra\scripts\Invoke-Pipeline.ps1 -Stage evaluate`, que rehace `train` si hace falta) y commitearlo con
-   `metrics/pinn_train_metrics.json` y `metrics/pinn_physics_metrics.json`; despues **F4-M5** (rejilla de lambdas,
-   `grid_search.py`; T7.1 y T7.2) cuando el usuario lo indique. Antes: decidir la rejilla (con lambda = 1 la fisica pesa
-   ~2e-6 del MSE, M3-2), `min_delta` de la parada temprana (M3-3) y la regla de seleccion
-   (la satisfaccion en val ya es del 100 % con lambda = 1, M4-1). F4-M1 a F4-M4 estan en `main`.
+4. **Fase 4**: en Windows, (a) `python ml/training/grid_search.py` (~10-11 min) y comprobar que el ganador de
+   `metrics/pinn_grid.json` es (1e3, 1e5) como en `params.yaml` (si no, corregir `params.yaml`); (b)
+   `.\infra\scripts\Invoke-Pipeline.ps1 -Stage evaluate` (rehace `train`); (c) commitear `dvc.lock`,
+   `metrics/pinn_grid.json`, `metrics/pinn_train_metrics.json` y `metrics/pinn_physics_metrics.json`. Despues
+   **F4-M6** (Rule Engine, fusion y seguridad; T7.3, T7.4, T7.5) cuando el usuario lo indique. F4-M1 a F4-M5 estan
+   en `main`.
 
 Referencia tecnica del camino de streaming (invariantes, contrato de mensajes, commit, rebalanceo, metricas y
 runbook): [ReactorGuard_Fase2_Streaming.md](ReactorGuard_Fase2_Streaming.md).
